@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCustomersByTenant = `-- name: CountCustomersByTenant :one
+SELECT COUNT(*)::bigint FROM customers WHERE tenant_id = $1
+`
+
+func (q *Queries) CountCustomersByTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCustomersByTenant, tenantID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getCustomerByID = `-- name: GetCustomerByID :one
 SELECT id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked FROM customers
 WHERE id = $1 AND tenant_id = $2
@@ -123,6 +134,202 @@ func (q *Queries) ListCustomerOrders(ctx context.Context, arg ListCustomerOrders
 		return nil, err
 	}
 	return items, nil
+}
+
+const listCustomersByTenant = `-- name: ListCustomersByTenant :many
+SELECT
+    c.id,
+    c.name,
+    c.phone,
+    c.is_blocked,
+    c.last_login_at,
+    c.created_at,
+    c.updated_at,
+    (
+        SELECT COUNT(*)::bigint
+        FROM orders o
+        WHERE o.tenant_id = c.tenant_id
+          AND (
+              o.customer_id = c.id
+              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
+          )
+    ) AS order_count,
+    (
+        SELECT COALESCE(SUM(o.total), 0)::float8
+        FROM orders o
+        WHERE o.tenant_id = c.tenant_id
+          AND (
+              o.customer_id = c.id
+              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
+          )
+    ) AS total_spend,
+    (
+        SELECT MAX(o.created_at)
+        FROM orders o
+        WHERE o.tenant_id = c.tenant_id
+          AND (
+              o.customer_id = c.id
+              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
+          )
+    ) AS last_order_at
+FROM customers c
+WHERE c.tenant_id = $1
+ORDER BY COALESCE(
+    (
+        SELECT MAX(o.created_at)
+        FROM orders o
+        WHERE o.tenant_id = c.tenant_id
+          AND (
+              o.customer_id = c.id
+              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
+          )
+    ),
+    c.created_at
+) DESC
+LIMIT $3
+OFFSET $2
+`
+
+type ListCustomersByTenantParams struct {
+	TenantID    pgtype.UUID `json:"tenant_id"`
+	OffsetCount int32       `json:"offset_count"`
+	LimitCount  int32       `json:"limit_count"`
+}
+
+type ListCustomersByTenantRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	Phone       pgtype.Text        `json:"phone"`
+	IsBlocked   bool               `json:"is_blocked"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	OrderCount  int64              `json:"order_count"`
+	TotalSpend  float64            `json:"total_spend"`
+	LastOrderAt interface{}        `json:"last_order_at"`
+}
+
+// Shop CRM: signed-in / known customers with order stats (matched by id or phone).
+func (q *Queries) ListCustomersByTenant(ctx context.Context, arg ListCustomersByTenantParams) ([]ListCustomersByTenantRow, error) {
+	rows, err := q.db.Query(ctx, listCustomersByTenant, arg.TenantID, arg.OffsetCount, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCustomersByTenantRow{}
+	for rows.Next() {
+		var i ListCustomersByTenantRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Phone,
+			&i.IsBlocked,
+			&i.LastLoginAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OrderCount,
+			&i.TotalSpend,
+			&i.LastOrderAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGuestCustomersFromOrders = `-- name: ListGuestCustomersFromOrders :many
+SELECT
+    MAX(o.customer_name) AS name,
+    o.customer_phone AS phone,
+    COUNT(*)::bigint AS order_count,
+    COALESCE(SUM(o.total), 0)::float8 AS total_spend,
+    MAX(o.created_at) AS last_order_at,
+    MIN(o.created_at) AS first_seen_at
+FROM orders o
+WHERE o.tenant_id = $1
+  AND NULLIF(TRIM(o.customer_phone), '') IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM customers c
+      WHERE c.tenant_id = o.tenant_id AND c.phone = o.customer_phone
+  )
+GROUP BY o.customer_phone
+ORDER BY MAX(o.created_at) DESC
+LIMIT $2
+`
+
+type ListGuestCustomersFromOrdersParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	LimitCount int32       `json:"limit_count"`
+}
+
+type ListGuestCustomersFromOrdersRow struct {
+	Name        interface{} `json:"name"`
+	Phone       string      `json:"phone"`
+	OrderCount  int64       `json:"order_count"`
+	TotalSpend  float64     `json:"total_spend"`
+	LastOrderAt interface{} `json:"last_order_at"`
+	FirstSeenAt interface{} `json:"first_seen_at"`
+}
+
+// Guests who placed orders but never got a customers row (no phone login).
+func (q *Queries) ListGuestCustomersFromOrders(ctx context.Context, arg ListGuestCustomersFromOrdersParams) ([]ListGuestCustomersFromOrdersRow, error) {
+	rows, err := q.db.Query(ctx, listGuestCustomersFromOrders, arg.TenantID, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGuestCustomersFromOrdersRow{}
+	for rows.Next() {
+		var i ListGuestCustomersFromOrdersRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.Phone,
+			&i.OrderCount,
+			&i.TotalSpend,
+			&i.LastOrderAt,
+			&i.FirstSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setCustomerBlocked = `-- name: SetCustomerBlocked :one
+UPDATE customers
+SET is_blocked = $1, updated_at = now()
+WHERE id = $2 AND tenant_id = $3
+RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked
+`
+
+type SetCustomerBlockedParams struct {
+	IsBlocked bool        `json:"is_blocked"`
+	ID        pgtype.UUID `json:"id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) SetCustomerBlocked(ctx context.Context, arg SetCustomerBlockedParams) (Customer, error) {
+	row := q.db.QueryRow(ctx, setCustomerBlocked, arg.IsBlocked, arg.ID, arg.TenantID)
+	var i Customer
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Phone,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastLoginAt,
+		&i.IsBlocked,
+	)
+	return i, err
 }
 
 const updateCustomerProfile = `-- name: UpdateCustomerProfile :one

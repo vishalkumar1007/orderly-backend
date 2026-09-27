@@ -736,6 +736,129 @@ func TestCustomerLoginCanBeDisabled(t *testing.T) {
 	env.mustStatus(http.StatusCreated, status, "guest checkout while login is off", body)
 }
 
+func TestCustomizeRouteAndNumericCosting(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+
+	// GET /customize alias
+	status, body := shop.admin(http.MethodGet, "/api/v1/tenant/customize", nil)
+	env.mustStatus(http.StatusOK, status, "GET /customize", body)
+
+	// PUT /customize with numeric tax_percent and packaging_fee
+	status, body = shop.admin(http.MethodPut, "/api/v1/tenant/customize", map[string]any{
+		"tax_percent":   12.5,
+		"packaging_fee": 15.0,
+	})
+	env.mustStatus(http.StatusOK, status, "PUT /customize with numbers", body)
+	beh, _ := body["behaviour"].(map[string]any)
+	if beh["tax_percent"] != 12.5 {
+		t.Errorf("tax_percent = %v, want 12.5", beh["tax_percent"])
+	}
+	if beh["packaging_fee"] != 15.0 {
+		t.Errorf("packaging_fee = %v, want 15", beh["packaging_fee"])
+	}
+
+	// Update identity without name (e.g. only address & phone)
+	status, body = shop.admin(http.MethodPut, "/api/v1/tenant/storefront", map[string]any{
+		"address": "42 Baker Street",
+		"phone":   "9876543210",
+	})
+	env.mustStatus(http.StatusOK, status, "update address/phone without name", body)
+	store, _ := body["store"].(map[string]any)
+	if store["address"] != "42 Baker Street" {
+		t.Errorf("store.address = %v, want 42 Baker Street", store["address"])
+	}
+	if store["phone"] != "9876543210" {
+		t.Errorf("store.phone = %v, want 9876543210", store["phone"])
+	}
+}
+
+// TestCustomizeWritesAppearOnPublicStore pins the admin → customer contract:
+// PUT /customize/theme and /customize/homepage must be what GET /public/store returns.
+func TestCustomizeWritesAppearOnPublicStore(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+
+	status, body := shop.admin(http.MethodPut, "/api/v1/tenant/customize/theme", map[string]any{
+		"preset":  "street-food",
+		"mode":    "light",
+		"primary": "#e85d04",
+	})
+	env.mustStatus(http.StatusOK, status, "PUT /customize/theme", body)
+	adminTheme, _ := body["theme"].(map[string]any)
+	adminVars, _ := adminTheme["vars"].(map[string]any)
+
+	status, body = shop.admin(http.MethodPut, "/api/v1/tenant/customize/homepage", map[string]any{
+		"sections": []map[string]any{
+			{"id": "hero", "type": "HERO", "enabled": true, "content": map[string]string{"title": "Welcome"}},
+			{"id": "menu", "type": "MENU", "enabled": true, "content": map[string]string{"title": "Full menu"}},
+			{"id": "hours", "type": "OPENING_HOURS", "enabled": false, "content": map[string]string{}},
+		},
+	})
+	env.mustStatus(http.StatusOK, status, "PUT /customize/homepage", body)
+
+	status, body = shop.admin(http.MethodPut, "/api/v1/tenant/customize/payments", map[string]any{
+		"online_payment_enabled": true,
+		"cash_enabled":           true,
+		"pay_at_pickup_enabled":  true,
+		"default_payment_method": "CASH",
+	})
+	env.mustStatus(http.StatusOK, status, "PUT /customize/payments", body)
+
+	status, body = shop.admin(http.MethodPut, "/api/v1/tenant/customize/workflow", map[string]any{
+		"acceptance_mode":     "MANUAL",
+		"payment_requirement": "AT_PICKUP",
+	})
+	env.mustStatus(http.StatusOK, status, "PUT /customize/workflow", body)
+
+	status, public := shop.guest(http.MethodGet, "/api/v1/public/store", nil)
+	env.mustStatus(http.StatusOK, status, "GET /public/store reflects customize", public)
+
+	publicTheme, _ := public["theme"].(map[string]any)
+	if publicTheme["preset"] != "street-food" {
+		t.Fatalf("public theme.preset = %v, want street-food", publicTheme["preset"])
+	}
+	if publicTheme["primary"] != "#e85d04" {
+		t.Fatalf("public theme.primary = %v, want #e85d04", publicTheme["primary"])
+	}
+	publicVars, _ := publicTheme["vars"].(map[string]any)
+	if publicVars["--sf-primary"] != adminVars["--sf-primary"] {
+		t.Fatalf("public --sf-primary = %v, want %v", publicVars["--sf-primary"], adminVars["--sf-primary"])
+	}
+
+	homepage, _ := public["homepage"].(map[string]any)
+	sections, _ := homepage["sections"].([]any)
+	enabled := 0
+	for _, raw := range sections {
+		sec, _ := raw.(map[string]any)
+		if sec["enabled"] == true {
+			enabled++
+		}
+	}
+	if enabled != 2 {
+		t.Fatalf("public enabled sections = %d, want 2", enabled)
+	}
+
+	payments, _ := public["payments"].(map[string]any)
+	if payments["default_payment_method"] != "CASH" {
+		t.Fatalf("public default_payment_method = %v, want CASH", payments["default_payment_method"])
+	}
+
+	status, _ = shop.admin(http.MethodPut, "/api/v1/tenant/customize", map[string]any{
+		"published": false,
+	})
+	env.mustStatus(http.StatusOK, status, "unpublish via /customize", nil)
+
+	status, _ = shop.guest(http.MethodGet, "/api/v1/public/store", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("unpublished public store status = %d, want 404", status)
+	}
+
+	status, body = shop.admin(http.MethodGet, "/api/v1/tenant/customize", nil)
+	env.mustStatus(http.StatusOK, status, "admin GET /customize while unpublished", body)
+}
+
+
 func TestCustomerLoginRequiredRejectsGuest(t *testing.T) {
 	env := newTestEnv(t)
 	shop := newShop(t, env)
@@ -1147,6 +1270,94 @@ func TestStaffConfirmPaymentMarksCashPaid(t *testing.T) {
 	env.mustStatus(http.StatusOK, status, "confirm cash payment", body)
 	if got := str(t, body, "status"); got != "PAID" {
 		t.Errorf("status = %q, want PAID", got)
+	}
+}
+
+func TestStaffOrderListExposesIds(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+	order := shop.order(t, "Asha Rao", "9876543210", "CASH")
+	wantID := env.orderID(shop.tenantID, number(t, order, "order_number"))
+	wantPay := env.paymentID(shop.tenantID, number(t, order, "order_number"))
+
+	status, body := shop.admin(http.MethodGet, "/api/v1/tenant/orders", nil)
+	env.mustStatus(http.StatusOK, status, "list orders", body)
+	orders, _ := body["orders"].([]any)
+	if len(orders) == 0 {
+		t.Fatal("expected at least one order on the staff board")
+	}
+	first, _ := orders[0].(map[string]any)
+	if got := str(t, first, "id"); got != wantID {
+		t.Errorf("order id = %q, want %q", got, wantID)
+	}
+	if _, ok := first["total"].(float64); !ok {
+		// JSON numbers may decode as float64; also accept json.Number via raw
+		if first["total"] == nil {
+			t.Errorf("staff board missing flat total: %#v", first["total"])
+		}
+	}
+	items, _ := first["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("expected items on staff board order")
+	}
+	item, _ := items[0].(map[string]any)
+	if str(t, item, "product_name") == "" && str(t, item, "name") == "" {
+		t.Errorf("item missing product_name/name: %#v", item)
+	}
+	payment, _ := first["payment"].(map[string]any)
+	if payment == nil {
+		t.Fatal("expected payment on staff board order")
+	}
+	if got := str(t, payment, "id"); got != wantPay {
+		t.Errorf("payment id = %q, want %q", got, wantPay)
+	}
+}
+
+func TestStaffCreateCounterOrder(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+
+	status, body := shop.admin(http.MethodPost, "/api/v1/tenant/orders", map[string]any{
+		"customer_name":  "Walk-in Guest",
+		"customer_phone": "9123456780",
+		"payment_method": "CASH",
+		"client_token":   "counter-token-1",
+		"items": []map[string]any{
+			{"product_id": shop.productID, "quantity": 2},
+		},
+	})
+	env.mustStatus(http.StatusCreated, status, "staff create order", body)
+	if str(t, body, "id") == "" {
+		t.Errorf("staff create response missing id: %#v", body)
+	}
+	if number(t, body, "order_number") == 0 {
+		t.Errorf("staff create response missing order_number")
+	}
+	payment, _ := body["payment"].(map[string]any)
+	if payment == nil || str(t, payment, "id") == "" {
+		t.Errorf("staff create response missing payment.id: %#v", body["payment"])
+	}
+
+	// Idempotent retry with the same client_token.
+	status, again := shop.admin(http.MethodPost, "/api/v1/tenant/orders", map[string]any{
+		"customer_name":  "Walk-in Guest",
+		"customer_phone": "9123456780",
+		"payment_method": "CASH",
+		"client_token":   "counter-token-1",
+		"items": []map[string]any{
+			{"product_id": shop.productID, "quantity": 2},
+		},
+	})
+	env.mustStatus(http.StatusOK, status, "duplicate staff create", again)
+	if again["duplicate"] != true {
+		t.Errorf("duplicate = %v, want true", again["duplicate"])
+	}
+
+	status, list := shop.admin(http.MethodGet, "/api/v1/tenant/orders", nil)
+	env.mustStatus(http.StatusOK, status, "list after staff create", list)
+	orders, _ := list["orders"].([]any)
+	if len(orders) != 1 {
+		t.Errorf("list len = %d, want 1 after idempotent create", len(orders))
 	}
 }
 

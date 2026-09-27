@@ -259,6 +259,7 @@ func (s *Server) Router() http.Handler {
 			s.upload.UploadRoutes(tr)
 
 			tr.Get("/orders", s.orders.ListOrders)
+			tr.Post("/orders", s.orders.StaffCreateOrder)
 			tr.Get("/orders/{id}", s.orders.GetOrder)
 			tr.Post("/orders/{id}/accept", s.orders.Transition("accept"))
 			tr.Post("/orders/{id}/prepare", s.orders.Transition("prepare"))
@@ -266,6 +267,20 @@ func (s *Server) Router() http.Handler {
 			tr.Post("/orders/{id}/complete", s.orders.Transition("complete"))
 			tr.Post("/orders/{id}/cancel", s.orders.CancelStaffOrder)
 			tr.Post("/payments/{id}/confirm", s.orders.ConfirmPayment)
+
+			// Staff & customer management — tenant admin only.
+			ownerOnly := auth.RequireRoles(identity.RoleTenantAdmin)
+
+			tr.With(ownerOnly).Get("/users", s.admin.ShopListUsers)
+			tr.With(ownerOnly).Post("/users", s.admin.ShopCreateUser)
+			tr.With(ownerOnly).Patch("/users/{userId}", s.admin.ShopUpdateUser)
+			tr.With(ownerOnly).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
+			tr.With(ownerOnly).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
+
+			tr.With(ownerOnly).Get("/customers", s.customers.ShopListCustomers)
+			tr.With(ownerOnly).Get("/customers/guest", s.customers.ShopGetGuestCustomer)
+			tr.With(ownerOnly).Get("/customers/{id}", s.customers.ShopGetCustomer)
+			tr.With(ownerOnly).Post("/customers/{id}/block", s.customers.ShopSetCustomerBlocked)
 
 			// Storefront configuration. The tenant comes from the verified
 			// staff token and the request host, so one shop can never read or
@@ -276,8 +291,6 @@ func (s *Server) Router() http.Handler {
 			// packaging fee or payment rules they are then expected to collect, and
 			// they cannot unpublish a live storefront. The list is short enough that
 			// inline middleware is clearer than a second router.
-			ownerOnly := auth.RequireRoles(identity.RoleTenantAdmin)
-
 			tr.With(ownerOnly).Get("/storefront", s.shop.GetStorefront)
 			tr.With(ownerOnly).Put("/storefront", s.shop.PutStorefront)
 			tr.With(ownerOnly).Put("/storefront/theme", s.shop.PutTheme)
@@ -285,6 +298,19 @@ func (s *Server) Router() http.Handler {
 			tr.With(ownerOnly).Put("/storefront/hours", s.shop.PutOpeningHours)
 			tr.With(ownerOnly).Get("/storefront/preview", s.shop.PreviewMenu)
 			tr.With(ownerOnly).Get("/storefront/qr", s.shop.QRCode)
+
+			// Route aliases for /customize. Admin clients must call these on the
+			// tenant Host ({slug}.{baseDomain}), never on the bare API host —
+			// MatchHostTenant rejects cross-host tokens.
+			tr.With(ownerOnly).Get("/customize", s.shop.GetStorefront)
+			tr.With(ownerOnly).Put("/customize", s.shop.PutStorefront)
+			tr.With(ownerOnly).Put("/customize/theme", s.shop.PutTheme)
+			tr.With(ownerOnly).Put("/customize/homepage", s.shop.PutHomepage)
+			tr.With(ownerOnly).Put("/customize/hours", s.shop.PutOpeningHours)
+			tr.With(ownerOnly).Put("/customize/payments", s.shop.PutPaymentSettings)
+			tr.With(ownerOnly).Put("/customize/workflow", s.shop.PutOrderWorkflow)
+			tr.With(ownerOnly).Get("/customize/preview", s.shop.PreviewMenu)
+			tr.With(ownerOnly).Get("/customize/qr", s.shop.QRCode)
 
 			// Payment methods and order workflow are separate documents within
 			// the same configuration row, exposed at their own paths so the

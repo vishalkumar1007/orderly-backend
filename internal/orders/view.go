@@ -237,6 +237,70 @@ func (o OrderView) Detail() map[string]any {
 	return out
 }
 
+// StaffBoard is the tenant Selling/Kitchen payload. It includes order and
+// payment UUIDs so staff transitions and cash confirm can address rows
+// directly — fields the public Detail() deliberately omits.
+func (o OrderView) StaffBoard() map[string]any {
+	items := make([]map[string]any, 0, len(o.Items))
+	for _, i := range o.Items {
+		row := map[string]any{
+			"id":           i.ID,
+			"name":         i.Name,
+			"product_name": i.Name,
+			"quantity":     i.Quantity,
+			"unit_price":   i.UnitPrice,
+			"subtotal":     i.Subtotal,
+		}
+		if len(i.Addons) > 0 {
+			addons := make([]map[string]any, 0, len(i.Addons))
+			for _, a := range i.Addons {
+				addons = append(addons, map[string]any{
+					"name": a.Name, "price": a.Price, "quantity": a.Quantity,
+				})
+			}
+			row["addons"] = addons
+		}
+		if i.Notes != "" {
+			row["notes"] = i.Notes
+		}
+		items = append(items, row)
+	}
+
+	out := map[string]any{
+		"id":             o.ID,
+		"order_number":   o.OrderNumber,
+		"reference":      o.Reference,
+		"status":         o.Status,
+		"status_label":   StatusLabel(o.Status),
+		"order_type":     o.OrderType,
+		"is_active":      IsActive(o.Status),
+		"can_cancel":     IsCancellable(o.Status),
+		"next_statuses":  NextStatuses(o.Status),
+		"total":          o.Total,
+		"items":          items,
+		"customer_name":  o.CustomerName,
+		"customer_phone": o.CustomerPhone,
+		"created_at":     o.CreatedAt.Format(time.RFC3339),
+		"updated_at":     o.UpdatedAt.Format(time.RFC3339),
+	}
+	if o.ReadyAt != nil {
+		out["ready_at"] = o.ReadyAt.Format(time.RFC3339)
+	}
+	if o.Payment != nil {
+		payment := map[string]any{
+			"id":     o.Payment.ID,
+			"method": o.Payment.Method,
+			"status": o.Payment.Status,
+			"amount": o.Payment.Amount,
+		}
+		if o.Payment.PaidAt != nil {
+			payment["paid_at"] = o.Payment.PaidAt.Format(time.RFC3339)
+		}
+		out["payment"] = payment
+	}
+	return out
+}
+
 // MaskPhone hides all but the country code and the last four digits, matching
 // what the sign-in screen shows so a customer recognises their own number.
 func MaskPhone(number string) string {

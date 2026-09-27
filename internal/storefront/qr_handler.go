@@ -55,10 +55,13 @@ func (a *AdminHandler) StoreLink(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load your storefront")
 		return
 	}
+	url := a.base(sf.Slug)
 	response.JSON(w, http.StatusOK, map[string]any{
 		"name":          sf.Name,
 		"slug":          sf.Slug,
-		"public_url":    a.base(sf.Slug),
+		"public_url":    url,
+		"public_host":   url,
+		"public_path":   "",
 		"is_published":  sf.IsPublished,
 		"ordering_open": sf.OrderingAllowed(),
 	})

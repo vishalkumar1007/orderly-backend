@@ -132,7 +132,7 @@ RETURNING *;
 
 -- name: UpdateStorefrontCosting :one
 UPDATE tenant_storefront_settings
-SET tax_percent = sqlc.narg(tax_percent), packaging_fee = sqlc.narg(packaging_fee), updated_at = now()
+SET tax_percent = COALESCE(sqlc.narg(tax_percent), tax_percent), packaging_fee = COALESCE(sqlc.narg(packaging_fee), packaging_fee), updated_at = now()
 WHERE tenant_id = sqlc.arg(tenant_id)
 RETURNING *;
 

@@ -392,7 +392,7 @@ func (q *Queries) UpdateStorefrontBehaviour(ctx context.Context, arg UpdateStore
 
 const updateStorefrontCosting = `-- name: UpdateStorefrontCosting :one
 UPDATE tenant_storefront_settings
-SET tax_percent = $1, packaging_fee = $2, updated_at = now()
+SET tax_percent = COALESCE($1, tax_percent), packaging_fee = COALESCE($2, packaging_fee), updated_at = now()
 WHERE tenant_id = $3
 RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode
 `

@@ -13,6 +13,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/storefront"
+	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -73,9 +74,7 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		counts[view.Status]++
-		payload := view.Detail()
-		payload["next_statuses"] = NextStatuses(view.Status)
-		out = append(out, payload)
+		out = append(out, view.StaffBoard())
 	}
 	response.JSON(w, http.StatusOK, map[string]any{
 		"orders": out,
@@ -108,9 +107,7 @@ func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load this order")
 		return
 	}
-	payload := view.Detail()
-	payload["next_statuses"] = NextStatuses(view.Status)
-	response.JSON(w, http.StatusOK, payload)
+	response.JSON(w, http.StatusOK, view.StaffBoard())
 }
 
 // actionTarget maps a staff action to the state it moves the order to.
@@ -157,7 +154,7 @@ func (h *Handler) Transition(action string) http.HandlerFunc {
 			writeValidationError(w, asValidation(h, err))
 			return
 		}
-		response.JSON(w, http.StatusOK, view.Detail())
+		response.JSON(w, http.StatusOK, view.StaffBoard())
 	}
 }
 
@@ -265,5 +262,43 @@ func (h *Handler) CancelStaffOrder(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, asValidation(h, err))
 		return
 	}
-	response.JSON(w, http.StatusOK, view.Detail())
+	response.JSON(w, http.StatusOK, view.StaffBoard())
+}
+
+// StaffCreateOrder places a counter / walk-in order. Staff auth is required;
+// customer login and the public storefront open gate are not.
+func (h *Handler) StaffCreateOrder(w http.ResponseWriter, r *http.Request) {
+	tenantID := mustTenant(r)
+	seedName := "Shop"
+	if user, ok := identity.UserFromContext(r.Context()); ok && user.Name != "" {
+		seedName = user.Name
+	}
+	if info, ok := tenantctx.FromContext(r.Context()); ok && info.Name != "" {
+		seedName = info.Name
+	}
+	sf, err := h.store.Ensure(r.Context(), tenantID, storefront.Seed{Name: seedName})
+	if err != nil || sf == nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load this store")
+		return
+	}
+	var req CreateRequest
+	if err := decodeBody(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json body")
+		return
+	}
+	if trim(req.PaymentMethod) == "" {
+		req.PaymentMethod = storefront.MethodCash
+	}
+	result, err := h.CreateCounter(r.Context(), tenantID, sf, req)
+	if err != nil {
+		writeValidationError(w, asValidation(h, err))
+		return
+	}
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
+	}
+	payload := result.View.StaffBoard()
+	payload["duplicate"] = result.Duplicate
+	response.JSON(w, status, payload)
 }

@@ -97,6 +97,17 @@ func badRequest(code, format string, args ...any) *validationError {
 // the order. A repeated submit carrying the same client_token returns the
 // original order rather than creating a second one.
 func (h *Handler) Create(ctx context.Context, tenantID uuid.UUID, sf *storefront.Storefront, req CreateRequest, principal *auth.CustomerPrincipal) (CreateResult, error) {
+	return h.placeOrder(ctx, tenantID, sf, req, principal, false)
+}
+
+// CreateCounter places a walk-in / counter order for staff. It reuses the same
+// pricing and cart rules as public checkout, but skips the storefront open gate
+// so the counter can sell when the public site is closed.
+func (h *Handler) CreateCounter(ctx context.Context, tenantID uuid.UUID, sf *storefront.Storefront, req CreateRequest) (CreateResult, error) {
+	return h.placeOrder(ctx, tenantID, sf, req, nil, true)
+}
+
+func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storefront.Storefront, req CreateRequest, principal *auth.CustomerPrincipal, bypassStoreClosed bool) (CreateResult, error) {
 	name := trim(req.CustomerName)
 	phone := normalisePhoneInput(req.CustomerPhone)
 
@@ -113,7 +124,7 @@ func (h *Handler) Create(ctx context.Context, tenantID uuid.UUID, sf *storefront
 	if email != "" && (utf8Len(email) > 254 || !looksLikeEmail(email)) {
 		return CreateResult{}, &validationError{Code: "invalid_email", Message: "Please check your email address", Status: 400}
 	}
-	if !sf.OrderingAllowed() {
+	if !bypassStoreClosed && !sf.OrderingAllowed() {
 		return CreateResult{}, &validationError{
 			Code:    "store_closed",
 			Message: sf.ClosedReason(),
@@ -194,6 +205,9 @@ func (h *Handler) Create(ctx context.Context, tenantID uuid.UUID, sf *storefront
 		if name == "" {
 			name = principal.Name
 		}
+	}
+	if bypassStoreClosed {
+		source = "COUNTER"
 	}
 
 	number, err := qtx.NextOrderNumber(ctx, pgutil.UUID(tenantID))
@@ -288,12 +302,16 @@ func (h *Handler) Create(ctx context.Context, tenantID uuid.UUID, sf *storefront
 		return CreateResult{}, err
 	}
 
+	historyActor := "customer"
+	if bypassStoreClosed {
+		historyActor = "staff"
+	}
 	if _, err := qtx.AppendOrderStatusHistory(ctx, sqlc.AppendOrderStatusHistoryParams{
 		TenantID:   pgutil.UUID(tenantID),
 		OrderID:    order.ID,
 		FromStatus: "",
 		ToStatus:   StatusPending,
-		Actor:      "customer",
+		Actor:      historyActor,
 	}); err != nil {
 		return CreateResult{}, err
 	}

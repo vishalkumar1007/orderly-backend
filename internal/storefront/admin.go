@@ -205,8 +205,8 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		CustomerLogin    *bool   `json:"customer_login_enabled"`
 		CustomerLoginMode *string `json:"customer_login_mode"`
 		PrepTimeMinutes  *int    `json:"prep_time_minutes"`
-		TaxPercent       *string `json:"tax_percent"`
-		PackagingFee     *string `json:"packaging_fee"`
+		TaxPercent       any     `json:"tax_percent"`
+		PackagingFee     any     `json:"packaging_fee"`
 		Published        *bool   `json:"published"`
 		StoreStatus      *string `json:"store_status"`
 		StatusMessage    *string `json:"status_message"`
@@ -216,14 +216,18 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name != nil {
-		name := trimText(*req.Name, 80)
-		if utf8Count(name) < 2 {
-			writeAdminError(w, "invalid_name", "Your business name needs at least 2 characters")
-			return
+	if req.Name != nil || req.LogoURL != nil || req.FaviconURL != nil || req.Tagline != nil || req.About != nil || req.Phone != nil || req.Address != nil {
+		var nameParam pgtype.Text
+		if req.Name != nil {
+			name := trimText(*req.Name, 80)
+			if utf8Count(name) < 2 {
+				writeAdminError(w, "invalid_name", "Your business name needs at least 2 characters")
+				return
+			}
+			nameParam = pgutil.Text(name)
 		}
 		if _, err := a.q.UpdateStorefrontIdentity(r.Context(), sqlc.UpdateStorefrontIdentityParams{
-			BusinessName: pgutil.Text(name),
+			BusinessName: nameParam,
 			LogoUrl:      trimmedText(req.LogoURL, 500),
 			FaviconUrl:   trimmedText(req.FaviconURL, 500),
 			Tagline:      trimmedText(req.Tagline, 140),
@@ -276,13 +280,33 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.TaxPercent != nil || req.PackagingFee != nil {
-		tax, taxOK := parseRate(*req.TaxPercent)
-		fee, feeOK := parseRate(*req.PackagingFee)
-		if (req.TaxPercent != nil && !taxOK) || (req.PackagingFee != nil && !feeOK) {
-			writeAdminError(w, "invalid_amount", "Tax and packaging fee must be plain numbers")
-			return
+		var taxParam, feeParam pgtype.Numeric
+		if req.TaxPercent != nil {
+			tax, taxOK := parseAnyRate(req.TaxPercent)
+			if !taxOK {
+				writeAdminError(w, "invalid_amount", "Tax percent must be a plain number")
+				return
+			}
+			num, err := pgutil.NumericFromFloat(tax)
+			if err != nil {
+				writeAdminError(w, "invalid_amount", "Tax percent could not be converted")
+				return
+			}
+			taxParam = num
 		}
-		taxParam, feeParam := numericOrNil(tax, sf.TaxPercent), numericOrNil(fee, sf.PackagingFee)
+		if req.PackagingFee != nil {
+			fee, feeOK := parseAnyRate(req.PackagingFee)
+			if !feeOK {
+				writeAdminError(w, "invalid_amount", "Packaging fee must be a plain number")
+				return
+			}
+			num, err := pgutil.NumericFromFloat(fee)
+			if err != nil {
+				writeAdminError(w, "invalid_amount", "Packaging fee could not be converted")
+				return
+			}
+			feeParam = num
+		}
 		if _, err := a.q.UpdateStorefrontCosting(r.Context(), sqlc.UpdateStorefrontCostingParams{
 			TaxPercent:   taxParam,
 			PackagingFee: feeParam,
@@ -738,6 +762,36 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// parseAnyRate reads a money or percentage field that arrives as a JSON number,
+// float, int, string or json.Number.
+func parseAnyRate(raw any) (float64, bool) {
+	if raw == nil {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		if v < 0 || v > 1_000_000 {
+			return 0, false
+		}
+		return v, true
+	case int:
+		if v < 0 || v > 1_000_000 {
+			return 0, false
+		}
+		return float64(v), true
+	case string:
+		return parseRate(v)
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil || f < 0 || f > 1_000_000 {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
 }
 
 // parseRate reads a money or percentage field that arrives as a JSON number or
