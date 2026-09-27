@@ -252,3 +252,47 @@ func TestNormalisePhoneInputIsIdempotent(t *testing.T) {
 		t.Errorf("normalising twice changed the value: %q then %q", once, twice)
 	}
 }
+
+func TestPriceCartRequiredOptionGroup(t *testing.T) {
+	p := sampleProduct()
+	p.OptionGroups = []OptionGroupRef{{
+		ID: "size", Name: "Choose Size", Selection: "single", Required: true,
+		OptionIDs: []string{"spicy", "sauce"},
+	}}
+	products := map[string]ProductRef{"p1": p}
+
+	_, _, err := PriceCart(products, []RequestedLine{{ProductID: "p1", Quantity: 1}}, Costing{})
+	if err == nil || err.Code != "option_required" {
+		t.Fatalf("expected option_required, got %v", err)
+	}
+
+	priced, _, err := PriceCart(products, []RequestedLine{{
+		ProductID: "p1", Quantity: 1,
+		Addons: []RequestedAddon{{ID: "spicy", Quantity: 1}},
+	}}, Costing{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if priced[0].UnitTotal != 130 {
+		t.Errorf("unit = %v, want 130", priced[0].UnitTotal)
+	}
+}
+
+func TestPriceCartSingleSelectionLimit(t *testing.T) {
+	p := sampleProduct()
+	p.OptionGroups = []OptionGroupRef{{
+		ID: "size", Name: "Choose Size", Selection: "single", Required: false,
+		OptionIDs: []string{"spicy", "sauce"},
+	}}
+	products := map[string]ProductRef{"p1": p}
+	_, _, err := PriceCart(products, []RequestedLine{{
+		ProductID: "p1", Quantity: 1,
+		Addons: []RequestedAddon{
+			{ID: "spicy", Quantity: 1},
+			{ID: "sauce", Quantity: 1},
+		},
+	}}, Costing{})
+	if err == nil || err.Code != "option_single" {
+		t.Fatalf("expected option_single, got %v", err)
+	}
+}

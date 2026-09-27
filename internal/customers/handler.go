@@ -26,9 +26,8 @@ import (
 // Handler serves storefront customer identity: phone login, the profile and
 // order history.
 //
-// Nothing here is required to order. A guest can complete checkout without ever
-// reaching these endpoints; signing in only adds saved details, history and
-// later offers.
+// Guest checkout is allowed when the shop sets login to off or optional.
+// When login is required, create-order rejects unauthenticated requests.
 type Handler struct {
 	pool   *pgxpool.Pool
 	q      *sqlc.Queries
@@ -74,7 +73,7 @@ func (h *Handler) loginEnabled(r *http.Request, tenantID uuid.UUID) bool {
 	if err != nil {
 		return true
 	}
-	return sf.CustomerLogin
+	return sf.LoginAllowed()
 }
 
 type sendOtpRequest struct {

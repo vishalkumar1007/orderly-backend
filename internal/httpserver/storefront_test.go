@@ -727,13 +727,77 @@ func TestCustomerLoginCanBeDisabled(t *testing.T) {
 		map[string]any{"phone": "9876543210"})
 	env.mustStatus(http.StatusForbidden, status, "sign in while disabled", nil)
 
-	// Guest ordering must still work — login is never required.
+	// Guest ordering must still work when login is off.
 	status, body := shop.guest(http.MethodPost, "/api/v1/public/orders", map[string]any{
 		"customer_name":  "Asha",
 		"customer_phone": "9876543210",
 		"items":          []map[string]any{{"product_id": shop.productID, "quantity": 1}},
 	})
 	env.mustStatus(http.StatusCreated, status, "guest checkout while login is off", body)
+}
+
+func TestCustomerLoginRequiredRejectsGuest(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+	status, body := shop.admin(http.MethodPut, "/api/v1/tenant/storefront",
+		map[string]any{"customer_login_mode": "required"})
+	env.mustStatus(http.StatusOK, status, "require customer login", body)
+	behaviour, _ := body["behaviour"].(map[string]any)
+	if behaviour["customer_login_mode"] != "required" {
+		t.Fatalf("customer_login_mode = %v, want required", behaviour["customer_login_mode"])
+	}
+	if behaviour["customer_login_enabled"] != true {
+		t.Fatalf("customer_login_enabled should stay true when mode is required")
+	}
+
+	status, body = shop.guest(http.MethodPost, "/api/v1/public/orders", map[string]any{
+		"customer_name":  "Asha",
+		"customer_phone": "9876543210",
+		"payment_method": "CASH",
+		"client_token":   "req-" + randSuffix(),
+		"items":          []map[string]any{{"product_id": shop.productID, "quantity": 1}},
+	})
+	env.mustStatus(http.StatusUnauthorized, status, "guest blocked when login required", body)
+
+	token := env.verifyOTP(t, shop, "9876543210")
+	status, body = shop.guestAuth(http.MethodPost, "/api/v1/public/orders", token, map[string]any{
+		"customer_name":  "Asha",
+		"customer_phone": "9876543210",
+		"payment_method": "CASH",
+		"client_token":   "req-ok-" + randSuffix(),
+		"items":          []map[string]any{{"product_id": shop.productID, "quantity": 1}},
+	})
+	env.mustStatus(http.StatusCreated, status, "signed-in checkout when required", body)
+}
+
+func TestStorefrontThemeLayoutAndFilter(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+	status, body := shop.admin(http.MethodPut, "/api/v1/tenant/storefront/theme", map[string]any{
+		"product_layout": "grid",
+		"filter_style":   "rail",
+	})
+	env.mustStatus(http.StatusOK, status, "save layout theme", body)
+	theme, _ := body["theme"].(map[string]any)
+	if theme["product_layout"] != "grid" || theme["filter_style"] != "rail" {
+		t.Fatalf("theme layout = %v / %v", theme["product_layout"], theme["filter_style"])
+	}
+	vars, _ := theme["vars"].(map[string]any)
+	if vars["--sf-product-layout"] != "grid" || vars["--sf-filter-style"] != "rail" {
+		t.Fatalf("theme vars missing layout tokens: %v", vars)
+	}
+
+	status, pub := shop.guest(http.MethodGet, "/api/v1/public/store", nil)
+	env.mustStatus(http.StatusOK, status, "public store layout", pub)
+	pubTheme, _ := pub["theme"].(map[string]any)
+	if pubTheme["product_layout"] != "grid" {
+		t.Fatalf("public product_layout = %v", pubTheme["product_layout"])
+	}
+
+	status, bad := shop.admin(http.MethodPut, "/api/v1/tenant/storefront/theme", map[string]any{
+		"product_layout": "masonry",
+	})
+	env.mustStatus(http.StatusBadRequest, status, "reject unknown layout", bad)
 }
 
 // ---------------------------------------------------------------------------

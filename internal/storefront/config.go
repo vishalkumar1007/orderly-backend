@@ -60,6 +60,18 @@ const (
 	HeroCompact  = "compact"
 	HeroNone     = "none"
 
+	LayoutList    = "list"
+	LayoutGrid    = "grid"
+	LayoutCompact = "compact"
+
+	FilterChips = "chips"
+	FilterPills = "pills"
+	FilterRail  = "rail"
+
+	LoginOff      = "off"
+	LoginOptional = "optional"
+	LoginRequired = "required"
+
 	MethodOnline = "ONLINE"
 	MethodCash   = "CASH"
 
@@ -68,7 +80,63 @@ const (
 
 	PayBeforePrep = "BEFORE_PREPARATION"
 	PayAtPickup   = "AT_PICKUP"
+
+	// Store status values. OPEN and BUSY allow ordering; AWAY and CLOSED block it.
+	StoreOpen   = "OPEN"
+	StoreBusy   = "BUSY"
+	StoreAway   = "AWAY"
+	StoreClosed = "CLOSED"
 )
+
+// validStoreStatuses lists every accepted store_status value.
+var validStoreStatuses = []string{StoreOpen, StoreBusy, StoreAway, StoreClosed}
+
+// StoreStatusInfo describes one store status for the admin UI.
+type StoreStatusInfo struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	AllowsOrder bool   `json:"allows_order"`
+}
+
+// StoreStatuses returns the catalogue of available store statuses.
+func StoreStatuses() []StoreStatusInfo {
+	return []StoreStatusInfo{
+		{Value: StoreOpen, Label: "Open", Description: "Accepting orders normally", AllowsOrder: true},
+		{Value: StoreBusy, Label: "Busy", Description: "Open but with longer wait times", AllowsOrder: true},
+		{Value: StoreAway, Label: "Away", Description: "Temporarily not accepting orders", AllowsOrder: false},
+		{Value: StoreClosed, Label: "Closed", Description: "Not accepting orders", AllowsOrder: false},
+	}
+}
+
+// StoreStatusLabel returns a human-readable label for a store status value.
+func StoreStatusLabel(status string) string {
+	for _, s := range validStoreStatuses {
+		if s == status {
+			switch s {
+			case StoreOpen:
+				return "Open"
+			case StoreBusy:
+				return "Busy"
+			case StoreAway:
+				return "Away"
+			case StoreClosed:
+				return "Closed"
+			}
+		}
+	}
+	return "Unknown"
+}
+
+// StoreStatusAllowsOrder reports whether a status permits new orders.
+func StoreStatusAllowsOrder(status string) bool {
+	switch status {
+	case StoreOpen, StoreBusy:
+		return true
+	default:
+		return false
+	}
+}
 
 var (
 	validPresets   = []string{PresetClassic, PresetModern, PresetStreet, PresetMinimal, PresetFresh, PresetDark}
@@ -79,6 +147,9 @@ var (
 	validCards     = []string{CardElevated, CardOutlined, CardFilled, CardMinimal}
 	validHeaders   = []string{HeaderSticky, HeaderSolid, HeaderTransp}
 	validHeros     = []string{HeroImage, HeroGradient, HeroCompact, HeroNone}
+	validLayouts   = []string{LayoutList, LayoutGrid, LayoutCompact}
+	validFilters   = []string{FilterChips, FilterPills, FilterRail}
+	validLoginModes = []string{LoginOff, LoginOptional, LoginRequired}
 	validAccept    = []string{AcceptManual, AcceptAuto}
 	validPayTiming = []string{PayBeforePrep, PayAtPickup}
 )
@@ -96,8 +167,9 @@ type Storefront struct {
 	BusinessTy  string
 	Currency    string
 	Timezone    string
-	IsPublished bool
-	StoreStatus string
+	IsPublished   bool
+	StoreStatus   string
+	StatusMessage string
 
 	LogoURL    string
 	FaviconURL string
@@ -115,7 +187,10 @@ type Storefront struct {
 
 	OrderingEnabled bool
 	ClosedMessage   string
-	CustomerLogin   bool
+	// CustomerLoginMode is off | optional | required. CustomerLogin is the
+	// legacy boolean (mode != off) kept for older clients.
+	CustomerLoginMode string
+	CustomerLogin     bool
 	PrepTimeMinutes int
 	TaxPercent      float64
 	PackagingFee    float64
@@ -236,6 +311,7 @@ func fromRow(row sqlc.GetStorefrontConfigRow) (*Storefront, error) {
 		Timezone:        row.Timezone,
 		IsPublished:     row.IsPublished,
 		StoreStatus:     row.StoreStatus,
+		StatusMessage:   row.StatusMessage,
 		LogoURL:         row.LogoUrl,
 		FaviconURL:      row.FaviconUrl,
 		Name:            strings.TrimSpace(row.BusinessName),
@@ -243,18 +319,19 @@ func fromRow(row sqlc.GetStorefrontConfigRow) (*Storefront, error) {
 		About:           row.Description,
 		Phone:           row.Phone,
 		Address:         row.Address,
-		OrderingEnabled: row.OrderingEnabled,
-		ClosedMessage:   row.ClosedMessage,
-		CustomerLogin:   row.CustomerLoginEnabled,
-		PrepTimeMinutes: int(row.PrepTimeMinutes),
-		TaxPercent:      pgutil.NumericToFloat(row.TaxPercent),
-		PackagingFee:    pgutil.NumericToFloat(row.PackagingFee),
-		rawHomepage:     row.Homepage,
-		rawPayments:     row.Payments,
-		rawWorkflow:     row.Workflow,
-		rawOpeningHours: row.OpeningHours,
-		UpdatedAt:       row.UpdatedAt.Time,
+		OrderingEnabled:   row.OrderingEnabled,
+		ClosedMessage:     row.ClosedMessage,
+		CustomerLoginMode: oneOf(row.CustomerLoginMode, LoginOptional, validLoginModes),
+		PrepTimeMinutes:   int(row.PrepTimeMinutes),
+		TaxPercent:        pgutil.NumericToFloat(row.TaxPercent),
+		PackagingFee:      pgutil.NumericToFloat(row.PackagingFee),
+		rawHomepage:       row.Homepage,
+		rawPayments:       row.Payments,
+		rawWorkflow:       row.Workflow,
+		rawOpeningHours:   row.OpeningHours,
+		UpdatedAt:         row.UpdatedAt.Time,
 	}
+	sf.CustomerLogin = sf.CustomerLoginMode != LoginOff
 	if sf.Name == "" {
 		sf.Name = row.TenantName
 	}
@@ -286,14 +363,24 @@ func (s *Storefront) RawDocuments() map[string]json.RawMessage {
 	return out
 }
 
+// LoginRequired reports whether guests must sign in before placing an order.
+func (s *Storefront) LoginRequired() bool {
+	return s.CustomerLoginMode == LoginRequired
+}
+
+// LoginAllowed reports whether phone OTP login screens and APIs are available.
+func (s *Storefront) LoginAllowed() bool {
+	return s.CustomerLoginMode != LoginOff
+}
+
 // OrderingAllowed reports whether the storefront should accept new orders.
-// A closed store, an explicitly disabled switch or a closed opening-hours
-// window all block ordering; browsing stays available.
+// A closed or away store, an explicitly disabled switch or a closed
+// opening-hours window all block ordering; browsing stays available.
 func (s *Storefront) OrderingAllowed() bool {
 	if !s.IsPublished {
 		return false
 	}
-	if s.StoreStatus == "CLOSED" || !s.OrderingEnabled {
+	if !StoreStatusAllowsOrder(s.StoreStatus) || !s.OrderingEnabled {
 		return false
 	}
 	return s.OpeningHours.IsOpen(time.Now())
@@ -304,13 +391,48 @@ func (s *Storefront) ClosedReason() string {
 	if !s.IsPublished {
 		return "This store is not available right now."
 	}
-	if s.StoreStatus == "CLOSED" || !s.OrderingEnabled || !s.OpeningHours.IsOpen(time.Now()) {
+	if !StoreStatusAllowsOrder(s.StoreStatus) || !s.OrderingEnabled || !s.OpeningHours.IsOpen(time.Now()) {
+		if msg := strings.TrimSpace(s.StatusMessage); msg != "" {
+			return msg
+		}
 		if msg := strings.TrimSpace(s.ClosedMessage); msg != "" {
 			return msg
 		}
-		return "Currently Closed"
+		switch s.StoreStatus {
+		case StoreAway:
+			return "Temporarily away — back soon"
+		case StoreBusy:
+			return "Currently busy — longer wait times"
+		case StoreClosed:
+			return "Currently Closed"
+		default:
+			return "Currently Closed"
+		}
 	}
 	return ""
+}
+
+// StoreStatusLabel returns a human-readable label for the current store status.
+func (s *Storefront) StoreStatusLabel() string {
+	return StoreStatusLabel(s.StoreStatus)
+}
+
+// DisplayStatusMessage returns the customer-facing status message, falling back
+// to a default based on the current status.
+func (s *Storefront) DisplayStatusMessage() string {
+	if msg := strings.TrimSpace(s.StatusMessage); msg != "" {
+		return msg
+	}
+	switch s.StoreStatus {
+	case StoreBusy:
+		return "High demand right now — expect longer wait times."
+	case StoreAway:
+		return "We're temporarily away. Please check back soon."
+	case StoreClosed:
+		return "We're closed right now."
+	default:
+		return ""
+	}
 }
 
 // OrderReference builds the short human code shown to customers, e.g. "MM1024"

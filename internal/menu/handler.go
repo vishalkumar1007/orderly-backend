@@ -3,7 +3,7 @@ package menu
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -12,17 +12,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
 type Handler struct {
-	q *sqlc.Queries
+	pool *pgxpool.Pool
+	q    *sqlc.Queries
 }
 
 func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{q: sqlc.New(pool)}
+	return &Handler{pool: pool, q: sqlc.New(pool)}
 }
 
 func tenantID(r *http.Request) uuid.UUID {
@@ -31,20 +33,31 @@ func tenantID(r *http.Request) uuid.UUID {
 }
 
 type categoryReq struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	SortOrder   *int32 `json:"sort_order"`
-	IsActive    *bool  `json:"is_active"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	ImageURL    *string `json:"image_url"`
+	SortOrder   *int32  `json:"sort_order"`
+	IsActive    *bool   `json:"is_active"`
 }
 
 type productReq struct {
-	CategoryID  string   `json:"category_id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Price       *float64 `json:"price"`
-	ImageURL    *string  `json:"image_url"`
-	SortOrder   *int32   `json:"sort_order"`
-	IsAvailable *bool    `json:"is_available"`
+	CategoryID               string          `json:"category_id"`
+	Name                     string          `json:"name"`
+	Description              string          `json:"description"`
+	Price                    *float64        `json:"price"`
+	ImageURL                 *string         `json:"image_url"`
+	SortOrder                *int32          `json:"sort_order"`
+	IsAvailable              *bool           `json:"is_available"`
+	IsVegetarian             *bool           `json:"is_vegetarian"`
+	IsFeatured               *bool           `json:"is_featured"`
+	IsPopular                *bool           `json:"is_popular"`
+	AllowSpecialInstructions *bool           `json:"allow_special_instructions"`
+	OptionGroups             json.RawMessage `json:"option_groups"`
+	Addons                   json.RawMessage `json:"addons"`
+}
+
+type reorderReq struct {
+	IDs []string `json:"ids"`
 }
 
 func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +75,7 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 	var req categoryReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "name required")
 		return
 	}
@@ -76,10 +89,11 @@ func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := h.q.CreateCategory(r.Context(), sqlc.CreateCategoryParams{
 		TenantID:    pgutil.UUID(tenantID(r)),
-		Name:        req.Name,
+		Name:        strings.TrimSpace(req.Name),
 		Description: req.Description,
 		SortOrder:   sortOrder,
 		IsActive:    isActive,
+		ImageUrl:    pgutil.NullText(req.ImageURL),
 	})
 	if err != nil {
 		response.Error(w, http.StatusConflict, "conflict", "could not create category")
@@ -103,17 +117,18 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		ID:       pgutil.UUID(id),
 		TenantID: pgutil.UUID(tenantID(r)),
 	}
-	if req.Name != "" {
-		params.Name = pgtype.Text{String: req.Name, Valid: true}
+	if strings.TrimSpace(req.Name) != "" {
+		params.Name = pgtype.Text{String: strings.TrimSpace(req.Name), Valid: true}
 	}
-	if req.Description != "" || true {
-		params.Description = pgtype.Text{String: req.Description, Valid: true}
-	}
+	params.Description = pgtype.Text{String: req.Description, Valid: true}
 	if req.SortOrder != nil {
 		params.SortOrder = pgtype.Int4{Int32: *req.SortOrder, Valid: true}
 	}
 	if req.IsActive != nil {
 		params.IsActive = pgtype.Bool{Bool: *req.IsActive, Valid: true}
+	}
+	if req.ImageURL != nil {
+		params.ImageUrl = pgutil.Text(*req.ImageURL)
 	}
 	c, err := h.q.UpdateCategory(r.Context(), params)
 	if err != nil {
@@ -129,14 +144,127 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid id")
 		return
 	}
+	tid := tenantID(r)
+	moveTo := strings.TrimSpace(r.URL.Query().Get("move_to"))
+
+	count, err := h.q.CountProductsInCategory(r.Context(), sqlc.CountProductsInCategoryParams{
+		TenantID:   pgutil.UUID(tid),
+		CategoryID: pgutil.UUID(id),
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to check category")
+		return
+	}
+
+	if count > 0 {
+		if moveTo == "" {
+			response.JSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]any{
+					"code":          "category_in_use",
+					"message":       "This category contains products. Move them first.",
+					"product_count": count,
+				},
+			})
+			return
+		}
+		destID, err := uuid.Parse(moveTo)
+		if err != nil || destID == id {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid move_to category")
+			return
+		}
+		if _, err := h.q.GetCategoryByID(r.Context(), sqlc.GetCategoryByIDParams{
+			ID: pgutil.UUID(destID), TenantID: pgutil.UUID(tid),
+		}); err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "destination category not found")
+			return
+		}
+		tx, err := h.pool.Begin(r.Context())
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "failed to delete category")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.q.WithTx(tx)
+		if err := qtx.MoveProductsToCategory(r.Context(), sqlc.MoveProductsToCategoryParams{
+			TenantID:     pgutil.UUID(tid),
+			CategoryID:   pgutil.UUID(id),
+			CategoryID_2: pgutil.UUID(destID),
+		}); err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "failed to move products")
+			return
+		}
+		if err := qtx.DeleteCategory(r.Context(), sqlc.DeleteCategoryParams{
+			ID: pgutil.UUID(id), TenantID: pgutil.UUID(tid),
+		}); err != nil {
+			response.Error(w, http.StatusConflict, "conflict", "cannot delete category")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "failed to delete category")
+			return
+		}
+		response.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		return
+	}
+
 	if err := h.q.DeleteCategory(r.Context(), sqlc.DeleteCategoryParams{
-		ID:       pgutil.UUID(id),
-		TenantID: pgutil.UUID(tenantID(r)),
+		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tid),
 	}); err != nil {
-		response.Error(w, http.StatusConflict, "conflict", "cannot delete category (in use?)")
+		response.Error(w, http.StatusConflict, "conflict", "cannot delete category")
 		return
 	}
 	response.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) ReorderCategories(w http.ResponseWriter, r *http.Request) {
+	h.reorder(w, r, true)
+}
+
+func (h *Handler) ReorderProducts(w http.ResponseWriter, r *http.Request) {
+	h.reorder(w, r, false)
+}
+
+func (h *Handler) reorder(w http.ResponseWriter, r *http.Request, categories bool) {
+	var req reorderReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "ids required")
+		return
+	}
+	tid := tenantID(r)
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to reorder")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.q.WithTx(tx)
+	for i, raw := range req.IDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid id")
+			return
+		}
+		if categories {
+			if err := qtx.UpdateCategorySortOrder(r.Context(), sqlc.UpdateCategorySortOrderParams{
+				ID: pgutil.UUID(id), TenantID: pgutil.UUID(tid), SortOrder: int32(i),
+			}); err != nil {
+				response.Error(w, http.StatusInternalServerError, "internal_error", "failed to reorder")
+				return
+			}
+		} else {
+			if err := qtx.UpdateProductSortOrder(r.Context(), sqlc.UpdateProductSortOrderParams{
+				ID: pgutil.UUID(id), TenantID: pgutil.UUID(tid), SortOrder: int32(i),
+			}); err != nil {
+				response.Error(w, http.StatusInternalServerError, "internal_error", "failed to reorder")
+				return
+			}
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to reorder")
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +280,20 @@ func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, map[string]any{"products": out})
 }
 
+func encodeProductAddons(req productReq) ([]byte, error) {
+	if len(req.OptionGroups) > 0 && string(req.OptionGroups) != "null" {
+		groups, err := storefront.DecodeOptionGroupsWire(req.OptionGroups)
+		if err != nil {
+			return nil, err
+		}
+		return storefront.EncodeOptionGroupList(groups)
+	}
+	if len(req.Addons) > 0 && string(req.Addons) != "null" {
+		return storefront.EncodeOptionGroups(req.Addons)
+	}
+	return []byte("[]"), nil
+}
+
 func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	var req productReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" || req.CategoryID == "" {
@@ -164,8 +306,7 @@ func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.q.GetCategoryByID(r.Context(), sqlc.GetCategoryByIDParams{
-		ID:       pgutil.UUID(catID),
-		TenantID: pgutil.UUID(tenantID(r)),
+		ID: pgutil.UUID(catID), TenantID: pgutil.UUID(tenantID(r)),
 	}); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "category not found")
 		return
@@ -187,15 +328,41 @@ func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	if req.IsAvailable != nil {
 		available = *req.IsAvailable
 	}
+	vegetarian := false
+	if req.IsVegetarian != nil {
+		vegetarian = *req.IsVegetarian
+	}
+	featured := false
+	if req.IsFeatured != nil {
+		featured = *req.IsFeatured
+	}
+	popular := false
+	if req.IsPopular != nil {
+		popular = *req.IsPopular
+	}
+	allowNotes := true
+	if req.AllowSpecialInstructions != nil {
+		allowNotes = *req.AllowSpecialInstructions
+	}
+	addons, err := encodeProductAddons(req)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid options")
+		return
+	}
 	p, err := h.q.CreateProduct(r.Context(), sqlc.CreateProductParams{
-		TenantID:    pgutil.UUID(tenantID(r)),
-		CategoryID:  pgutil.UUID(catID),
-		Name:        req.Name,
-		Description: req.Description,
-		Price:       price,
-		ImageUrl:    pgutil.NullText(req.ImageURL),
-		SortOrder:   sortOrder,
-		IsAvailable: available,
+		TenantID:                 pgutil.UUID(tenantID(r)),
+		CategoryID:               pgutil.UUID(catID),
+		Name:                     strings.TrimSpace(req.Name),
+		Description:              req.Description,
+		Price:                    price,
+		ImageUrl:                 pgutil.NullText(req.ImageURL),
+		SortOrder:                sortOrder,
+		IsAvailable:              available,
+		IsVegetarian:             vegetarian,
+		IsFeatured:               featured,
+		IsPopular:                popular,
+		AllowSpecialInstructions: allowNotes,
+		Addons:                   addons,
 	})
 	if err != nil {
 		response.Error(w, http.StatusConflict, "conflict", "could not create product")
@@ -211,8 +378,7 @@ func (h *Handler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := h.q.GetProductByID(r.Context(), sqlc.GetProductByIDParams{
-		ID:       pgutil.UUID(id),
-		TenantID: pgutil.UUID(tenantID(r)),
+		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID(r)),
 	})
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "product not found")
@@ -245,7 +411,7 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		params.CategoryID = pgutil.UUID(cid)
 	}
 	if req.Name != "" {
-		params.Name = pgtype.Text{String: req.Name, Valid: true}
+		params.Name = pgtype.Text{String: strings.TrimSpace(req.Name), Valid: true}
 	}
 	params.Description = pgtype.Text{String: req.Description, Valid: true}
 	if req.Price != nil {
@@ -265,12 +431,69 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 	if req.IsAvailable != nil {
 		params.IsAvailable = pgtype.Bool{Bool: *req.IsAvailable, Valid: true}
 	}
+	if req.IsVegetarian != nil {
+		params.IsVegetarian = pgtype.Bool{Bool: *req.IsVegetarian, Valid: true}
+	}
+	if req.IsFeatured != nil {
+		params.IsFeatured = pgtype.Bool{Bool: *req.IsFeatured, Valid: true}
+	}
+	if req.IsPopular != nil {
+		params.IsPopular = pgtype.Bool{Bool: *req.IsPopular, Valid: true}
+	}
+	if req.AllowSpecialInstructions != nil {
+		params.AllowSpecialInstructions = pgtype.Bool{Bool: *req.AllowSpecialInstructions, Valid: true}
+	}
+	if (len(req.OptionGroups) > 0 && string(req.OptionGroups) != "null") ||
+		(len(req.Addons) > 0 && string(req.Addons) != "null") {
+		addons, err := encodeProductAddons(req)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid options")
+			return
+		}
+		params.Addons = addons
+	}
 	p, err := h.q.UpdateProduct(r.Context(), params)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "product not found")
 		return
 	}
 	response.JSON(w, http.StatusOK, productJSON(p))
+}
+
+func (h *Handler) DuplicateProduct(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid id")
+		return
+	}
+	src, err := h.q.GetProductByID(r.Context(), sqlc.GetProductByIDParams{
+		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID(r)),
+	})
+	if err != nil {
+		response.Error(w, http.StatusNotFound, "not_found", "product not found")
+		return
+	}
+	name := "Copy of " + src.Name
+	p, err := h.q.CreateProduct(r.Context(), sqlc.CreateProductParams{
+		TenantID:                 src.TenantID,
+		CategoryID:               src.CategoryID,
+		Name:                     name,
+		Description:              src.Description,
+		Price:                    src.Price,
+		ImageUrl:                 src.ImageUrl,
+		SortOrder:                src.SortOrder + 1,
+		IsAvailable:              false,
+		IsVegetarian:             src.IsVegetarian,
+		IsFeatured:               false,
+		IsPopular:                false,
+		AllowSpecialInstructions: src.AllowSpecialInstructions,
+		Addons:                   src.Addons,
+	})
+	if err != nil {
+		response.Error(w, http.StatusConflict, "conflict", "could not duplicate product")
+		return
+	}
+	response.JSON(w, http.StatusCreated, productJSON(p))
 }
 
 func (h *Handler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
@@ -280,8 +503,7 @@ func (h *Handler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.q.DeleteProduct(r.Context(), sqlc.DeleteProductParams{
-		ID:       pgutil.UUID(id),
-		TenantID: pgutil.UUID(tenantID(r)),
+		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID(r)),
 	}); err != nil {
 		response.Error(w, http.StatusConflict, "conflict", "cannot delete product")
 		return
@@ -354,7 +576,7 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		"steps": map[string]bool{
 			"business_info": true,
 			"menu":          hasMenu,
-			"payment":       true, // POC: payment methods are fixed
+			"payment":       true,
 			"qr":            false,
 			"launch":        t.IsPublished,
 		},
@@ -389,11 +611,17 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func categoryJSON(c sqlc.Category) map[string]any {
+	var image *string
+	if c.ImageUrl.Valid {
+		s := c.ImageUrl.String
+		image = &s
+	}
 	return map[string]any{
 		"id":          pgutil.UUIDString(c.ID),
 		"tenant_id":   pgutil.UUIDString(c.TenantID),
 		"name":        c.Name,
 		"description": c.Description,
+		"image_url":   image,
 		"sort_order":  c.SortOrder,
 		"is_active":   c.IsActive,
 		"created_at":  c.CreatedAt.Time.Format(time.RFC3339),
@@ -407,20 +635,24 @@ func productJSON(p sqlc.Product) map[string]any {
 		s := p.ImageUrl.String
 		image = &s
 	}
+	groups := storefront.ParseOptionGroups(p.Addons)
 	return map[string]any{
-		"id":           pgutil.UUIDString(p.ID),
-		"tenant_id":    pgutil.UUIDString(p.TenantID),
-		"category_id":  pgutil.UUIDString(p.CategoryID),
-		"name":         p.Name,
-		"description":  p.Description,
-		"price":        pgutil.NumericToFloat(p.Price),
-		"image_url":    image,
-		"sort_order":   p.SortOrder,
-		"is_available": p.IsAvailable,
-		"created_at":   p.CreatedAt.Time.Format(time.RFC3339),
-		"updated_at":   p.UpdatedAt.Time.Format(time.RFC3339),
+		"id":                         pgutil.UUIDString(p.ID),
+		"tenant_id":                  pgutil.UUIDString(p.TenantID),
+		"category_id":                pgutil.UUIDString(p.CategoryID),
+		"name":                       p.Name,
+		"description":                p.Description,
+		"price":                      pgutil.NumericToFloat(p.Price),
+		"image_url":                  image,
+		"sort_order":                 p.SortOrder,
+		"is_available":               p.IsAvailable,
+		"is_vegetarian":              p.IsVegetarian,
+		"is_featured":                p.IsFeatured,
+		"is_popular":                 p.IsPopular,
+		"allow_special_instructions": p.AllowSpecialInstructions,
+		"option_groups":              groups,
+		"addons":                     storefront.FlattenOptionGroups(groups),
+		"created_at":                 p.CreatedAt.Time.Format(time.RFC3339),
+		"updated_at":                 p.UpdatedAt.Time.Format(time.RFC3339),
 	}
 }
-
-// silence unused strconv in case
-var _ = strconv.Itoa

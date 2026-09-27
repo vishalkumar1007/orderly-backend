@@ -21,6 +21,7 @@ SELECT
     t.timezone,
     t.is_published,
     t.store_status,
+    t.status_message,
     s.logo_url,
     s.favicon_url,
     s.business_name,
@@ -40,9 +41,12 @@ SELECT
     s.header_style,
     s.hero_style,
     s.hero_image_url,
+    s.product_layout,
+    s.filter_style,
     s.ordering_enabled,
     s.closed_message,
     s.customer_login_enabled,
+    s.customer_login_mode,
     s.prep_time_minutes,
     s.tax_percent,
     s.packaging_fee,
@@ -75,7 +79,7 @@ UPDATE tenant_storefront_settings
 SET
     ordering_enabled       = COALESCE(sqlc.narg(ordering_enabled), ordering_enabled),
     closed_message         = COALESCE(sqlc.narg(closed_message), closed_message),
-    customer_login_enabled = COALESCE(sqlc.narg(customer_login_enabled), customer_login_enabled),
+    customer_login_mode    = COALESCE(sqlc.narg(customer_login_mode), customer_login_mode),
     prep_time_minutes      = COALESCE(sqlc.narg(prep_time_minutes), prep_time_minutes),
     updated_at             = now()
 WHERE tenant_id = sqlc.arg(tenant_id)
@@ -96,6 +100,8 @@ SET
     header_style    = COALESCE(sqlc.narg(header_style), header_style),
     hero_style      = COALESCE(sqlc.narg(hero_style), hero_style),
     hero_image_url  = COALESCE(sqlc.narg(hero_image_url), hero_image_url),
+    product_layout  = COALESCE(sqlc.narg(product_layout), product_layout),
+    filter_style    = COALESCE(sqlc.narg(filter_style), filter_style),
     updated_at      = now()
 WHERE tenant_id = sqlc.arg(tenant_id)
 RETURNING *;

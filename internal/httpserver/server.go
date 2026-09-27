@@ -38,6 +38,7 @@ type Server struct {
 	auth      *auth.Service
 	admin     *platform.Handler
 	menu      *menu.Handler
+	upload    *menu.UploadHandler
 	orders    *orders.Handler
 	shop      *storefront.AdminHandler
 	loader    *storefront.Loader
@@ -58,6 +59,7 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 	configService := configsvc.NewService(store, resolver, slogAdapter{log})
 	admin.AttachConfigService(configService, box)
 	admin.AttachLogger(log)
+	uploadHandler := menu.NewUploadHandler(configService.StorageService())
 
 	if box.Disabled() {
 		log.Warn("CONFIG_ENCRYPTION_KEY is not set: provider secrets cannot be stored. " +
@@ -72,6 +74,7 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 		auth:      authSvc,
 		admin:     admin,
 		menu:      menu.NewHandler(pool),
+		upload:    uploadHandler,
 		orders:    orderHandler,
 		customers: customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
 		payments:  payments.NewHandler(pool, orderHandler, log),
@@ -240,14 +243,20 @@ func (s *Server) Router() http.Handler {
 
 			tr.Get("/categories", s.menu.ListCategories)
 			tr.Post("/categories", s.menu.CreateCategory)
+			tr.Post("/categories/reorder", s.menu.ReorderCategories)
 			tr.Patch("/categories/{id}", s.menu.UpdateCategory)
 			tr.Delete("/categories/{id}", s.menu.DeleteCategory)
 
 			tr.Get("/products", s.menu.ListProducts)
 			tr.Post("/products", s.menu.CreateProduct)
+			tr.Post("/products/reorder", s.menu.ReorderProducts)
 			tr.Get("/products/{id}", s.menu.GetProduct)
+			tr.Post("/products/{id}/duplicate", s.menu.DuplicateProduct)
 			tr.Patch("/products/{id}", s.menu.UpdateProduct)
 			tr.Delete("/products/{id}", s.menu.DeleteProduct)
+
+			// Image upload for menu items.
+			s.upload.UploadRoutes(tr)
 
 			tr.Get("/orders", s.orders.ListOrders)
 			tr.Get("/orders/{id}", s.orders.GetOrder)
@@ -295,6 +304,21 @@ func (s *Server) Router() http.Handler {
 		api.Route("/public", func(pr chi.Router) {
 			pr.Use(auth.OptionalCustomerMiddleware(s.auth))
 			pr.Get("/store", s.orders.PublicStore)
+
+			// The console brand theme, public.
+			//
+			// A sign-in page has to look like the shop it belongs to, and it
+			// renders precisely when nobody is signed in — so it cannot read the
+			// authenticated /tenant/theme. This is the same handler on the same
+			// host-resolved tenant, not a weaker one.
+			//
+			// Safe to expose because the payload is presentation only: a preset id,
+			// a colour mode, and CSS values (two accents, three radii, two font
+			// family names). No secret, no configuration, and no cross-tenant read:
+			// the tenant comes from the hostname, so this returns the caller's own
+			// shop's theme or nothing.
+			pr.Get("/theme", s.admin.GetMyTenantTheme)
+
 			pr.Get("/menu", s.orders.PublicMenu)
 			pr.Get("/products/{id}", s.orders.PublicProduct)
 			pr.Post("/quote", s.orders.PublicQuote)

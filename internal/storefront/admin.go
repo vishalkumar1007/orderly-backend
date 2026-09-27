@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
@@ -115,6 +116,8 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 			"card":           sf.Theme.Card,
 			"header":         sf.Theme.Header,
 			"hero":           sf.Theme.Hero,
+			"product_layout": sf.Theme.Layout,
+			"filter_style":   sf.Theme.Filter,
 			"primary":        sf.Theme.Primary,
 			"secondary":      sf.Theme.Secondary,
 			"accent":         sf.Theme.Accent,
@@ -125,11 +128,15 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 			"ordering_enabled":       sf.OrderingEnabled,
 			"closed_message":         sf.ClosedMessage,
 			"customer_login_enabled": sf.CustomerLogin,
+			"customer_login_mode":    sf.CustomerLoginMode,
 			"prep_time_minutes":      sf.PrepTimeMinutes,
 			"tax_percent":            sf.TaxPercent,
 			"packaging_fee":          sf.PackagingFee,
 			"published":              sf.IsPublished,
 			"store_status":           sf.StoreStatus,
+			"status_message":         sf.StatusMessage,
+			"store_status_label":     sf.StoreStatusLabel(),
+			"status_message_display": sf.DisplayStatusMessage(),
 		},
 		"payments": map[string]any{
 			"online_payment_enabled": sf.Payments.OnlineEnabled,
@@ -164,6 +171,7 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 		"closed_reason":          sf.ClosedReason(),
 		"public_url":             a.base(sf.Slug),
 		"updated_at":             sf.UpdatedAt.Format(time.RFC3339),
+		"store_statuses":         StoreStatuses(),
 	}
 }
 
@@ -192,13 +200,16 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		Phone      *string `json:"phone"`
 		Address    *string `json:"address"`
 
-		OrderingEnabled *bool   `json:"ordering_enabled"`
-		ClosedMessage   *string `json:"closed_message"`
-		CustomerLogin   *bool   `json:"customer_login_enabled"`
-		PrepTimeMinutes *int    `json:"prep_time_minutes"`
-		TaxPercent      *string `json:"tax_percent"`
-		PackagingFee    *string `json:"packaging_fee"`
-		Published       *bool   `json:"published"`
+		OrderingEnabled  *bool   `json:"ordering_enabled"`
+		ClosedMessage    *string `json:"closed_message"`
+		CustomerLogin    *bool   `json:"customer_login_enabled"`
+		CustomerLoginMode *string `json:"customer_login_mode"`
+		PrepTimeMinutes  *int    `json:"prep_time_minutes"`
+		TaxPercent       *string `json:"tax_percent"`
+		PackagingFee     *string `json:"packaging_fee"`
+		Published        *bool   `json:"published"`
+		StoreStatus      *string `json:"store_status"`
+		StatusMessage    *string `json:"status_message"`
 	}
 	if err := decodeAdmin(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "Could not read those settings")
@@ -225,7 +236,7 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.OrderingEnabled != nil || req.ClosedMessage != nil || req.CustomerLogin != nil || req.PrepTimeMinutes != nil {
+	if req.OrderingEnabled != nil || req.ClosedMessage != nil || req.CustomerLogin != nil || req.CustomerLoginMode != nil || req.PrepTimeMinutes != nil {
 		minutes := sf.PrepTimeMinutes
 		if req.PrepTimeMinutes != nil {
 			if *req.PrepTimeMinutes < 0 || *req.PrepTimeMinutes > 240 {
@@ -234,13 +245,32 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 			}
 			minutes = *req.PrepTimeMinutes
 		}
-		if _, err := a.q.UpdateStorefrontBehaviour(r.Context(), sqlc.UpdateStorefrontBehaviourParams{
-			OrderingEnabled:      boolPtr(req.OrderingEnabled),
-			ClosedMessage:        trimmedText(req.ClosedMessage, 200),
-			CustomerLoginEnabled: boolPtr(req.CustomerLogin),
-			PrepTimeMinutes:      int32Ptr(&minutes),
-			TenantID:             pgutil.UUID(tenantID),
-		}); err != nil {
+		loginMode := ""
+		if req.CustomerLoginMode != nil {
+			mode := strings.ToLower(strings.TrimSpace(*req.CustomerLoginMode))
+			if !contains(validLoginModes, mode) {
+				writeAdminError(w, "invalid_login_mode", "Login must be off, optional or required")
+				return
+			}
+			loginMode = mode
+		} else if req.CustomerLogin != nil {
+			// Legacy boolean: false → off, true → optional (never upgrades to required).
+			if *req.CustomerLogin {
+				loginMode = LoginOptional
+			} else {
+				loginMode = LoginOff
+			}
+		}
+		params := sqlc.UpdateStorefrontBehaviourParams{
+			OrderingEnabled: boolPtr(req.OrderingEnabled),
+			ClosedMessage:   trimmedText(req.ClosedMessage, 200),
+			PrepTimeMinutes: int32Ptr(&minutes),
+			TenantID:        pgutil.UUID(tenantID),
+		}
+		if loginMode != "" {
+			params.CustomerLoginMode = pgutil.NullText(&loginMode)
+		}
+		if _, err := a.q.UpdateStorefrontBehaviour(r.Context(), params); err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not save your settings")
 			return
 		}
@@ -271,6 +301,33 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.StoreStatus != nil || req.StatusMessage != nil {
+		status := sf.StoreStatus
+		if req.StoreStatus != nil {
+			st := strings.ToUpper(strings.TrimSpace(*req.StoreStatus))
+			if !contains(validStoreStatuses, st) {
+				writeAdminError(w, "invalid_store_status", "Store status must be OPEN, BUSY, AWAY or CLOSED")
+				return
+			}
+			status = st
+		}
+		msg := sf.StatusMessage
+		if req.StatusMessage != nil {
+			msg = strings.TrimSpace(*req.StatusMessage)
+			if utf8Count(msg) > 200 {
+				writeAdminError(w, "invalid_status_message", "Status message must be 200 characters or fewer")
+				return
+			}
+		}
+		if _, err := a.q.UpdateTenant(r.Context(), sqlc.UpdateTenantParams{
+			ID:            pgutil.UUID(tenantID),
+			StoreStatus:   pgtype.Text{String: status, Valid: true},
+			StatusMessage: pgtype.Text{String: msg, Valid: true},
+		}); err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "could not update store status")
+			return
+		}
+	}
 	a.respond(w, r, tenantID)
 }
 
@@ -296,6 +353,8 @@ func (a *AdminHandler) PutTheme(w http.ResponseWriter, r *http.Request) {
 		Card         *string `json:"card"`
 		Header       *string `json:"header"`
 		Hero         *string `json:"hero"`
+		Layout       *string `json:"product_layout"`
+		Filter       *string `json:"filter_style"`
 		Primary      *string `json:"primary"`
 		Secondary    *string `json:"secondary"`
 		Accent       *string `json:"accent"`
@@ -361,6 +420,20 @@ func (a *AdminHandler) PutTheme(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.HeroStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Hero))))
+	}
+	if req.Layout != nil {
+		if !contains(validLayouts, strings.ToLower(strings.TrimSpace(*req.Layout))) {
+			writeAdminError(w, "invalid_product_layout", "Pick list, grid or compact for product cards")
+			return
+		}
+		params.ProductLayout = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Layout))))
+	}
+	if req.Filter != nil {
+		if !contains(validFilters, strings.ToLower(strings.TrimSpace(*req.Filter))) {
+			writeAdminError(w, "invalid_filter_style", "Pick chips, pills or rail for filters")
+			return
+		}
+		params.FilterStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Filter))))
 	}
 	params.PrimaryColor = trimmedText(req.Primary, 20)
 	params.SecondaryColor = trimmedText(req.Secondary, 20)

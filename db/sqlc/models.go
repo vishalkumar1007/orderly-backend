@@ -29,6 +29,7 @@ type Category struct {
 	IsActive    bool               `json:"is_active"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ImageUrl    pgtype.Text        `json:"image_url"`
 }
 
 type Customer struct {
@@ -224,6 +225,8 @@ type Tenant struct {
 	Timezone         string             `json:"timezone"`
 	Language         string             `json:"language"`
 	StoreStatus      string             `json:"store_status"`
+	ShopType         string             `json:"shop_type"`
+	StatusMessage    string             `json:"status_message"`
 }
 
 type TenantConfiguration struct {
@@ -288,6 +291,9 @@ type TenantStorefrontSetting struct {
 	Workflow             []byte             `json:"workflow"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ProductLayout        string             `json:"product_layout"`
+	FilterStyle          string             `json:"filter_style"`
+	CustomerLoginMode    string             `json:"customer_login_mode"`
 }
 
 type TenantType struct {

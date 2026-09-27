@@ -2,10 +2,10 @@
 INSERT INTO tenants (
     name, slug, business_type, owner_name, phone, email, address, status, is_published, plan_id, setup_status,
     theme_preset_id, theme_color_mode, theme_overrides,
-    logo_url, favicon_url, short_description, currency, timezone, language, store_status
+    logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $10, $11, $12, $13,
-    $14, $15, $16, $17, $18, $19, $20
+    $14, $15, $16, $17, $18, $19, $20, $21
 )
 RETURNING *;
 
@@ -39,6 +39,7 @@ SET
     timezone = COALESCE(sqlc.narg(timezone), timezone),
     language = COALESCE(sqlc.narg(language), language),
     store_status = COALESCE(sqlc.narg(store_status), store_status),
+    status_message = COALESCE(sqlc.narg(status_message), status_message),
     updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;

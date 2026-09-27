@@ -24,6 +24,8 @@ type Theme struct {
 	Card      string
 	Header    string
 	Hero      string
+	Layout    string
+	Filter    string
 	Primary   string
 	Secondary string
 	Accent    string
@@ -134,6 +136,8 @@ func resolveTheme(row sqlc.GetStorefrontConfigRow) Theme {
 		Card:      oneOf(row.CardStyle, base.CardStyle, validCards),
 		Header:    oneOf(row.HeaderStyle, base.HeaderStyle, validHeaders),
 		Hero:      oneOf(row.HeroStyle, base.HeroStyle, validHeros),
+		Layout:    oneOf(row.ProductLayout, LayoutList, validLayouts),
+		Filter:    oneOf(row.FilterStyle, FilterChips, validFilters),
 		Primary:   hexOr(row.PrimaryColor, base.Primary),
 		Secondary: hexOr(row.SecondaryColor, base.Secondary),
 		Accent:    hexOr(row.AccentColor, base.Accent),
@@ -210,6 +214,8 @@ func (t Theme) CSSVars() map[string]string {
 		"--sf-hero-align":      heroAlign(t.Hero),
 		"--sf-section-space":   sectionSpace(t.Hero),
 		"--sf-image-fit":       imageFit(t.Card),
+		"--sf-product-layout":  t.Layout,
+		"--sf-filter-style":    t.Filter,
 		"--sf-focus-ring":      "color-mix(in srgb, " + primary + " 35%, transparent)",
 	}
 	return vars

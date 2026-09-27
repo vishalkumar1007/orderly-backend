@@ -11,10 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countProductsInCategory = `-- name: CountProductsInCategory :one
+SELECT COUNT(*)::bigint AS count
+FROM products
+WHERE tenant_id = $1 AND category_id = $2
+`
+
+type CountProductsInCategoryParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	CategoryID pgtype.UUID `json:"category_id"`
+}
+
+func (q *Queries) CountProductsInCategory(ctx context.Context, arg CountProductsInCategoryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countProductsInCategory, arg.TenantID, arg.CategoryID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCategory = `-- name: CreateCategory :one
-INSERT INTO categories (tenant_id, name, description, sort_order, is_active)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, tenant_id, name, description, sort_order, is_active, created_at, updated_at
+INSERT INTO categories (tenant_id, name, description, sort_order, is_active, image_url)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, tenant_id, name, description, sort_order, is_active, created_at, updated_at, image_url
 `
 
 type CreateCategoryParams struct {
@@ -23,6 +41,7 @@ type CreateCategoryParams struct {
 	Description string      `json:"description"`
 	SortOrder   int32       `json:"sort_order"`
 	IsActive    bool        `json:"is_active"`
+	ImageUrl    pgtype.Text `json:"image_url"`
 }
 
 func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error) {
@@ -32,6 +51,7 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 		arg.Description,
 		arg.SortOrder,
 		arg.IsActive,
+		arg.ImageUrl,
 	)
 	var i Category
 	err := row.Scan(
@@ -43,6 +63,7 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ImageUrl,
 	)
 	return i, err
 }
@@ -142,7 +163,7 @@ func (q *Queries) DeleteProduct(ctx context.Context, arg DeleteProductParams) er
 }
 
 const getCategoryByID = `-- name: GetCategoryByID :one
-SELECT id, tenant_id, name, description, sort_order, is_active, created_at, updated_at FROM categories
+SELECT id, tenant_id, name, description, sort_order, is_active, created_at, updated_at, image_url FROM categories
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -164,6 +185,7 @@ func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ImageUrl,
 	)
 	return i, err
 }
@@ -204,7 +226,7 @@ func (q *Queries) GetProductByID(ctx context.Context, arg GetProductByIDParams) 
 }
 
 const listActiveMenuCategories = `-- name: ListActiveMenuCategories :many
-SELECT id, tenant_id, name, description, sort_order, is_active, created_at, updated_at FROM categories
+SELECT id, tenant_id, name, description, sort_order, is_active, created_at, updated_at, image_url FROM categories
 WHERE tenant_id = $1 AND is_active = TRUE
 ORDER BY sort_order ASC, name ASC
 `
@@ -227,6 +249,7 @@ func (q *Queries) ListActiveMenuCategories(ctx context.Context, tenantID pgtype.
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ImageUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -282,7 +305,7 @@ func (q *Queries) ListAvailableProductsByTenant(ctx context.Context, tenantID pg
 }
 
 const listCategoriesByTenant = `-- name: ListCategoriesByTenant :many
-SELECT id, tenant_id, name, description, sort_order, is_active, created_at, updated_at FROM categories
+SELECT id, tenant_id, name, description, sort_order, is_active, created_at, updated_at, image_url FROM categories
 WHERE tenant_id = $1
 ORDER BY sort_order ASC, name ASC
 `
@@ -305,6 +328,7 @@ func (q *Queries) ListCategoriesByTenant(ctx context.Context, tenantID pgtype.UU
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ImageUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -331,7 +355,7 @@ type ListFeaturedProductsParams struct {
 }
 
 // Home page merchandising queries. Both are scoped to the tenant, so a
-// storefront can only ever surface its own products.
+// storefront can only ever see its own products.
 func (q *Queries) ListFeaturedProducts(ctx context.Context, arg ListFeaturedProductsParams) ([]Product, error) {
 	rows, err := q.db.Query(ctx, listFeaturedProducts, arg.TenantID, arg.LimitCount)
 	if err != nil {
@@ -463,6 +487,23 @@ func (q *Queries) ListProductsByTenant(ctx context.Context, tenantID pgtype.UUID
 	return items, nil
 }
 
+const moveProductsToCategory = `-- name: MoveProductsToCategory :exec
+UPDATE products
+SET category_id = $3, updated_at = now()
+WHERE tenant_id = $1 AND category_id = $2
+`
+
+type MoveProductsToCategoryParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
+	CategoryID   pgtype.UUID `json:"category_id"`
+	CategoryID_2 pgtype.UUID `json:"category_id_2"`
+}
+
+func (q *Queries) MoveProductsToCategory(ctx context.Context, arg MoveProductsToCategoryParams) error {
+	_, err := q.db.Exec(ctx, moveProductsToCategory, arg.TenantID, arg.CategoryID, arg.CategoryID_2)
+	return err
+}
+
 const updateCategory = `-- name: UpdateCategory :one
 UPDATE categories
 SET
@@ -470,9 +511,10 @@ SET
     description = COALESCE($2, description),
     sort_order = COALESCE($3, sort_order),
     is_active = COALESCE($4, is_active),
+    image_url = COALESCE($5, image_url),
     updated_at = now()
-WHERE id = $5 AND tenant_id = $6
-RETURNING id, tenant_id, name, description, sort_order, is_active, created_at, updated_at
+WHERE id = $6 AND tenant_id = $7
+RETURNING id, tenant_id, name, description, sort_order, is_active, created_at, updated_at, image_url
 `
 
 type UpdateCategoryParams struct {
@@ -480,6 +522,7 @@ type UpdateCategoryParams struct {
 	Description pgtype.Text `json:"description"`
 	SortOrder   pgtype.Int4 `json:"sort_order"`
 	IsActive    pgtype.Bool `json:"is_active"`
+	ImageUrl    pgtype.Text `json:"image_url"`
 	ID          pgtype.UUID `json:"id"`
 	TenantID    pgtype.UUID `json:"tenant_id"`
 }
@@ -490,6 +533,7 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		arg.Description,
 		arg.SortOrder,
 		arg.IsActive,
+		arg.ImageUrl,
 		arg.ID,
 		arg.TenantID,
 	)
@@ -503,8 +547,26 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ImageUrl,
 	)
 	return i, err
+}
+
+const updateCategorySortOrder = `-- name: UpdateCategorySortOrder :exec
+UPDATE categories
+SET sort_order = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+`
+
+type UpdateCategorySortOrderParams struct {
+	ID        pgtype.UUID `json:"id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	SortOrder int32       `json:"sort_order"`
+}
+
+func (q *Queries) UpdateCategorySortOrder(ctx context.Context, arg UpdateCategorySortOrderParams) error {
+	_, err := q.db.Exec(ctx, updateCategorySortOrder, arg.ID, arg.TenantID, arg.SortOrder)
+	return err
 }
 
 const updateProduct = `-- name: UpdateProduct :one
@@ -581,4 +643,21 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.Addons,
 	)
 	return i, err
+}
+
+const updateProductSortOrder = `-- name: UpdateProductSortOrder :exec
+UPDATE products
+SET sort_order = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+`
+
+type UpdateProductSortOrderParams struct {
+	ID        pgtype.UUID `json:"id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	SortOrder int32       `json:"sort_order"`
+}
+
+func (q *Queries) UpdateProductSortOrder(ctx context.Context, arg UpdateProductSortOrderParams) error {
+	_, err := q.db.Exec(ctx, updateProductSortOrder, arg.ID, arg.TenantID, arg.SortOrder)
+	return err
 }

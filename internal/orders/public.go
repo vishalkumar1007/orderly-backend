@@ -89,20 +89,23 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"currency":      currencyOr(sf.Currency),
 		},
 		"theme": map[string]any{
-			"preset":      sf.Theme.Preset,
-			"mode":        sf.Theme.Mode,
-			"font":        sf.Theme.Font,
-			"radius":      sf.Theme.Radius,
-			"button":      sf.Theme.Button,
-			"card":        sf.Theme.Card,
-			"header":      sf.Theme.Header,
-			"hero":        sf.Theme.Hero,
-			"primary":     sf.Theme.Primary,
-			"secondary":   sf.Theme.Secondary,
-			"accent":      sf.Theme.Accent,
-			"vars":        sf.Theme.CSSVars(),
-			"font_stack":  storefront.FontStacks[sf.Theme.Font],
-			"font_import": storefront.FontImports[sf.Theme.Font],
+			"preset":         sf.Theme.Preset,
+			"mode":           sf.Theme.Mode,
+			"font":           sf.Theme.Font,
+			"radius":         sf.Theme.Radius,
+			"button":         sf.Theme.Button,
+			"card":           sf.Theme.Card,
+			"header":         sf.Theme.Header,
+			"hero":           sf.Theme.Hero,
+			"product_layout": sf.Theme.Layout,
+			"filter_style":   sf.Theme.Filter,
+			"primary":        sf.Theme.Primary,
+			"secondary":      sf.Theme.Secondary,
+			"accent":         sf.Theme.Accent,
+			"hero_image_url": sf.HeroImageURL,
+			"vars":           sf.Theme.CSSVars(),
+			"font_stack":     storefront.FontStacks[sf.Theme.Font],
+			"font_import":    storefront.FontImports[sf.Theme.Font],
 		},
 		"homepage": map[string]any{
 			"sections": sf.Homepage.Sections,
@@ -119,6 +122,7 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"closed_reason":       sf.ClosedReason(),
 			"prep_time_minutes":   sf.PrepTimeMinutes,
 			"customer_login":      sf.CustomerLogin,
+			"customer_login_mode": sf.CustomerLoginMode,
 			"payment_requirement": sf.Workflow.PaymentRequirement,
 			"auto_accept":         sf.Workflow.AutoAccept(),
 		},
@@ -285,12 +289,21 @@ func (h *Handler) PublicCreateOrder(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json body")
 		return
 	}
-	// A customer token is optional here. When present it links the order to the
-	// signed-in profile; when absent the order is a guest order and nothing
-	// else changes.
-	principal, _ := auth.CustomerFromContext(r.Context())
+	// A customer token is optional when login is off or optional. When the
+	// shop requires sign-in, guest checkout is rejected here so the rule
+	// cannot be bypassed by skipping the UI gate.
+	principal, signedIn := auth.CustomerFromContext(r.Context())
+	if sf.LoginRequired() && (!signedIn || principal.TenantID != tenantID) {
+		response.Error(w, http.StatusUnauthorized, "login_required",
+			"Sign in with your phone to place an order at this store")
+		return
+	}
+	var principalPtr *auth.CustomerPrincipal
+	if signedIn && principal.TenantID == tenantID {
+		principalPtr = &principal
+	}
 
-	result, err := h.Create(r.Context(), tenantID, sf, req, &principal)
+	result, err := h.Create(r.Context(), tenantID, sf, req, principalPtr)
 	if err != nil {
 		writeValidationError(w, asValidation(h, err))
 		return

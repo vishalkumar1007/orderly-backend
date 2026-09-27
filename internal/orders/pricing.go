@@ -45,12 +45,13 @@ type PricedLine struct {
 
 // ProductRef is the slice of a product the pricing step needs.
 type ProductRef struct {
-	ID          string
-	Name        string
-	Price       float64
-	Available   bool
-	AllowsNotes bool
-	Addons      []AddonRef
+	ID           string
+	Name         string
+	Price        float64
+	Available    bool
+	AllowsNotes  bool
+	Addons       []AddonRef
+	OptionGroups []OptionGroupRef
 }
 
 // AddonRef is a product's add-on with its server-side price.
@@ -59,6 +60,15 @@ type AddonRef struct {
 	Name   string
 	Price  float64
 	MaxQty int
+}
+
+// OptionGroupRef describes selection rules for a group of options.
+type OptionGroupRef struct {
+	ID        string
+	Name      string
+	Selection string // "single" | "multiple"
+	Required  bool
+	OptionIDs []string
 }
 
 // Totals is the full money breakdown. Discount is always present so the cart
@@ -179,19 +189,16 @@ func PriceCart(products map[string]ProductRef, lines []RequestedLine, costing Co
 	return priced, totals, nil
 }
 
-// priceAddons resolves requested add-ons against the product's catalogue. An
-// unknown id is an error, not a silent drop: the customer asked for something
-// and the server must not quietly charge less than they expected.
+// priceAddons resolves requested add-ons against the product's catalogue and
+// enforces option-group rules (required groups, single vs multiple).
 func priceAddons(product ProductRef, requested []RequestedAddon) ([]LineAddon, float64, *PriceError) {
-	if len(requested) == 0 {
-		return nil, 0, nil
-	}
 	if len(requested) > 12 {
 		return nil, 0, priceErr("too_many_addons", "too many extra options on one item")
 	}
 	seen := map[string]bool{}
 	out := make([]LineAddon, 0, len(requested))
 	var total float64
+	picked := map[string]bool{}
 
 	for _, want := range requested {
 		id := strings.TrimSpace(want.ID)
@@ -221,8 +228,31 @@ func priceAddons(product ProductRef, requested []RequestedAddon) ([]LineAddon, f
 		}
 		out = append(out, LineAddon{ID: match.ID, Name: match.Name, Price: match.Price, Quantity: qty})
 		total += match.Price * float64(qty)
+		picked[id] = true
+	}
+
+	if err := validateOptionGroups(product.OptionGroups, picked); err != nil {
+		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+func validateOptionGroups(groups []OptionGroupRef, picked map[string]bool) *PriceError {
+	for _, g := range groups {
+		count := 0
+		for _, oid := range g.OptionIDs {
+			if picked[oid] {
+				count++
+			}
+		}
+		if g.Required && count == 0 {
+			return priceErr("option_required", "please choose an option for %s", g.Name)
+		}
+		if g.Selection == "single" && count > 1 {
+			return priceErr("option_single", "choose only one option for %s", g.Name)
+		}
+	}
+	return nil
 }
 
 func sanitiseNotes(notes string) string {

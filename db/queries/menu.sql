@@ -1,6 +1,6 @@
 -- name: CreateCategory :one
-INSERT INTO categories (tenant_id, name, description, sort_order, is_active)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO categories (tenant_id, name, description, sort_order, is_active, image_url)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: ListCategoriesByTenant :many
@@ -20,6 +20,7 @@ SET
     description = COALESCE(sqlc.narg(description), description),
     sort_order = COALESCE(sqlc.narg(sort_order), sort_order),
     is_active = COALESCE(sqlc.narg(is_active), is_active),
+    image_url = COALESCE(sqlc.narg(image_url), image_url),
     updated_at = now()
 WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id)
 RETURNING *;
@@ -27,6 +28,21 @@ RETURNING *;
 -- name: DeleteCategory :exec
 DELETE FROM categories
 WHERE id = $1 AND tenant_id = $2;
+
+-- name: UpdateCategorySortOrder :exec
+UPDATE categories
+SET sort_order = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2;
+
+-- name: CountProductsInCategory :one
+SELECT COUNT(*)::bigint AS count
+FROM products
+WHERE tenant_id = $1 AND category_id = $2;
+
+-- name: MoveProductsToCategory :exec
+UPDATE products
+SET category_id = $3, updated_at = now()
+WHERE tenant_id = $1 AND category_id = $2;
 
 -- name: CreateProduct :one
 INSERT INTO products (
@@ -66,6 +82,11 @@ SET
 WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id)
 RETURNING *;
 
+-- name: UpdateProductSortOrder :exec
+UPDATE products
+SET sort_order = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2;
+
 -- name: DeleteProduct :exec
 DELETE FROM products
 WHERE id = $1 AND tenant_id = $2;
@@ -81,7 +102,7 @@ WHERE tenant_id = $1 AND is_available = TRUE
 ORDER BY sort_order ASC, name ASC;
 
 -- Home page merchandising queries. Both are scoped to the tenant, so a
--- storefront can only ever surface its own products.
+-- storefront can only ever see its own products.
 -- name: ListFeaturedProducts :many
 SELECT * FROM products
 WHERE tenant_id = sqlc.arg(tenant_id)

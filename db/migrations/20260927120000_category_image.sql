@@ -1,0 +1,11 @@
+-- +goose Up
+-- +goose StatementBegin
+ALTER TABLE categories
+    ADD COLUMN IF NOT EXISTS image_url TEXT;
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+ALTER TABLE categories
+    DROP COLUMN IF EXISTS image_url;
+-- +goose StatementEnd

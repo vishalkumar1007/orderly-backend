@@ -352,12 +352,13 @@ func (h *Handler) resolveCart(ctx context.Context, tenantID uuid.UUID, requested
 	products := make(map[string]ProductRef, len(public))
 	for id, p := range public {
 		products[id] = ProductRef{
-			ID:          p.ID,
-			Name:        p.Name,
-			Price:       p.Price,
-			Available:   p.Available,
-			AllowsNotes: p.AllowsNotes,
-			Addons:      toAddonRefs(p.Addons),
+			ID:           p.ID,
+			Name:         p.Name,
+			Price:        p.Price,
+			Available:    p.Available,
+			AllowsNotes:  p.AllowsNotes,
+			Addons:       toAddonRefs(p.Addons),
+			OptionGroups: toOptionGroupRefs(p.OptionGroups),
 		}
 	}
 	// Merge duplicate lines for the same product so a tampered payload cannot
@@ -394,6 +395,28 @@ func toAddonRefs(addons []storefront.Addon) []AddonRef {
 	out := make([]AddonRef, 0, len(addons))
 	for _, a := range addons {
 		out = append(out, AddonRef{ID: a.ID, Name: a.Name, Price: a.Price, MaxQty: a.MaxQty})
+	}
+	return out
+}
+
+func toOptionGroupRefs(groups []storefront.OptionGroup) []OptionGroupRef {
+	out := make([]OptionGroupRef, 0, len(groups))
+	for _, g := range groups {
+		if !g.IsActive {
+			continue
+		}
+		ids := make([]string, 0, len(g.Options))
+		for _, o := range g.Options {
+			if o.IsActive {
+				ids = append(ids, o.ID)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		out = append(out, OptionGroupRef{
+			ID: g.ID, Name: g.Name, Selection: g.Selection, Required: g.Required, OptionIDs: ids,
+		})
 	}
 	return out
 }

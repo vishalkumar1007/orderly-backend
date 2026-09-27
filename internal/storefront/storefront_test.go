@@ -58,13 +58,14 @@ func TestEveryPresetProducesCompleteTokens(t *testing.T) {
 		"--sf-primary", "--sf-primary-ink", "--sf-primary-soft", "--sf-primary-rgb",
 		"--sf-secondary", "--sf-accent", "--sf-radius", "--sf-radius-lg",
 		"--sf-btn-radius", "--sf-font", "--sf-card-shadow", "--sf-header-bg",
-		"--sf-hero-gradient", "--sf-focus-ring",
+		"--sf-hero-gradient", "--sf-focus-ring", "--sf-product-layout", "--sf-filter-style",
 	}
 	for _, p := range Presets() {
 		theme := Theme{
 			Preset: p.ID, Mode: p.Mode, Font: p.Font, Radius: p.Radius,
 			Button: p.ButtonStyle, Card: p.CardStyle, Header: p.HeaderStyle,
-			Hero: p.HeroStyle, Primary: p.Primary, Secondary: p.Secondary, Accent: p.Accent,
+			Hero: p.HeroStyle, Layout: LayoutList, Filter: FilterChips,
+			Primary: p.Primary, Secondary: p.Secondary, Accent: p.Accent,
 		}
 		vars := theme.CSSVars()
 		for _, key := range required {

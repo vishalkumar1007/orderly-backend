@@ -60,12 +60,12 @@ const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (
     name, slug, business_type, owner_name, phone, email, address, status, is_published, plan_id, setup_status,
     theme_preset_id, theme_color_mode, theme_overrides,
-    logo_url, favicon_url, short_description, currency, timezone, language, store_status
+    logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $10, $11, $12, $13,
-    $14, $15, $16, $17, $18, $19, $20
+    $14, $15, $16, $17, $18, $19, $20, $21
 )
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type CreateTenantParams struct {
@@ -89,6 +89,7 @@ type CreateTenantParams struct {
 	Timezone         string      `json:"timezone"`
 	Language         string      `json:"language"`
 	StoreStatus      string      `json:"store_status"`
+	StatusMessage    string      `json:"status_message"`
 }
 
 func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error) {
@@ -113,6 +114,7 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		arg.Timezone,
 		arg.Language,
 		arg.StoreStatus,
+		arg.StatusMessage,
 	)
 	var i Tenant
 	err := row.Scan(
@@ -140,12 +142,14 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
 
 const getTenantByID = `-- name: GetTenantByID :one
-SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status FROM tenants
+SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message FROM tenants
 WHERE id = $1
 LIMIT 1
 `
@@ -178,12 +182,14 @@ func (q *Queries) GetTenantByID(ctx context.Context, id pgtype.UUID) (Tenant, er
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
 
 const getTenantBySlug = `-- name: GetTenantBySlug :one
-SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status FROM tenants
+SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message FROM tenants
 WHERE slug = $1
 LIMIT 1
 `
@@ -216,13 +222,15 @@ func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, err
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
 
 const getTenantWithPlanByID = `-- name: GetTenantWithPlanByID :one
 SELECT
-    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status,
+    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status, t.shop_type, t.status_message,
     p.name AS plan_name,
     p.price AS plan_price,
     tp.name AS theme_name,
@@ -270,6 +278,8 @@ func (q *Queries) GetTenantWithPlanByID(ctx context.Context, id pgtype.UUID) (Ge
 		&i.Tenant.Timezone,
 		&i.Tenant.Language,
 		&i.Tenant.StoreStatus,
+		&i.Tenant.ShopType,
+		&i.Tenant.StatusMessage,
 		&i.PlanName,
 		&i.PlanPrice,
 		&i.ThemeName,
@@ -279,7 +289,7 @@ func (q *Queries) GetTenantWithPlanByID(ctx context.Context, id pgtype.UUID) (Ge
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status FROM tenants
+SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message FROM tenants
 ORDER BY created_at DESC
 `
 
@@ -317,6 +327,8 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 			&i.Timezone,
 			&i.Language,
 			&i.StoreStatus,
+			&i.ShopType,
+			&i.StatusMessage,
 		); err != nil {
 			return nil, err
 		}
@@ -330,7 +342,7 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 
 const listTenantsWithPlans = `-- name: ListTenantsWithPlans :many
 SELECT
-    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status,
+    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status, t.shop_type, t.status_message,
     p.name AS plan_name,
     p.price AS plan_price,
     tp.name AS theme_name,
@@ -383,6 +395,8 @@ func (q *Queries) ListTenantsWithPlans(ctx context.Context) ([]ListTenantsWithPl
 			&i.Tenant.Timezone,
 			&i.Tenant.Language,
 			&i.Tenant.StoreStatus,
+			&i.Tenant.ShopType,
+			&i.Tenant.StatusMessage,
 			&i.PlanName,
 			&i.PlanPrice,
 			&i.ThemeName,
@@ -402,7 +416,7 @@ const setTenantPublished = `-- name: SetTenantPublished :one
 UPDATE tenants
 SET is_published = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type SetTenantPublishedParams struct {
@@ -438,6 +452,8 @@ func (q *Queries) SetTenantPublished(ctx context.Context, arg SetTenantPublished
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
@@ -446,7 +462,7 @@ const setTenantSetupStatus = `-- name: SetTenantSetupStatus :one
 UPDATE tenants
 SET setup_status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type SetTenantSetupStatusParams struct {
@@ -482,6 +498,8 @@ func (q *Queries) SetTenantSetupStatus(ctx context.Context, arg SetTenantSetupSt
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
@@ -490,7 +508,7 @@ const setTenantStatus = `-- name: SetTenantStatus :one
 UPDATE tenants
 SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type SetTenantStatusParams struct {
@@ -526,6 +544,8 @@ func (q *Queries) SetTenantStatus(ctx context.Context, arg SetTenantStatusParams
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
@@ -538,7 +558,7 @@ SET
     theme_overrides = $4,
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type SetTenantThemeParams struct {
@@ -581,6 +601,8 @@ func (q *Queries) SetTenantTheme(ctx context.Context, arg SetTenantThemeParams) 
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
@@ -601,9 +623,10 @@ SET
     timezone = COALESCE($11, timezone),
     language = COALESCE($12, language),
     store_status = COALESCE($13, store_status),
+    status_message = COALESCE($14, status_message),
     updated_at = now()
-WHERE id = $14
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+WHERE id = $15
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type UpdateTenantParams struct {
@@ -620,6 +643,7 @@ type UpdateTenantParams struct {
 	Timezone         pgtype.Text `json:"timezone"`
 	Language         pgtype.Text `json:"language"`
 	StoreStatus      pgtype.Text `json:"store_status"`
+	StatusMessage    pgtype.Text `json:"status_message"`
 	ID               pgtype.UUID `json:"id"`
 }
 
@@ -638,6 +662,7 @@ func (q *Queries) UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Ten
 		arg.Timezone,
 		arg.Language,
 		arg.StoreStatus,
+		arg.StatusMessage,
 		arg.ID,
 	)
 	var i Tenant
@@ -666,6 +691,8 @@ func (q *Queries) UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Ten
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }
@@ -674,7 +701,7 @@ const updateTenantPlanID = `-- name: UpdateTenantPlanID :one
 UPDATE tenants
 SET plan_id = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
 `
 
 type UpdateTenantPlanIDParams struct {
@@ -710,6 +737,8 @@ func (q *Queries) UpdateTenantPlanID(ctx context.Context, arg UpdateTenantPlanID
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
+		&i.ShopType,
+		&i.StatusMessage,
 	)
 	return i, err
 }

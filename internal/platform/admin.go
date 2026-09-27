@@ -69,6 +69,7 @@ type createTenantRequest struct {
 	Timezone         string          `json:"timezone"`
 	Language         string          `json:"language"`
 	StoreStatus      string          `json:"store_status"`
+	StatusMessage    string          `json:"status_message"`
 }
 
 type updateTenantRequest struct {
@@ -85,6 +86,7 @@ type updateTenantRequest struct {
 	Timezone         *string `json:"timezone"`
 	Language         *string `json:"language"`
 	StoreStatus      *string `json:"store_status"`
+	StatusMessage    *string `json:"status_message"`
 }
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +233,10 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		currency = "INR"
 	}
 	storeStatus := strings.ToUpper(strings.TrimSpace(req.StoreStatus))
-	if storeStatus != "CLOSED" {
+	switch storeStatus {
+	case "OPEN", "BUSY", "AWAY", "CLOSED":
+		// valid
+	default:
 		storeStatus = "OPEN"
 	}
 	adminPhone := strings.TrimSpace(req.AdminPhone)
@@ -270,6 +275,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		LogoUrl: req.LogoURL, FaviconUrl: req.FaviconURL,
 		ShortDescription: req.ShortDescription, Currency: currency,
 		Timezone: req.Timezone, Language: req.Language, StoreStatus: storeStatus,
+		StatusMessage: "",
 	})
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") || strings.Contains(err.Error(), "tenants_slug") {
@@ -566,10 +572,20 @@ func (h *Handler) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.StoreStatus != nil {
 		st := strings.ToUpper(strings.TrimSpace(*req.StoreStatus))
-		if st != "CLOSED" {
+		switch st {
+		case "OPEN", "BUSY", "AWAY", "CLOSED":
+			// valid
+		default:
 			st = "OPEN"
 		}
 		params.StoreStatus = pgtype.Text{String: st, Valid: true}
+	}
+	if req.StatusMessage != nil {
+		msg := strings.TrimSpace(*req.StatusMessage)
+		if len([]rune(msg)) > 200 {
+			msg = string([]rune(msg)[:200])
+		}
+		params.StatusMessage = pgtype.Text{String: msg, Valid: true}
 	}
 	if _, err := h.q.UpdateTenant(r.Context(), params); err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "tenant not found")
@@ -854,6 +870,8 @@ func tenantJSONEnriched(t sqlc.Tenant, planName pgtype.Text, planPrice pgtype.Nu
 		"timezone":          t.Timezone,
 		"language":          t.Language,
 		"store_status":      t.StoreStatus,
+		"status_message":    t.StatusMessage,
+		"shop_type":         t.ShopType,
 	}
 	if planName.Valid {
 		out["plan"] = planName.String

@@ -2,7 +2,6 @@ package storefront
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -28,29 +27,38 @@ type Addon struct {
 
 // Product is the public projection of a menu product.
 type Product struct {
-	ID          string  `json:"id"`
-	CategoryID  string  `json:"category_id"`
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Price       float64 `json:"price"`
-	ImageURL    string  `json:"image_url,omitempty"`
-	Available   bool    `json:"is_available"`
-	Vegetarian  bool    `json:"is_vegetarian"`
-	Featured    bool    `json:"is_featured"`
-	Popular     bool    `json:"is_popular"`
-	AllowsNotes bool    `json:"allow_special_instructions"`
-	Addons      []Addon `json:"addons"`
-	SortOrder   int32   `json:"sort_order"`
+	ID           string        `json:"id"`
+	CategoryID   string        `json:"category_id"`
+	Name         string        `json:"name"`
+	Description  string        `json:"description"`
+	Price        float64       `json:"price"`
+	ImageURL     string        `json:"image_url,omitempty"`
+	Available    bool          `json:"is_available"`
+	Vegetarian   bool          `json:"is_vegetarian"`
+	Featured     bool          `json:"is_featured"`
+	Popular      bool          `json:"is_popular"`
+	AllowsNotes  bool          `json:"allow_special_instructions"`
+	Addons       []Addon       `json:"addons"`
+	OptionGroups []OptionGroup `json:"option_groups"`
+	SortOrder    int32         `json:"sort_order"`
 }
 
 // HasAddons reports whether the product needs a customisation step.
-func (p Product) HasAddons() bool { return len(p.Addons) > 0 }
+func (p Product) HasAddons() bool {
+	for _, g := range p.OptionGroups {
+		if g.IsActive && len(g.Options) > 0 {
+			return true
+		}
+	}
+	return len(p.Addons) > 0
+}
 
 // Category groups products for the storefront menu.
 type Category struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
+	ImageURL    string    `json:"image_url,omitempty"`
 	SortOrder   int32     `json:"sort_order"`
 	Products    []Product `json:"products"`
 }
@@ -130,10 +138,15 @@ func (c *Catalog) LoadMenu(ctx context.Context, tenantID uuid.UUID) (*Menu, erro
 		if items == nil {
 			items = []Product{}
 		}
+		img := ""
+		if cat.ImageUrl.Valid {
+			img = cat.ImageUrl.String
+		}
 		menu.Categories = append(menu.Categories, Category{
 			ID:          cid,
 			Name:        cat.Name,
 			Description: cat.Description,
+			ImageURL:    img,
 			SortOrder:   cat.SortOrder,
 			Products:    items,
 		})
@@ -232,60 +245,41 @@ func toPublicProducts(rows []sqlc.Product) []Product {
 }
 
 func publicProduct(p sqlc.Product) Product {
+	groups := ParseOptionGroups(p.Addons)
+	// Public menu only exposes active groups/options.
+	pubGroups := make([]OptionGroup, 0, len(groups))
+	for _, g := range groups {
+		if !g.IsActive {
+			continue
+		}
+		opts := make([]GroupOption, 0, len(g.Options))
+		for _, o := range g.Options {
+			if o.IsActive {
+				opts = append(opts, o)
+			}
+		}
+		if len(opts) == 0 {
+			continue
+		}
+		g.Options = opts
+		pubGroups = append(pubGroups, g)
+	}
 	return Product{
-		ID:          pgutil.UUIDString(p.ID),
-		CategoryID:  pgutil.UUIDString(p.CategoryID),
-		Name:        p.Name,
-		Description: p.Description,
-		Price:       pgutil.NumericToFloat(p.Price),
-		ImageURL:    p.ImageUrl.String,
-		Available:   p.IsAvailable,
-		Vegetarian:  p.IsVegetarian,
-		Featured:    p.IsFeatured,
-		Popular:     p.IsPopular,
-		AllowsNotes: p.AllowSpecialInstructions,
-		Addons:      ParseAddons(p.Addons),
-		SortOrder:   p.SortOrder,
+		ID:           pgutil.UUIDString(p.ID),
+		CategoryID:   pgutil.UUIDString(p.CategoryID),
+		Name:         p.Name,
+		Description:  p.Description,
+		Price:        pgutil.NumericToFloat(p.Price),
+		ImageURL:     p.ImageUrl.String,
+		Available:    p.IsAvailable,
+		Vegetarian:   p.IsVegetarian,
+		Featured:     p.IsFeatured,
+		Popular:      p.IsPopular,
+		AllowsNotes:  p.AllowSpecialInstructions,
+		Addons:       FlattenOptionGroups(pubGroups),
+		OptionGroups: pubGroups,
+		SortOrder:    p.SortOrder,
 	}
-}
-
-// ParseAddons reads a product's add-on catalogue, dropping malformed entries.
-func ParseAddons(raw []byte) []Addon {
-	out := []Addon{}
-	if len(raw) == 0 {
-		return out
-	}
-	var docs []struct {
-		ID     string  `json:"id"`
-		Name   string  `json:"name"`
-		Price  float64 `json:"price"`
-		MaxQty int     `json:"max_qty"`
-	}
-	if err := json.Unmarshal(raw, &docs); err != nil {
-		return out
-	}
-	for i, d := range docs {
-		name := strings.TrimSpace(d.Name)
-		if name == "" {
-			continue
-		}
-		if d.Price < 0 {
-			continue
-		}
-		maxQty := d.MaxQty
-		if maxQty <= 0 {
-			maxQty = 1
-		}
-		if maxQty > 20 {
-			maxQty = 20
-		}
-		id := strings.TrimSpace(d.ID)
-		if id == "" {
-			id = slugify(name, i)
-		}
-		out = append(out, Addon{ID: id, Name: name, Price: round2(d.Price), MaxQty: maxQty})
-	}
-	return out
 }
 
 // FindAddon looks up an add-on by id on a product.
