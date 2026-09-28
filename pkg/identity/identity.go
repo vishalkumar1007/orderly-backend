@@ -29,7 +29,15 @@ func UserFromContext(ctx context.Context) (User, bool) {
 }
 
 const (
-	RoleSuperAdmin  = "SUPER_ADMIN"
+	// Platform roles. All three have a NULL tenant_id and none of them grants
+	// anything inside a business.
+	RoleSuperAdmin    = "SUPER_ADMIN"
+	RolePlatformAdmin = "PLATFORM_ADMIN"
+	RoleSupport       = "SUPPORT"
+
 	RoleTenantAdmin = "TENANT_ADMIN"
-	RoleStaff       = "STAFF"
+	// RoleManager runs a shop day to day without being able to reconfigure the
+	// business. See permissions.go for exactly what that means.
+	RoleManager = "MANAGER"
+	RoleStaff   = "STAFF"
 )

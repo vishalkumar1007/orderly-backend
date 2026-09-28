@@ -11,10 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteStorefrontDraft = `-- name: DeleteStorefrontDraft :exec
+DELETE FROM tenant_storefront_drafts
+WHERE tenant_id = $1
+`
+
+func (q *Queries) DeleteStorefrontDraft(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteStorefrontDraft, tenantID)
+	return err
+}
+
 const ensureStorefrontSettings = `-- name: EnsureStorefrontSettings :one
 INSERT INTO tenant_storefront_settings (tenant_id, business_name, phone, address, logo_url, favicon_url, tagline)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (tenant_id) DO UPDATE SET updated_at = now()
+ON CONFLICT (tenant_id) DO UPDATE SET updated_at = tenant_storefront_settings.updated_at
 RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode
 `
 
@@ -28,6 +38,14 @@ type EnsureStorefrontSettingsParams struct {
 	Tagline      string      `json:"tagline"`
 }
 
+// Creates the row on first use and otherwise returns it untouched.
+//
+// The no-op assignment is deliberate: ON CONFLICT DO NOTHING returns no row, so
+// the conflict branch has to assign something, and it must not be `now()`.
+// Bumping updated_at here meant *reading* a storefront counted as changing it —
+// which made `updated_at` useless as a version, told every client the shop had
+// just been edited, and marked every Studio draft stale the moment anyone
+// looked at the page it was drafted from.
 func (q *Queries) EnsureStorefrontSettings(ctx context.Context, arg EnsureStorefrontSettingsParams) (TenantStorefrontSetting, error) {
 	row := q.db.QueryRow(ctx, ensureStorefrontSettings,
 		arg.TenantID,
@@ -221,6 +239,24 @@ func (q *Queries) GetStorefrontConfig(ctx context.Context, tenantID pgtype.UUID)
 		&i.Homepage,
 		&i.Payments,
 		&i.Workflow,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getStorefrontDraft = `-- name: GetStorefrontDraft :one
+SELECT tenant_id, document, base_version, updated_by, updated_at FROM tenant_storefront_drafts
+WHERE tenant_id = $1
+`
+
+func (q *Queries) GetStorefrontDraft(ctx context.Context, tenantID pgtype.UUID) (TenantStorefrontDraft, error) {
+	row := q.db.QueryRow(ctx, getStorefrontDraft, tenantID)
+	var i TenantStorefrontDraft
+	err := row.Scan(
+		&i.TenantID,
+		&i.Document,
+		&i.BaseVersion,
+		&i.UpdatedBy,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -839,6 +875,44 @@ func (q *Queries) UpdateStorefrontWorkflow(ctx context.Context, arg UpdateStoref
 		&i.ProductLayout,
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
+	)
+	return i, err
+}
+
+const upsertStorefrontDraft = `-- name: UpsertStorefrontDraft :one
+INSERT INTO tenant_storefront_drafts (tenant_id, document, base_version, updated_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (tenant_id) DO UPDATE
+SET document   = EXCLUDED.document,
+    updated_by = EXCLUDED.updated_by,
+    updated_at = now()
+RETURNING tenant_id, document, base_version, updated_by, updated_at
+`
+
+type UpsertStorefrontDraftParams struct {
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	Document    []byte             `json:"document"`
+	BaseVersion pgtype.Timestamptz `json:"base_version"`
+	UpdatedBy   pgtype.UUID        `json:"updated_by"`
+}
+
+// One draft per shop: saving again replaces it rather than stacking versions.
+// `base_version` is only set the first time, so a running autosave cannot move
+// the point the draft is being compared against.
+func (q *Queries) UpsertStorefrontDraft(ctx context.Context, arg UpsertStorefrontDraftParams) (TenantStorefrontDraft, error) {
+	row := q.db.QueryRow(ctx, upsertStorefrontDraft,
+		arg.TenantID,
+		arg.Document,
+		arg.BaseVersion,
+		arg.UpdatedBy,
+	)
+	var i TenantStorefrontDraft
+	err := row.Scan(
+		&i.TenantID,
+		&i.Document,
+		&i.BaseVersion,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

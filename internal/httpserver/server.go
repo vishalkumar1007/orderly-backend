@@ -162,125 +162,210 @@ func (s *Server) Router() http.Handler {
 
 		api.Route("/admin", func(ar chi.Router) {
 			ar.Use(auth.Middleware(s.auth))
-			ar.Use(auth.RequireRoles(identity.RoleSuperAdmin))
-			ar.Get("/dashboard", s.admin.Dashboard)
-			ar.Get("/settings", s.admin.Settings)
-			ar.Patch("/settings", s.admin.PatchSettings)
+			// Three console roles, not one. Which of them may reach a given
+			// screen is decided by the capability guards below rather than by
+			// this list, so adding a role never means auditing every route.
+			ar.Use(auth.RequireRoles(
+				identity.RoleSuperAdmin, identity.RolePlatformAdmin, identity.RoleSupport,
+			))
+
+			var (
+				canBusinesses = auth.RequirePermission(identity.PermPlatformBusinesses)
+				canPlans      = auth.RequirePermission(identity.PermPlatformPlans)
+				canProviders  = auth.RequirePermission(identity.PermPlatformProviders)
+				canSettings   = auth.RequirePermission(identity.PermPlatformSettings)
+				canConsoleIAM = auth.RequirePermission(identity.PermPlatformIAM)
+				canMonitoring = auth.RequirePermission(identity.PermPlatformMonitoring)
+			)
+
+			/* ---------- Monitoring ---------- */
+			ar.With(canMonitoring).Get("/dashboard", s.admin.Dashboard)
+			ar.With(canMonitoring).Get("/audit-logs", s.admin.ListAuditLogs)
+			// Live component status. It probes the API and the database and
+			// reports the configuration stack's own recorded state for the
+			// providers — it never dials a provider.
+			ar.With(canMonitoring).Get("/system-health", s.admin.SystemHealth)
+
+			/* ---------- Platform settings and catalogues ---------- */
+			ar.With(canSettings).Get("/settings", s.admin.Settings)
+			ar.With(canSettings).Patch("/settings", s.admin.PatchSettings)
+			ar.With(canSettings).Post("/theme-presets", s.admin.CreateThemePreset)
+			ar.With(canSettings).Patch("/theme-presets/{id}", s.admin.UpdateThemePreset)
+			ar.With(canSettings).Delete("/theme-presets/{id}", s.admin.DeleteThemePreset)
+			ar.With(canSettings).Post("/tenant-types", s.admin.CreateTenantType)
+			ar.With(canSettings).Patch("/tenant-types/{code}", s.admin.UpdateTenantType)
+
+			// A console operator's own appearance. Ungated for the same reason
+			// its tenant twin is: it changes their screen and nobody else's.
+			// The shared platform default is written through PATCH /settings,
+			// which does require the settings capability.
+			ar.Get("/me/appearance", s.admin.GetMyPlatformAppearance)
+			ar.Patch("/me/appearance", s.admin.UpdateMyPlatformAppearance)
+			ar.Delete("/me/appearance", s.admin.ResetMyPlatformAppearance)
+
+			// Read-only catalogues. Every console screen that renders a business
+			// needs these to label it, including the read-only ones.
 			ar.Get("/theme-presets", s.admin.ListThemePresets)
-			ar.Post("/theme-presets", s.admin.CreateThemePreset)
-			ar.Patch("/theme-presets/{id}", s.admin.UpdateThemePreset)
-			ar.Delete("/theme-presets/{id}", s.admin.DeleteThemePreset)
 			ar.Get("/tenant-types", s.admin.ListTenantTypes)
-			ar.Post("/tenant-types", s.admin.CreateTenantType)
-			ar.Patch("/tenant-types/{code}", s.admin.UpdateTenantType)
-			ar.Get("/plans", s.admin.ListAllPlans)
-			ar.Post("/plans", s.admin.CreatePlan)
-			ar.Patch("/plans/{id}", s.admin.UpdatePlan)
-			ar.Get("/users", s.admin.ListPlatformUsers)
-			ar.Post("/users", s.admin.CreateTenantUser)
-			ar.Patch("/users/{id}", s.admin.UpdateTenantUser)
-			ar.Get("/subscriptions", s.admin.ListSubscriptions)
-			ar.Get("/tenants", s.admin.ListTenants)
-			ar.Get("/tenants/slug-available", s.admin.SlugAvailable)
-			ar.Post("/tenants", s.admin.CreateTenant)
-			ar.Get("/tenants/{id}", s.admin.GetTenant)
-			ar.Post("/tenants/{id}/resend-invite", s.admin.ResendTenantInvite)
-			ar.Get("/tenants/{id}/metrics", s.admin.TenantMetrics)
-			ar.Patch("/tenants/{id}", s.admin.UpdateTenant)
-			ar.Patch("/tenants/{id}/theme", s.admin.UpdateTenantTheme)
-			ar.Post("/tenants/{id}/change-plan", s.admin.ChangeTenantPlan)
-			ar.Post("/tenants/{id}/activate", s.admin.ActivateTenant)
-			ar.Post("/tenants/{id}/suspend", s.admin.SuspendTenant)
-			ar.Get("/tenants/{id}/admins", s.admin.ListTenantAdmins)
-			ar.Get("/tenants/{id}/users", s.admin.ListTenantUsers)
-			ar.Post("/tenants/{id}/users", s.admin.CreateTenantUserForTenant)
-			ar.Patch("/tenants/{id}/users/{userId}", s.admin.UpdateTenantUser)
-			ar.Post("/tenants/{id}/users/{userId}/reset-access", s.admin.ResetTenantUserAccess)
-			ar.Post("/tenants/{id}/users/{userId}/resend-invite", s.admin.ResendTenantUserInvite)
-			ar.Get("/audit-logs", s.admin.ListAuditLogs)
 
-			// Provider configuration, platform level.
-			ar.Get("/configurations", s.configs.ListConfigurations)
-			ar.Get("/configurations/{service}", s.configs.GetConfiguration)
-			ar.Put("/configurations/{service}", s.configs.PutConfiguration)
-			ar.Patch("/configurations/{service}/sharing", s.configs.SetPlatformSharing)
-			ar.Post("/configurations/{service}/test", s.configs.TestConfiguration)
-			ar.Post("/configurations/{service}/test-action", s.configs.TestConfigurationAction)
-			ar.Get("/configurations/{service}/providers", s.configs.ListProviders)
+			/* ---------- Plans and subscriptions ---------- */
+			ar.With(canPlans).Get("/plans", s.admin.ListAllPlans)
+			ar.With(canPlans).Post("/plans", s.admin.CreatePlan)
+			ar.With(canPlans).Patch("/plans/{id}", s.admin.UpdatePlan)
+			ar.With(canPlans).Get("/subscriptions", s.admin.ListSubscriptions)
+			ar.With(canPlans).Post("/tenants/{id}/change-plan", s.admin.ChangeTenantPlan)
 
-			// Per-tenant platform-access control.
-			ar.Get("/tenant-configurations", s.configs.ListAllTenantConfigurations)
-			ar.Get("/tenants/{id}/configurations", s.configs.ListTenantConfigurations)
-			ar.Put("/tenants/{id}/configurations/{service}/access", s.configs.SetTenantAccess)
+			/* ---------- Businesses ----------
+			 *
+			 * The console owns the business *account*: who it is, what it pays
+			 * for, and whether it is allowed to trade. It does not own the shop.
+			 * There is deliberately no route here that writes a tenant's theme,
+			 * storefront, menu, opening hours or store status — those belong to
+			 * the people who run the business, on their own host.
+			 */
+			ar.With(canBusinesses).Get("/tenants", s.admin.ListTenants)
+			ar.With(canBusinesses).Get("/tenants/slug-available", s.admin.SlugAvailable)
+			ar.With(canBusinesses).Post("/tenants", s.admin.CreateTenant)
+			ar.With(canBusinesses).Get("/tenants/{id}", s.admin.GetTenant)
+			ar.With(canBusinesses).Get("/tenants/{id}/metrics", s.admin.TenantMetrics)
+			ar.With(canBusinesses).Patch("/tenants/{id}", s.admin.UpdateTenant)
+			ar.With(canBusinesses).Post("/tenants/{id}/activate", s.admin.ActivateTenant)
+			ar.With(canBusinesses).Post("/tenants/{id}/suspend", s.admin.SuspendTenant)
+			// Recovering the owner's access is support, not staff management:
+			// without it a business whose administrator lost their invitation
+			// has no way back in.
+			ar.With(canBusinesses).Post("/tenants/{id}/resend-invite", s.admin.ResendTenantInvite)
+
+			/* ---------- Console access ----------
+			 *
+			 * Who can reach this console. A business's own staff are invited
+			 * and managed inside that business, by someone who works there —
+			 * there is no route here that creates or edits a tenant user.
+			 */
+			ar.With(canConsoleIAM).Get("/users", s.admin.ListConsoleUsers)
+			ar.With(canConsoleIAM).Post("/users", s.admin.CreateConsoleUser)
+			ar.With(canConsoleIAM).Patch("/users/{id}", s.admin.UpdateConsoleUser)
+			ar.With(canConsoleIAM).Post("/users/{id}/resend-invite", s.admin.ResendConsoleInvite)
+
+			/* ---------- Providers ---------- */
+			ar.With(canProviders).Get("/configurations", s.configs.ListConfigurations)
+			ar.With(canProviders).Get("/configurations/{service}", s.configs.GetConfiguration)
+			ar.With(canProviders).Put("/configurations/{service}", s.configs.PutConfiguration)
+			ar.With(canProviders).Patch("/configurations/{service}/sharing", s.configs.SetPlatformSharing)
+			ar.With(canProviders).Post("/configurations/{service}/test", s.configs.TestConfiguration)
+			ar.With(canProviders).Post("/configurations/{service}/test-action", s.configs.TestConfigurationAction)
+			ar.With(canProviders).Get("/configurations/{service}/providers", s.configs.ListProviders)
+
+			// Per-business access to platform providers.
+			ar.With(canProviders).Get("/tenant-configurations", s.configs.ListAllTenantConfigurations)
+			ar.With(canProviders).Get("/tenants/{id}/configurations", s.configs.ListTenantConfigurations)
+			ar.With(canProviders).Put("/tenants/{id}/configurations/{service}/access", s.configs.SetTenantAccess)
 		})
 
 		api.Route("/tenant", func(tr chi.Router) {
 			tr.Use(auth.Middleware(s.auth))
-			tr.Use(auth.RequireRoles(identity.RoleTenantAdmin, identity.RoleStaff))
+			tr.Use(auth.RequireRoles(identity.RoleTenantAdmin, identity.RoleManager, identity.RoleStaff))
 			tr.Use(auth.RequireTenant)
 			tr.Use(auth.MatchHostTenant)
 
-			tr.Get("/configurations", s.configs.ListTenantServicesFunc(s.tenantIDOf))
-			tr.Get("/configurations/{service}", s.configs.GetTenantServiceFunc(s.tenantIDOf))
-			tr.Put("/configurations/{service}", s.configs.PutTenantServiceFunc(s.tenantIDOf))
-			tr.Delete("/configurations/{service}", s.configs.DeleteTenantServiceFunc(s.tenantIDOf))
-			tr.Post("/configurations/{service}/test", s.configs.TestTenantServiceFunc(s.tenantIDOf))
-			tr.Post("/configurations/{service}/test-action", s.configs.TestTenantServiceActionFunc(s.tenantIDOf))
-			tr.Get("/configurations/{service}/effective", s.configs.GetEffectiveFunc(s.tenantIDOf))
-			tr.Get("/service-preferences", s.configs.ListPreferencesFunc(s.tenantIDOf))
-			tr.Put("/service-preferences/{service}", s.configs.SetPreferenceFunc(s.tenantIDOf))
+			// Capability guards. Routes name what they need rather than who may
+			// call them, so adding a role is a change to one table
+			// (pkg/identity/permissions.go) instead of a sweep through here.
+			var (
+				canSell        = auth.RequirePermission(identity.PermSelling)
+				canMenu        = auth.RequirePermission(identity.PermMenu)
+				canCustomers   = auth.RequirePermission(identity.PermCustomers)
+				canStaff       = auth.RequirePermission(identity.PermStaff)
+				canStorefront  = auth.RequirePermission(identity.PermStorefront)
+				canOrg         = auth.RequirePermission(identity.PermOrganization)
+				canIntegration = auth.RequirePermission(identity.PermIntegrations)
+				canAnalytics   = auth.RequirePermission(identity.PermAnalytics)
+				canActivity    = auth.RequirePermission(identity.PermActivity)
+				canIAM         = auth.RequirePermission(identity.PermIAM)
+			)
 
+			tr.With(canIntegration).Get("/configurations", s.configs.ListTenantServicesFunc(s.tenantIDOf))
+			tr.With(canIntegration).Get("/configurations/{service}", s.configs.GetTenantServiceFunc(s.tenantIDOf))
+			tr.With(canIntegration).Put("/configurations/{service}", s.configs.PutTenantServiceFunc(s.tenantIDOf))
+			tr.With(canIntegration).Delete("/configurations/{service}", s.configs.DeleteTenantServiceFunc(s.tenantIDOf))
+			tr.With(canIntegration).Post("/configurations/{service}/test", s.configs.TestTenantServiceFunc(s.tenantIDOf))
+			tr.With(canIntegration).Post("/configurations/{service}/test-action", s.configs.TestTenantServiceActionFunc(s.tenantIDOf))
+			tr.With(canIntegration).Get("/configurations/{service}/effective", s.configs.GetEffectiveFunc(s.tenantIDOf))
+			tr.With(canIntegration).Get("/service-preferences", s.configs.ListPreferencesFunc(s.tenantIDOf))
+			tr.With(canIntegration).Put("/service-preferences/{service}", s.configs.SetPreferenceFunc(s.tenantIDOf))
+
+			// Read-only shell data. Every signed-in member of the business needs
+			// these to render the console at all, including staff.
 			tr.Get("/theme", s.admin.GetMyTenantTheme)
-			tr.Patch("/theme", s.admin.UpdateMyTenantTheme)
 			tr.Get("/theme-presets", s.admin.ListThemePresets)
-			tr.Get("/dashboard", s.menu.Dashboard)
-			tr.Get("/analytics", s.menu.Analytics)
 			tr.Get("/store-link", s.shop.StoreLink)
 			tr.Get("/setup", s.menu.SetupStatus)
-			tr.Post("/setup/complete-step", s.menu.CompleteSetupStep)
-			tr.Post("/publish", s.menu.Publish)
-			tr.Post("/unpublish", s.menu.Unpublish)
 
-			tr.Get("/categories", s.menu.ListCategories)
-			tr.Post("/categories", s.menu.CreateCategory)
-			tr.Post("/categories/reorder", s.menu.ReorderCategories)
-			tr.Patch("/categories/{id}", s.menu.UpdateCategory)
-			tr.Delete("/categories/{id}", s.menu.DeleteCategory)
+			// A person's own console appearance. Deliberately ungated: it
+			// changes their screen and nobody else's, so requiring a
+			// configuration capability would mean a staff member cannot pick
+			// dark mode while an owner can rewrite the storefront. Writing the
+			// *business* default is the owner-only PATCH /theme below.
+			tr.Get("/me/appearance", s.admin.GetMyConsoleAppearance)
+			tr.Patch("/me/appearance", s.admin.UpdateMyConsoleAppearance)
+			tr.Delete("/me/appearance", s.admin.ResetMyConsoleAppearance)
 
-			tr.Get("/products", s.menu.ListProducts)
-			tr.Post("/products", s.menu.CreateProduct)
-			tr.Post("/products/reorder", s.menu.ReorderProducts)
-			tr.Get("/products/{id}", s.menu.GetProduct)
-			tr.Post("/products/{id}/duplicate", s.menu.DuplicateProduct)
-			tr.Patch("/products/{id}", s.menu.UpdateProduct)
-			tr.Delete("/products/{id}", s.menu.DeleteProduct)
+			tr.With(canStorefront).Patch("/theme", s.admin.UpdateMyTenantTheme)
+			tr.With(canAnalytics).Get("/dashboard", s.menu.Dashboard)
+			tr.With(canAnalytics).Get("/analytics", s.menu.Analytics)
+			tr.With(canStorefront).Post("/setup/complete-step", s.menu.CompleteSetupStep)
+			tr.With(canStorefront).Post("/publish", s.menu.Publish)
+			tr.With(canStorefront).Post("/unpublish", s.menu.Unpublish)
 
-			// Image upload for menu items.
-			s.upload.UploadRoutes(tr)
+			// Activity and audit: the business's own history.
+			tr.With(canActivity).Get("/order-history", s.orders.OrderHistory)
+			tr.With(canActivity).Get("/activity", s.orders.ActivityFeed)
+			tr.With(canActivity).Get("/audit-logs", s.admin.ShopAuditLogs)
 
-			tr.Get("/orders", s.orders.ListOrders)
-			tr.Post("/orders", s.orders.StaffCreateOrder)
-			tr.Get("/orders/{id}", s.orders.GetOrder)
-			tr.Post("/orders/{id}/accept", s.orders.Transition("accept"))
-			tr.Post("/orders/{id}/prepare", s.orders.Transition("prepare"))
-			tr.Post("/orders/{id}/ready", s.orders.Transition("ready"))
-			tr.Post("/orders/{id}/complete", s.orders.Transition("complete"))
-			tr.Post("/orders/{id}/cancel", s.orders.CancelStaffOrder)
-			tr.Post("/payments/{id}/confirm", s.orders.ConfirmPayment)
+			// Access control.
+			tr.With(canIAM).Get("/iam", s.admin.ShopIAM)
 
-			// Staff & customer management — tenant admin only.
-			ownerOnly := auth.RequireRoles(identity.RoleTenantAdmin)
+			tr.With(canMenu).Get("/categories", s.menu.ListCategories)
+			tr.With(canMenu).Post("/categories", s.menu.CreateCategory)
+			tr.With(canMenu).Post("/categories/reorder", s.menu.ReorderCategories)
+			tr.With(canMenu).Patch("/categories/{id}", s.menu.UpdateCategory)
+			tr.With(canMenu).Delete("/categories/{id}", s.menu.DeleteCategory)
 
-			tr.With(ownerOnly).Get("/users", s.admin.ShopListUsers)
-			tr.With(ownerOnly).Post("/users", s.admin.ShopCreateUser)
-			tr.With(ownerOnly).Patch("/users/{userId}", s.admin.ShopUpdateUser)
-			tr.With(ownerOnly).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
-			tr.With(ownerOnly).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
+			tr.With(canMenu).Get("/products", s.menu.ListProducts)
+			tr.With(canMenu).Post("/products", s.menu.CreateProduct)
+			tr.With(canMenu).Post("/products/reorder", s.menu.ReorderProducts)
+			tr.With(canMenu).Get("/products/{id}", s.menu.GetProduct)
+			tr.With(canMenu).Post("/products/{id}/duplicate", s.menu.DuplicateProduct)
+			tr.With(canMenu).Patch("/products/{id}", s.menu.UpdateProduct)
+			tr.With(canMenu).Delete("/products/{id}", s.menu.DeleteProduct)
 
-			tr.With(ownerOnly).Get("/customers", s.customers.ShopListCustomers)
-			tr.With(ownerOnly).Get("/customers/guest", s.customers.ShopGetGuestCustomer)
-			tr.With(ownerOnly).Get("/customers/{id}", s.customers.ShopGetCustomer)
-			tr.With(ownerOnly).Post("/customers/{id}/block", s.customers.ShopSetCustomerBlocked)
+			// Image upload for menu items, so it follows the menu permission.
+			tr.Group(func(ur chi.Router) {
+				ur.Use(canMenu)
+				s.upload.UploadRoutes(ur)
+			})
+
+			tr.With(canSell).Get("/orders", s.orders.ListOrders)
+			tr.With(canSell).Post("/orders", s.orders.StaffCreateOrder)
+			tr.With(canSell).Get("/orders/{id}", s.orders.GetOrder)
+			tr.With(canSell).Post("/orders/{id}/accept", s.orders.Transition("accept"))
+			tr.With(canSell).Post("/orders/{id}/prepare", s.orders.Transition("prepare"))
+			tr.With(canSell).Post("/orders/{id}/ready", s.orders.Transition("ready"))
+			tr.With(canSell).Post("/orders/{id}/complete", s.orders.Transition("complete"))
+			tr.With(canSell).Post("/orders/{id}/cancel", s.orders.CancelStaffOrder)
+			tr.With(canSell).Post("/payments/{id}/confirm", s.orders.ConfirmPayment)
+
+			// Staff and customers. A manager runs both; staff reach neither.
+			tr.With(canStaff).Get("/users", s.admin.ShopListUsers)
+			tr.With(canStaff).Post("/users", s.admin.ShopCreateUser)
+			tr.With(canStaff).Patch("/users/{userId}", s.admin.ShopUpdateUser)
+			tr.With(canStaff).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
+			tr.With(canStaff).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
+
+			tr.With(canCustomers).Get("/customers", s.customers.ShopListCustomers)
+			tr.With(canCustomers).Get("/customers/guest", s.customers.ShopGetGuestCustomer)
+			tr.With(canCustomers).Get("/customers/{id}", s.customers.ShopGetCustomer)
+			tr.With(canCustomers).Post("/customers/{id}/block", s.customers.ShopSetCustomerBlocked)
 
 			// Storefront configuration. The tenant comes from the verified
 			// staff token and the request host, so one shop can never read or
@@ -291,35 +376,43 @@ func (s *Server) Router() http.Handler {
 			// packaging fee or payment rules they are then expected to collect, and
 			// they cannot unpublish a live storefront. The list is short enough that
 			// inline middleware is clearer than a second router.
-			tr.With(ownerOnly).Get("/storefront", s.shop.GetStorefront)
-			tr.With(ownerOnly).Put("/storefront", s.shop.PutStorefront)
-			tr.With(ownerOnly).Put("/storefront/theme", s.shop.PutTheme)
-			tr.With(ownerOnly).Put("/storefront/homepage", s.shop.PutHomepage)
-			tr.With(ownerOnly).Put("/storefront/hours", s.shop.PutOpeningHours)
-			tr.With(ownerOnly).Get("/storefront/preview", s.shop.PreviewMenu)
-			tr.With(ownerOnly).Get("/storefront/qr", s.shop.QRCode)
+			tr.With(canStorefront).Get("/storefront", s.shop.GetStorefront)
+			tr.With(canStorefront).Put("/storefront", s.shop.PutStorefront)
+			tr.With(canStorefront).Put("/storefront/theme", s.shop.PutTheme)
+			tr.With(canStorefront).Put("/storefront/homepage", s.shop.PutHomepage)
+			tr.With(canOrg).Put("/storefront/hours", s.shop.PutOpeningHours)
+			tr.With(canStorefront).Get("/storefront/preview", s.shop.PreviewMenu)
+			tr.With(canStorefront).Get("/storefront/qr", s.shop.QRCode)
 
 			// Route aliases for /customize. Admin clients must call these on the
 			// tenant Host ({slug}.{baseDomain}), never on the bare API host —
 			// MatchHostTenant rejects cross-host tokens.
-			tr.With(ownerOnly).Get("/customize", s.shop.GetStorefront)
-			tr.With(ownerOnly).Put("/customize", s.shop.PutStorefront)
-			tr.With(ownerOnly).Put("/customize/theme", s.shop.PutTheme)
-			tr.With(ownerOnly).Put("/customize/homepage", s.shop.PutHomepage)
-			tr.With(ownerOnly).Put("/customize/hours", s.shop.PutOpeningHours)
-			tr.With(ownerOnly).Put("/customize/payments", s.shop.PutPaymentSettings)
-			tr.With(ownerOnly).Put("/customize/workflow", s.shop.PutOrderWorkflow)
-			tr.With(ownerOnly).Get("/customize/preview", s.shop.PreviewMenu)
-			tr.With(ownerOnly).Get("/customize/qr", s.shop.QRCode)
+			tr.With(canStorefront).Get("/customize", s.shop.GetStorefront)
+			tr.With(canStorefront).Put("/customize", s.shop.PutStorefront)
+			tr.With(canStorefront).Put("/customize/theme", s.shop.PutTheme)
+			tr.With(canStorefront).Put("/customize/homepage", s.shop.PutHomepage)
+			tr.With(canOrg).Put("/customize/hours", s.shop.PutOpeningHours)
+			tr.With(canOrg).Put("/customize/payments", s.shop.PutPaymentSettings)
+			tr.With(canOrg).Put("/customize/workflow", s.shop.PutOrderWorkflow)
+			// The Studio's draft: a working copy that belongs to the shop
+			// rather than to one browser, and a publish that is one
+			// transaction rather than six writes with no way back.
+			tr.With(canStorefront).Get("/customize/draft", s.shop.GetDraft)
+			tr.With(canStorefront).Put("/customize/draft", s.shop.PutDraft)
+			tr.With(canStorefront).Delete("/customize/draft", s.shop.DeleteDraft)
+			tr.With(canStorefront).Post("/customize/draft/publish", s.shop.PublishDraft)
+
+			tr.With(canStorefront).Get("/customize/preview", s.shop.PreviewMenu)
+			tr.With(canStorefront).Get("/customize/qr", s.shop.QRCode)
 
 			// Payment methods and order workflow are separate documents within
 			// the same configuration row, exposed at their own paths so the
 			// admin screens and the API surface both read clearly. Owner-only for
 			// the same reason as the rest of the storefront configuration.
-			tr.With(ownerOnly).Get("/payment-settings", s.shop.GetStorefront)
-			tr.With(ownerOnly).Put("/payment-settings", s.shop.PutPaymentSettings)
-			tr.With(ownerOnly).Get("/order-workflow", s.shop.GetStorefront)
-			tr.With(ownerOnly).Put("/order-workflow", s.shop.PutOrderWorkflow)
+			tr.With(canOrg).Get("/payment-settings", s.shop.GetStorefront)
+			tr.With(canOrg).Put("/payment-settings", s.shop.PutPaymentSettings)
+			tr.With(canOrg).Get("/order-workflow", s.shop.GetStorefront)
+			tr.With(canOrg).Put("/order-workflow", s.shop.PutOrderWorkflow)
 		})
 
 		// Host-resolved public APIs (tenant subdomain required).

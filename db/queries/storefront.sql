@@ -1,7 +1,15 @@
 -- name: EnsureStorefrontSettings :one
+-- Creates the row on first use and otherwise returns it untouched.
+--
+-- The no-op assignment is deliberate: ON CONFLICT DO NOTHING returns no row, so
+-- the conflict branch has to assign something, and it must not be `now()`.
+-- Bumping updated_at here meant *reading* a storefront counted as changing it —
+-- which made `updated_at` useless as a version, told every client the shop had
+-- just been edited, and marked every Studio draft stale the moment anyone
+-- looked at the page it was drafted from.
 INSERT INTO tenant_storefront_settings (tenant_id, business_name, phone, address, logo_url, favicon_url, tagline)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (tenant_id) DO UPDATE SET updated_at = now()
+ON CONFLICT (tenant_id) DO UPDATE SET updated_at = tenant_storefront_settings.updated_at
 RETURNING *;
 
 -- name: GetStorefrontSettings :one
@@ -141,3 +149,23 @@ UPDATE tenants
 SET is_published = sqlc.arg(is_published), updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: GetStorefrontDraft :one
+SELECT * FROM tenant_storefront_drafts
+WHERE tenant_id = $1;
+
+-- name: UpsertStorefrontDraft :one
+-- One draft per shop: saving again replaces it rather than stacking versions.
+-- `base_version` is only set the first time, so a running autosave cannot move
+-- the point the draft is being compared against.
+INSERT INTO tenant_storefront_drafts (tenant_id, document, base_version, updated_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (tenant_id) DO UPDATE
+SET document   = EXCLUDED.document,
+    updated_by = EXCLUDED.updated_by,
+    updated_at = now()
+RETURNING *;
+
+-- name: DeleteStorefrontDraft :exec
+DELETE FROM tenant_storefront_drafts
+WHERE tenant_id = $1;

@@ -144,3 +144,25 @@ INSERT INTO users (
     NULL, $1, $2, '', $3, 'SUPER_ADMIN', 'ACTIVE', FALSE, NULL
 )
 RETURNING *;
+
+-- Session counts per user, for the IAM screen. Signing out deletes the refresh
+-- token rather than flagging it, so an unexpired row is an active session —
+-- the closest thing to "signed in somewhere" this schema records.
+-- name: CountActiveSessionsByTenant :many
+SELECT
+    u.id AS user_id,
+    COUNT(rt.id)::bigint AS active_sessions
+FROM users u
+LEFT JOIN refresh_tokens rt
+       ON rt.user_id = u.id
+      AND rt.expires_at > now()
+WHERE u.tenant_id = sqlc.arg(tenant_id)
+GROUP BY u.id;
+
+-- name: SetUserConsoleTheme :one
+-- The personal console appearance. Writing NULL is how a user goes back to the
+-- business default, so one statement covers both save and reset.
+UPDATE users
+SET console_theme = sqlc.narg(console_theme), updated_at = now()
+WHERE id = sqlc.arg(id)
+RETURNING *;

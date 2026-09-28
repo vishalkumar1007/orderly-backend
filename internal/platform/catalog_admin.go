@@ -29,30 +29,182 @@ type planWriteRequest struct {
 	MaxStaff    *int     `json:"max_staff"`
 	MaxProducts *int     `json:"max_products"`
 	IsActive    *bool    `json:"is_active"`
+
+	// Commercial terms. The plans table has columns for price and the two hard
+	// limits only, so everything else an offer needs lives in the features
+	// document: how often it bills, how long the trial runs, what is included,
+	// and which business types may buy it.
+	BillingPeriod *string   `json:"billing_period"`
+	TrialDays     *int      `json:"trial_days"`
+	Features      *[]string `json:"features"`
+	BusinessTypes *[]string `json:"business_types"`
+}
+
+// planTerms is the parsed shape of plans.features.
+//
+// It is deliberately a closed struct rather than a free map: the console reads
+// these four fields, and an unrecognised key in an old row should not survive a
+// round trip and become a de-facto schema.
+type planTerms struct {
+	BillingPeriod string   `json:"billing_period"`
+	TrialDays     int      `json:"trial_days"`
+	Features      []string `json:"features"`
+	// Empty means the plan is offered to every business type.
+	BusinessTypes []string `json:"business_types"`
+}
+
+// validBillingPeriods is the closed set the console offers. Billing is not
+// charged anywhere in this build; the period describes the offer, and the
+// subscription's end date is derived from it at provisioning time.
+var validBillingPeriods = map[string]bool{
+	"trial": true, "monthly": true, "yearly": true, "one_time": true,
+}
+
+// parsePlanTerms reads the features document, tolerating the legacy shape
+// ({"trial_days": 14}) and a document that was never written at all.
+func parsePlanTerms(raw []byte, planName string, price float64) planTerms {
+	terms := planTerms{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &terms)
+	}
+	if !validBillingPeriods[terms.BillingPeriod] {
+		// Infer from what the row already says rather than inventing a period:
+		// a free plan named TRIAL is a trial, a priced plan bills monthly.
+		switch {
+		case strings.EqualFold(planName, "TRIAL"):
+			terms.BillingPeriod = "trial"
+		case price == 0:
+			terms.BillingPeriod = "one_time"
+		default:
+			terms.BillingPeriod = "monthly"
+		}
+	}
+	if terms.TrialDays < 0 {
+		terms.TrialDays = 0
+	}
+	if terms.BillingPeriod == "trial" && terms.TrialDays == 0 {
+		terms.TrialDays = defaultTrialDays
+	}
+	if terms.Features == nil {
+		terms.Features = []string{}
+	}
+	if terms.BusinessTypes == nil {
+		terms.BusinessTypes = []string{}
+	}
+	return terms
+}
+
+// defaultTrialDays matches the window CreateTenant writes onto a new
+// subscription when the plan does not state its own.
+const defaultTrialDays = 14
+
+// mergePlanTerms applies a write request onto the stored terms. A field the
+// request omits keeps its stored value, so a form that edits only the feature
+// list cannot silently reset the billing period.
+func mergePlanTerms(current planTerms, req planWriteRequest) (planTerms, error) {
+	next := current
+	if req.BillingPeriod != nil {
+		period := strings.ToLower(strings.TrimSpace(*req.BillingPeriod))
+		if !validBillingPeriods[period] {
+			return next, errors.New("billing_period must be trial, monthly, yearly or one_time")
+		}
+		next.BillingPeriod = period
+	}
+	if req.TrialDays != nil {
+		if *req.TrialDays < 0 || *req.TrialDays > 365 {
+			return next, errors.New("trial_days must be between 0 and 365")
+		}
+		next.TrialDays = *req.TrialDays
+	}
+	if req.Features != nil {
+		next.Features = cleanStrings(*req.Features, 24, 120)
+	}
+	if req.BusinessTypes != nil {
+		codes := cleanStrings(*req.BusinessTypes, 24, 32)
+		for i, c := range codes {
+			codes[i] = normalizeTypeCode(c)
+		}
+		next.BusinessTypes = codes
+	}
+	if next.Features == nil {
+		next.Features = []string{}
+	}
+	if next.BusinessTypes == nil {
+		next.BusinessTypes = []string{}
+	}
+	return next, nil
+}
+
+// cleanStrings trims, drops blanks and duplicates, and bounds both the list and
+// each entry so a plan document cannot grow without limit.
+func cleanStrings(in []string, maxItems, maxLen int) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		if len([]rune(v)) > maxLen {
+			v = string([]rune(v)[:maxLen])
+		}
+		seen[v] = true
+		out = append(out, v)
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
 }
 
 func planJSON(p sqlc.Plan) map[string]any {
-	return map[string]any{
-		"id":           pgutil.UUIDString(p.ID),
-		"name":         p.Name,
-		"description":  p.Description,
-		"price":        pgutil.NumericToFloat(p.Price),
-		"max_staff":    p.MaxStaff,
-		"max_products": p.MaxProducts,
-		"is_active":    p.IsActive,
-	}
+	return planJSONWithUsage(p, -1, -1)
 }
 
-// ListAllPlans includes deactivated plans so the console can manage them.
+// planJSONWithUsage renders a plan. Negative counts mean "not counted", which
+// keeps the single-plan responses free of a query they do not need.
+func planJSONWithUsage(p sqlc.Plan, tenantCount, activeSubscriptions int64) map[string]any {
+	price := pgutil.NumericToFloat(p.Price)
+	terms := parsePlanTerms(p.Features, p.Name, price)
+	out := map[string]any{
+		"id":             pgutil.UUIDString(p.ID),
+		"name":           p.Name,
+		"description":    p.Description,
+		"price":          price,
+		"max_staff":      p.MaxStaff,
+		"max_products":   p.MaxProducts,
+		"is_active":      p.IsActive,
+		"billing_period": terms.BillingPeriod,
+		"trial_days":     terms.TrialDays,
+		"features":       terms.Features,
+		"business_types": terms.BusinessTypes,
+	}
+	if tenantCount >= 0 {
+		out["tenant_count"] = tenantCount
+	}
+	if activeSubscriptions >= 0 {
+		out["active_subscriptions"] = activeSubscriptions
+	}
+	return out
+}
+
+// ListAllPlans includes deactivated plans so the console can manage them, and
+// carries how many businesses are on each one — deactivating a plan that
+// tenants are still subscribed to is a decision, not an accident.
 func (h *Handler) ListAllPlans(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.q.ListAllPlans(r.Context())
+	rows, err := h.q.ListPlansWithUsage(r.Context())
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to list plans")
 		return
 	}
 	out := make([]any, 0, len(rows))
-	for _, p := range rows {
-		out = append(out, planJSON(p))
+	for _, row := range rows {
+		plan := sqlc.Plan{
+			ID: row.ID, Name: row.Name, Description: row.Description, Price: row.Price,
+			MaxStaff: row.MaxStaff, MaxProducts: row.MaxProducts, Features: row.Features,
+			IsActive: row.IsActive, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		}
+		out = append(out, planJSONWithUsage(plan, row.TenantCount, row.ActiveSubscriptions))
 	}
 	response.JSON(w, http.StatusOK, map[string]any{"plans": out})
 }
@@ -84,12 +236,28 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "max_products cannot be negative")
 		return
 	}
+	price := 0.0
+	if req.Price != nil {
+		price = *req.Price
+	}
+	terms, err := mergePlanTerms(parsePlanTerms(nil, name, price), req)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	featuresDoc, err := json.Marshal(terms)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to encode plan terms")
+		return
+	}
+
 	plan, err := h.q.CreatePlan(r.Context(), sqlc.CreatePlanParams{
 		Name:        name,
 		Description: strings.TrimSpace(deref(req.Description)),
 		Price:       numericOrZero(req.Price),
 		MaxStaff:    int32(derefInt(req.MaxStaff, 5)),
 		MaxProducts: int32(derefInt(req.MaxProducts, 100)),
+		Features:    featuresDoc,
 		IsActive:    boolOrTrue(req.IsActive),
 	})
 	if err != nil {
@@ -112,6 +280,9 @@ func (h *Handler) UpdatePlan(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json")
 		return
 	}
+	// nil leaves plans.features untouched (the query COALESCEs it).
+	var planTermsDoc []byte
+
 	// Refuse to rename a plan that tenants are already subscribed to — the
 	// subscription row and the plan name must stay in agreement.
 	if req.Name != nil {
@@ -135,7 +306,31 @@ func (h *Handler) UpdatePlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	params := sqlc.UpdatePlanParams{ID: pgutil.UUID(id)}
+	// The commercial terms are merged onto what is stored, so a partial write
+	// cannot blank the feature list or the billing period.
+	if req.BillingPeriod != nil || req.TrialDays != nil || req.Features != nil || req.BusinessTypes != nil {
+		existing, err := h.q.GetPlanByID(r.Context(), pgutil.UUID(id))
+		if err != nil {
+			response.Error(w, http.StatusNotFound, "not_found", "plan not found")
+			return
+		}
+		terms, err := mergePlanTerms(
+			parsePlanTerms(existing.Features, existing.Name, pgutil.NumericToFloat(existing.Price)),
+			req,
+		)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		doc, err := json.Marshal(terms)
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "failed to encode plan terms")
+			return
+		}
+		planTermsDoc = doc
+	}
+
+	params := sqlc.UpdatePlanParams{ID: pgutil.UUID(id), Features: planTermsDoc}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: strings.ToUpper(strings.TrimSpace(*req.Name)), Valid: true}
 	}

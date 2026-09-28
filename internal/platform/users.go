@@ -26,7 +26,7 @@ const (
 
 var (
 	errNoTenantID    = errors.New("tenant_id is required")
-	errBadRole       = errors.New("role must be TENANT_ADMIN or STAFF")
+	errBadRole       = errors.New("role must be TENANT_ADMIN, MANAGER or STAFF")
 	errBadUserStatus = errors.New("status must be ACTIVE or DISABLED")
 	errUserLimit     = errors.New("tenant user limit reached")
 	errLastAdmin     = errors.New("cannot remove the last active administrator")
@@ -162,7 +162,7 @@ func (h *Handler) createUserFor(w http.ResponseWriter, r *http.Request, req crea
 	if role == "" {
 		role = identity.RoleTenantAdmin
 	}
-	if role != identity.RoleTenantAdmin && role != identity.RoleStaff {
+	if !identity.IsBusinessRole(role) {
 		response.Error(w, http.StatusBadRequest, errBadRole.Error(), errBadRole.Error())
 		return
 	}
@@ -248,7 +248,7 @@ func (h *Handler) UpdateTenantUser(w http.ResponseWriter, r *http.Request) {
 	nextRole := current.Role
 	if req.Role != nil {
 		nextRole = strings.ToUpper(strings.TrimSpace(*req.Role))
-		if nextRole != identity.RoleTenantAdmin && nextRole != identity.RoleStaff {
+		if !identity.IsBusinessRole(nextRole) {
 			response.Error(w, http.StatusBadRequest, errBadRole.Error(), errBadRole.Error())
 			return
 		}
@@ -453,7 +453,17 @@ func orphanedByRemoval(activeAdmins int64) bool {
 }
 
 // parseUserRoute validates :tenantId and :userId and returns them as UUIDs.
+// parseUserRoute resolves the (user, tenant) pair a request addresses.
+//
+// Two shapes reach here. The nested form, /admin/tenants/{id}/users/{userId},
+// names both and is checked for agreement. The flat form, /admin/users/{id},
+// names only the user — it is how the platform-wide IAM screen addresses
+// someone it found by searching across businesses — so the tenant is read off
+// the user rather than taken from the caller.
 func (h *Handler) parseUserRoute(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {
+	if strings.TrimSpace(chi.URLParam(r, "userId")) == "" {
+		return h.parseFlatUserRoute(w, r)
+	}
 	tenantUUID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid tenant id")
@@ -475,6 +485,29 @@ func (h *Handler) parseUserRoute(w http.ResponseWriter, r *http.Request) (uuid.U
 		return uuid.Nil, uuid.Nil, false
 	}
 	return userUUID, tenantUUID, true
+}
+
+// parseFlatUserRoute resolves /admin/users/{id}, where {id} is the user.
+func (h *Handler) parseFlatUserRoute(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {
+	userUUID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid user id")
+		return uuid.Nil, uuid.Nil, false
+	}
+	user, err := h.q.GetUserByID(r.Context(), pgutil.UUID(userUUID))
+	if err != nil {
+		response.Error(w, http.StatusNotFound, "not_found", "user not found")
+		return uuid.Nil, uuid.Nil, false
+	}
+	// The platform owner has no tenant, and none of the tenant user lifecycle
+	// applies to them: their role cannot be changed and they cannot be
+	// disabled from here, because doing so would lock the console.
+	if !user.TenantID.Valid {
+		response.Error(w, http.StatusForbidden, "forbidden",
+			"the platform owner account cannot be changed from user management")
+		return uuid.Nil, uuid.Nil, false
+	}
+	return userUUID, uuid.UUID(user.TenantID.Bytes), true
 }
 
 func optionalText(v *string) pgtype.Text {

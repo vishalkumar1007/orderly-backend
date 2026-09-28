@@ -561,25 +561,77 @@ func (h *Handler) StoreLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// SetupStatus reports what a new business still has to do before it can trade.
+//
+// Every step is derived from real state. An earlier version hard-coded
+// business_info and payment to true and qr to false, which made the checklist
+// worse than useless: it told an owner they had finished something they had
+// never opened, and never let them tick off something they had.
 func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
-	t, err := h.q.GetTenantByID(r.Context(), pgutil.UUID(tenantID(r)))
+	ctx := r.Context()
+	id := tenantID(r)
+	t, err := h.q.GetTenantByID(ctx, pgutil.UUID(id))
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "tenant not found")
 		return
 	}
-	cats, _ := h.q.ListCategoriesByTenant(r.Context(), t.ID)
-	prods, _ := h.q.ListProductsByTenant(r.Context(), t.ID)
-	hasMenu := len(cats) > 0 && len(prods) > 0
+
+	cats, _ := h.q.ListCategoriesByTenant(ctx, t.ID)
+	prods, _ := h.q.ListProductsByTenant(ctx, t.ID)
+	hasCategory := false
+	for _, c := range cats {
+		if c.IsActive {
+			hasCategory = true
+			break
+		}
+	}
+	// A product nobody can order does not make the shop sellable.
+	hasSellable := false
+	for _, p := range prods {
+		if p.IsAvailable {
+			hasSellable = true
+			break
+		}
+	}
+
+	// Contact details customers and the platform both depend on.
+	hasBusinessInfo := strings.TrimSpace(t.Name) != "" &&
+		(strings.TrimSpace(t.Phone) != "" || strings.TrimSpace(t.Email) != "") &&
+		strings.TrimSpace(t.Address) != ""
+
+	// The storefront documents answer the remaining three steps. A shop with no
+	// storefront row has simply not started, so the zero values are correct.
+	var hasPayment, hasHours, hasStorefront bool
+	if sf, err := storefront.NewLoaderFromQueries(h.q).Load(ctx, id); err == nil && sf != nil {
+		hasPayment = len(sf.Payments.Methods()) > 0
+		// "Always open" is the default nobody chose. A real schedule, or an
+		// explicit decision to stay always open, both count — the difference is
+		// whether the document was ever written.
+		hasHours = len(sf.OpeningHours.Schedule) > 0
+		// Saved at least once: created_at and updated_at diverge on first write.
+		hasStorefront = sf.UpdatedAt.After(t.CreatedAt.Time.Add(time.Second)) &&
+			strings.TrimSpace(sf.Name) != ""
+	}
+
+	users, _ := h.q.ListTenantUsers(ctx, t.ID)
+
 	response.JSON(w, http.StatusOK, map[string]any{
 		"setup_status": t.SetupStatus,
 		"is_published": t.IsPublished,
 		"steps": map[string]bool{
-			"business_info": true,
-			"menu":          hasMenu,
-			"payment":       true,
-			"qr":            false,
-			"launch":        t.IsPublished,
+			"business_info": hasBusinessInfo,
+			"menu":          hasCategory && hasSellable,
+			"payment":       hasPayment,
+			"hours":         hasHours,
+			"storefront":    hasStorefront,
+			// Optional: a one-person shop is a complete shop.
+			"staff":  len(users) > 1,
+			"launch": t.IsPublished,
 		},
+		// The steps the product calls the minimum to launch. The console greys
+		// out Publish until these are done rather than letting an owner put an
+		// empty shop in front of a customer.
+		"required": []string{"business_info", "menu", "payment", "hours", "storefront"},
 	})
 }
 

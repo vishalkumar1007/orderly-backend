@@ -524,6 +524,144 @@ func (q *Queries) GetPaymentByOrderID(ctx context.Context, arg GetPaymentByOrder
 	return i, err
 }
 
+const listOrderHistory = `-- name: ListOrderHistory :many
+SELECT
+    o.id, o.tenant_id, o.customer_id, o.order_number, o.status, o.order_type, o.subtotal, o.tax, o.discount, o.total, o.customer_name, o.customer_phone, o.created_at, o.updated_at, o.customer_email, o.notes, o.estimated_ready_at, o.accepted_at, o.preparing_at, o.ready_at, o.completed_at, o.cancelled_at, o.cancel_reason, o.source, o.client_token, o.packaging_fee,
+    (SELECT COUNT(*)::bigint FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+    -- Coalesced because the join is optional: an order with no payment row
+    -- yields NULL, which the generated scanner would refuse for a column the
+    -- payments table declares NOT NULL.
+    COALESCE(p.status, '')::text AS payment_status,
+    COALESCE(p.method, '')::text AS payment_method
+FROM orders o
+LEFT JOIN LATERAL (
+    SELECT status, method FROM payments
+    WHERE payments.order_id = o.id
+    ORDER BY created_at DESC LIMIT 1
+) p ON TRUE
+WHERE o.tenant_id = $1
+  AND ($2::text IS NULL OR o.status = $2::text)
+  AND ($3::text IS NULL OR o.source = $3::text)
+  AND ($4::timestamptz IS NULL OR o.created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR o.created_at < $5::timestamptz)
+  AND (
+        $6::text IS NULL
+        OR o.customer_name ILIKE '%' || $6::text || '%'
+        OR o.customer_phone ILIKE '%' || $6::text || '%'
+        OR o.order_number::text = $6::text
+      )
+ORDER BY o.created_at DESC
+LIMIT $8 OFFSET $7
+`
+
+type ListOrderHistoryParams struct {
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Status    pgtype.Text        `json:"status"`
+	Source    pgtype.Text        `json:"source"`
+	FromDate  pgtype.Timestamptz `json:"from_date"`
+	ToDate    pgtype.Timestamptz `json:"to_date"`
+	Search    pgtype.Text        `json:"search"`
+	RowOffset int32              `json:"row_offset"`
+	RowLimit  int32              `json:"row_limit"`
+}
+
+type ListOrderHistoryRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	TenantID         pgtype.UUID        `json:"tenant_id"`
+	CustomerID       pgtype.UUID        `json:"customer_id"`
+	OrderNumber      int32              `json:"order_number"`
+	Status           string             `json:"status"`
+	OrderType        string             `json:"order_type"`
+	Subtotal         pgtype.Numeric     `json:"subtotal"`
+	Tax              pgtype.Numeric     `json:"tax"`
+	Discount         pgtype.Numeric     `json:"discount"`
+	Total            pgtype.Numeric     `json:"total"`
+	CustomerName     string             `json:"customer_name"`
+	CustomerPhone    string             `json:"customer_phone"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	CustomerEmail    string             `json:"customer_email"`
+	Notes            string             `json:"notes"`
+	EstimatedReadyAt pgtype.Timestamptz `json:"estimated_ready_at"`
+	AcceptedAt       pgtype.Timestamptz `json:"accepted_at"`
+	PreparingAt      pgtype.Timestamptz `json:"preparing_at"`
+	ReadyAt          pgtype.Timestamptz `json:"ready_at"`
+	CompletedAt      pgtype.Timestamptz `json:"completed_at"`
+	CancelledAt      pgtype.Timestamptz `json:"cancelled_at"`
+	CancelReason     string             `json:"cancel_reason"`
+	Source           string             `json:"source"`
+	ClientToken      string             `json:"client_token"`
+	PackagingFee     pgtype.Numeric     `json:"packaging_fee"`
+	ItemCount        int64              `json:"item_count"`
+	PaymentStatus    string             `json:"payment_status"`
+	PaymentMethod    string             `json:"payment_method"`
+}
+
+// Order history for the tenant console. Unlike the Selling board — which shows
+// the live queue — this searches the whole record, so every filter is optional
+// and applied in SQL rather than by shipping the table to the browser.
+//
+// sqlc.narg values are NULL when the console did not filter on them, and the
+// COALESCE pairs below turn that into "match everything".
+func (q *Queries) ListOrderHistory(ctx context.Context, arg ListOrderHistoryParams) ([]ListOrderHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listOrderHistory,
+		arg.TenantID,
+		arg.Status,
+		arg.Source,
+		arg.FromDate,
+		arg.ToDate,
+		arg.Search,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOrderHistoryRow{}
+	for rows.Next() {
+		var i ListOrderHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.CustomerID,
+			&i.OrderNumber,
+			&i.Status,
+			&i.OrderType,
+			&i.Subtotal,
+			&i.Tax,
+			&i.Discount,
+			&i.Total,
+			&i.CustomerName,
+			&i.CustomerPhone,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CustomerEmail,
+			&i.Notes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.PreparingAt,
+			&i.ReadyAt,
+			&i.CompletedAt,
+			&i.CancelledAt,
+			&i.CancelReason,
+			&i.Source,
+			&i.ClientToken,
+			&i.PackagingFee,
+			&i.ItemCount,
+			&i.PaymentStatus,
+			&i.PaymentMethod,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrderIDsByTenant = `-- name: ListOrderIDsByTenant :many
 SELECT id FROM orders
 WHERE tenant_id = $1
@@ -743,6 +881,84 @@ func (q *Queries) ListOrdersByTenantAndPhone(ctx context.Context, arg ListOrders
 			&i.Source,
 			&i.ClientToken,
 			&i.PackagingFee,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantActivity = `-- name: ListTenantActivity :many
+SELECT
+    h.id,
+    h.order_id,
+    h.from_status,
+    h.to_status,
+    h.actor,
+    h.created_at,
+    o.order_number,
+    o.customer_name,
+    o.customer_phone,
+    o.total,
+    o.source
+FROM order_status_history h
+JOIN orders o ON o.id = h.order_id
+WHERE h.tenant_id = $1
+  AND ($2::text IS NULL OR h.to_status = $2::text)
+ORDER BY h.created_at DESC
+LIMIT $3
+`
+
+type ListTenantActivityParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	ToStatus pgtype.Text `json:"to_status"`
+	RowLimit int32       `json:"row_limit"`
+}
+
+type ListTenantActivityRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	OrderID       pgtype.UUID        `json:"order_id"`
+	FromStatus    string             `json:"from_status"`
+	ToStatus      string             `json:"to_status"`
+	Actor         string             `json:"actor"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	OrderNumber   int32              `json:"order_number"`
+	CustomerName  string             `json:"customer_name"`
+	CustomerPhone string             `json:"customer_phone"`
+	Total         pgtype.Numeric     `json:"total"`
+	Source        string             `json:"source"`
+}
+
+// The business activity feed: what happened in the shop, as opposed to who
+// changed its configuration (that is the audit log).
+//
+// Every row is an order moving through the workflow, joined back to the order
+// so the feed can name it without a second query per row.
+func (q *Queries) ListTenantActivity(ctx context.Context, arg ListTenantActivityParams) ([]ListTenantActivityRow, error) {
+	rows, err := q.db.Query(ctx, listTenantActivity, arg.TenantID, arg.ToStatus, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTenantActivityRow{}
+	for rows.Next() {
+		var i ListTenantActivityRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.FromStatus,
+			&i.ToStatus,
+			&i.Actor,
+			&i.CreatedAt,
+			&i.OrderNumber,
+			&i.CustomerName,
+			&i.CustomerPhone,
+			&i.Total,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}
@@ -1121,6 +1337,64 @@ func (q *Queries) StampOrderReady(ctx context.Context, arg StampOrderReadyParams
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+	)
+	return i, err
+}
+
+const summarizeOrderHistory = `-- name: SummarizeOrderHistory :one
+SELECT
+    COUNT(*)::bigint AS total_orders,
+    COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' THEN o.total ELSE 0 END), 0)::text AS total_revenue,
+    COUNT(*) FILTER (WHERE o.status = 'COMPLETED')::bigint AS completed,
+    COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint AS cancelled
+FROM orders o
+WHERE o.tenant_id = $1
+  AND ($2::text IS NULL OR o.status = $2::text)
+  AND ($3::text IS NULL OR o.source = $3::text)
+  AND ($4::timestamptz IS NULL OR o.created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR o.created_at < $5::timestamptz)
+  AND (
+        $6::text IS NULL
+        OR o.customer_name ILIKE '%' || $6::text || '%'
+        OR o.customer_phone ILIKE '%' || $6::text || '%'
+        OR o.order_number::text = $6::text
+      )
+`
+
+type SummarizeOrderHistoryParams struct {
+	TenantID pgtype.UUID        `json:"tenant_id"`
+	Status   pgtype.Text        `json:"status"`
+	Source   pgtype.Text        `json:"source"`
+	FromDate pgtype.Timestamptz `json:"from_date"`
+	ToDate   pgtype.Timestamptz `json:"to_date"`
+	Search   pgtype.Text        `json:"search"`
+}
+
+type SummarizeOrderHistoryRow struct {
+	TotalOrders  int64  `json:"total_orders"`
+	TotalRevenue string `json:"total_revenue"`
+	Completed    int64  `json:"completed"`
+	Cancelled    int64  `json:"cancelled"`
+}
+
+// The totals that go with a filtered history page: how many rows match, and
+// what they are worth. Counting in SQL keeps the pager honest when the page
+// itself is only twenty rows.
+func (q *Queries) SummarizeOrderHistory(ctx context.Context, arg SummarizeOrderHistoryParams) (SummarizeOrderHistoryRow, error) {
+	row := q.db.QueryRow(ctx, summarizeOrderHistory,
+		arg.TenantID,
+		arg.Status,
+		arg.Source,
+		arg.FromDate,
+		arg.ToDate,
+		arg.Search,
+	)
+	var i SummarizeOrderHistoryRow
+	err := row.Scan(
+		&i.TotalOrders,
+		&i.TotalRevenue,
+		&i.Completed,
+		&i.Cancelled,
 	)
 	return i, err
 }

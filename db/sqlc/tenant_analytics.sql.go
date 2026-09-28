@@ -11,6 +11,68 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const tenantOperationsSummary = `-- name: TenantOperationsSummary :one
+SELECT
+    -- Median rather than mean: one forgotten ticket left open for an hour
+    -- would otherwise move the average enough to hide a real change.
+    COALESCE(
+        percentile_cont(0.5) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ready_at - accepted_at)) / 60.0
+        ) FILTER (WHERE accepted_at IS NOT NULL AND ready_at IS NOT NULL),
+        0
+    )::float AS median_prep_minutes,
+    COALESCE(
+        AVG(EXTRACT(EPOCH FROM (ready_at - accepted_at)) / 60.0)
+            FILTER (WHERE accepted_at IS NOT NULL AND ready_at IS NOT NULL),
+        0
+    )::float AS avg_prep_minutes,
+    COALESCE(
+        AVG(EXTRACT(EPOCH FROM (accepted_at - created_at)) / 60.0)
+            FILTER (WHERE accepted_at IS NOT NULL),
+        0
+    )::float AS avg_accept_minutes,
+    COUNT(*) FILTER (WHERE status = 'COMPLETED')::bigint AS completed,
+    COUNT(*) FILTER (WHERE status = 'CANCELLED')::bigint AS cancelled,
+    COUNT(*)::bigint AS total,
+    COUNT(*) FILTER (WHERE status = 'CANCELLED' AND created_at >= date_trunc('day', now()))::bigint AS cancelled_today
+FROM orders
+WHERE tenant_id = $1
+  AND created_at >= now() - $2::interval
+`
+
+type TenantOperationsSummaryParams struct {
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+}
+
+type TenantOperationsSummaryRow struct {
+	MedianPrepMinutes float64 `json:"median_prep_minutes"`
+	AvgPrepMinutes    float64 `json:"avg_prep_minutes"`
+	AvgAcceptMinutes  float64 `json:"avg_accept_minutes"`
+	Completed         int64   `json:"completed"`
+	Cancelled         int64   `json:"cancelled"`
+	Total             int64   `json:"total"`
+	CancelledToday    int64   `json:"cancelled_today"`
+}
+
+// Operational quality over the window: how long the kitchen takes, and how
+// often an order does not make it. These are the numbers an owner manages
+// against, and none of them can be derived from order counts alone.
+func (q *Queries) TenantOperationsSummary(ctx context.Context, arg TenantOperationsSummaryParams) (TenantOperationsSummaryRow, error) {
+	row := q.db.QueryRow(ctx, tenantOperationsSummary, arg.TenantID, arg.Days)
+	var i TenantOperationsSummaryRow
+	err := row.Scan(
+		&i.MedianPrepMinutes,
+		&i.AvgPrepMinutes,
+		&i.AvgAcceptMinutes,
+		&i.Completed,
+		&i.Cancelled,
+		&i.Total,
+		&i.CancelledToday,
+	)
+	return i, err
+}
+
 const tenantOrdersByDayRange = `-- name: TenantOrdersByDayRange :many
 
 SELECT
@@ -93,6 +155,65 @@ func (q *Queries) TenantOrdersByHour(ctx context.Context, arg TenantOrdersByHour
 	for rows.Next() {
 		var i TenantOrdersByHourRow
 		if err := rows.Scan(&i.HourOfDay, &i.OrderCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const tenantPaymentBreakdown = `-- name: TenantPaymentBreakdown :many
+SELECT
+    COALESCE(NULLIF(p.method, ''), 'UNRECORDED')::text AS method,
+    COALESCE(NULLIF(p.status, ''), 'NONE')::text AS status,
+    COUNT(*)::bigint AS order_count,
+    COALESCE(SUM(o.total), 0)::text AS revenue
+FROM orders o
+LEFT JOIN LATERAL (
+    SELECT method, status FROM payments
+    WHERE payments.order_id = o.id
+    ORDER BY created_at DESC LIMIT 1
+) p ON TRUE
+WHERE o.tenant_id = $1
+  AND o.status <> 'CANCELLED'
+  AND o.created_at >= now() - $2::interval
+GROUP BY 1, 2
+ORDER BY order_count DESC
+`
+
+type TenantPaymentBreakdownParams struct {
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+}
+
+type TenantPaymentBreakdownRow struct {
+	Method     string `json:"method"`
+	Status     string `json:"status"`
+	OrderCount int64  `json:"order_count"`
+	Revenue    string `json:"revenue"`
+}
+
+// How customers actually pay, so an owner can see whether a method is worth
+// keeping. Orders with no payment row are grouped as unrecorded rather than
+// dropped, because a missing payment is itself worth seeing.
+func (q *Queries) TenantPaymentBreakdown(ctx context.Context, arg TenantPaymentBreakdownParams) ([]TenantPaymentBreakdownRow, error) {
+	rows, err := q.db.Query(ctx, tenantPaymentBreakdown, arg.TenantID, arg.Days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TenantPaymentBreakdownRow{}
+	for rows.Next() {
+		var i TenantPaymentBreakdownRow
+		if err := rows.Scan(
+			&i.Method,
+			&i.Status,
+			&i.OrderCount,
+			&i.Revenue,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -203,6 +324,57 @@ func (q *Queries) TenantPeriodSummary(ctx context.Context, tenantID pgtype.UUID)
 		&i.ProductsUnavailable,
 	)
 	return i, err
+}
+
+const tenantTopCategories = `-- name: TenantTopCategories :many
+SELECT
+    c.name AS name,
+    COALESCE(SUM(oi.quantity), 0)::bigint AS units,
+    COALESCE(SUM(oi.quantity * oi.unit_price), 0)::text AS revenue
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id
+JOIN products p ON p.id = oi.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE o.tenant_id = $1
+  AND o.status <> 'CANCELLED'
+  AND o.created_at >= now() - $2::interval
+GROUP BY c.id, c.name
+ORDER BY units DESC, revenue DESC
+LIMIT $3
+`
+
+type TenantTopCategoriesParams struct {
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+	RowLimit int32           `json:"row_limit"`
+}
+
+type TenantTopCategoriesRow struct {
+	Name    string `json:"name"`
+	Units   int64  `json:"units"`
+	Revenue string `json:"revenue"`
+}
+
+// Best-selling categories. The menu is organised by category, so this is the
+// view that tells an owner which part of it is carrying the shop.
+func (q *Queries) TenantTopCategories(ctx context.Context, arg TenantTopCategoriesParams) ([]TenantTopCategoriesRow, error) {
+	rows, err := q.db.Query(ctx, tenantTopCategories, arg.TenantID, arg.Days, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TenantTopCategoriesRow{}
+	for rows.Next() {
+		var i TenantTopCategoriesRow
+		if err := rows.Scan(&i.Name, &i.Units, &i.Revenue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const tenantTopProducts = `-- name: TenantTopProducts :many

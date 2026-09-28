@@ -1,6 +1,7 @@
 package menu
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -48,10 +49,39 @@ type AnalyticsResponse struct {
 	ProductsAvailable   int64 `json:"products_available"`
 	ProductsUnavailable int64 `json:"products_unavailable"`
 
-	OrdersByDay     []DayPoint     `json:"orders_by_day"`
-	OrdersByHour    []HourPoint    `json:"orders_by_hour"`
-	TopProducts     []ProductPoint `json:"top_products"`
-	StatusBreakdown []StatusPoint  `json:"status_breakdown"`
+	// Operational quality over the window. Median prep time leads because one
+	// ticket left open all afternoon should not move the number an owner
+	// manages against.
+	MedianPrepMinutes float64 `json:"median_prep_minutes"`
+	AvgPrepMinutes    float64 `json:"avg_prep_minutes"`
+	AvgAcceptMinutes  float64 `json:"avg_accept_minutes"`
+	CompletionRate    float64 `json:"completion_rate"`
+	CancellationRate  float64 `json:"cancellation_rate"`
+	CancelledToday    int64   `json:"cancelled_today"`
+
+	OrdersByDay     []DayPoint      `json:"orders_by_day"`
+	OrdersByHour    []HourPoint     `json:"orders_by_hour"`
+	TopProducts     []ProductPoint  `json:"top_products"`
+	TopCategories   []CategoryPoint `json:"top_categories"`
+	PaymentMix      []PaymentPoint  `json:"payment_mix"`
+	StatusBreakdown []StatusPoint   `json:"status_breakdown"`
+}
+
+// CategoryPoint is a line on the best-selling categories list.
+type CategoryPoint struct {
+	Name    string  `json:"name"`
+	Units   int64   `json:"units"`
+	Revenue float64 `json:"revenue"`
+}
+
+// PaymentPoint is one way customers paid, and what it was worth.
+type PaymentPoint struct {
+	Method     string  `json:"method"`
+	Status     string  `json:"status"`
+	OrderCount int64   `json:"order_count"`
+	Revenue    float64 `json:"revenue"`
+	/// Share of orders in the window, 0–100, so the bar needs no second pass.
+	Share float64 `json:"share"`
 }
 
 // DayPoint is one calendar day in the selected window.
@@ -138,6 +168,34 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	operations, err := h.q.TenantOperationsSummary(ctx, sqlc.TenantOperationsSummaryParams{
+		TenantID: tenant,
+		Days:     span,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load operations summary")
+		return
+	}
+
+	payments, err := h.q.TenantPaymentBreakdown(ctx, sqlc.TenantPaymentBreakdownParams{
+		TenantID: tenant,
+		Days:     span,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load payment breakdown")
+		return
+	}
+
+	categories, err := h.q.TenantTopCategories(ctx, sqlc.TenantTopCategoriesParams{
+		TenantID: tenant,
+		Days:     span,
+		RowLimit: 6,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load top categories")
+		return
+	}
+
 	out := AnalyticsResponse{
 		Window:              window,
 		Days:                days,
@@ -157,13 +215,73 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		ProductsAvailable:   summary.ProductsAvailable,
 		ProductsUnavailable: summary.ProductsUnavailable,
 
+		MedianPrepMinutes: round1(operations.MedianPrepMinutes),
+		AvgPrepMinutes:    round1(operations.AvgPrepMinutes),
+		AvgAcceptMinutes:  round1(operations.AvgAcceptMinutes),
+		CompletionRate:    rate(operations.Completed, operations.Total),
+		CancellationRate:  rate(operations.Cancelled, operations.Total),
+		CancelledToday:    operations.CancelledToday,
+
 		OrdersByDay:     fillDayGaps(byDay, days),
 		OrdersByHour:    averageByHour(byHour, days),
 		TopProducts:     topProducts(top),
+		TopCategories:   topCategories(categories),
+		PaymentMix:      paymentMix(payments),
 		StatusBreakdown: statusBreakdown(status),
 	}
 
 	response.JSON(w, http.StatusOK, out)
+}
+
+// topCategories maps the category rows onto the response shape.
+func topCategories(rows []sqlc.TenantTopCategoriesRow) []CategoryPoint {
+	out := make([]CategoryPoint, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, CategoryPoint{
+			Name:    r.Name,
+			Units:   r.Units,
+			Revenue: parseMoney(r.Revenue),
+		})
+	}
+	return out
+}
+
+// paymentMix maps the payment rows and works out each one's share, so the
+// dashboard renders a bar without recomputing a total it already has.
+func paymentMix(rows []sqlc.TenantPaymentBreakdownRow) []PaymentPoint {
+	var total int64
+	for _, r := range rows {
+		total += r.OrderCount
+	}
+	out := make([]PaymentPoint, 0, len(rows))
+	for _, r := range rows {
+		share := 0.0
+		if total > 0 {
+			share = round1(float64(r.OrderCount) / float64(total) * 100)
+		}
+		out = append(out, PaymentPoint{
+			Method:     r.Method,
+			Status:     r.Status,
+			OrderCount: r.OrderCount,
+			Revenue:    parseMoney(r.Revenue),
+			Share:      share,
+		})
+	}
+	return out
+}
+
+// rate is a percentage of a total, guarding the empty case.
+func rate(part, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return round1(float64(part) / float64(total) * 100)
+}
+
+// round1 keeps one decimal place. Minutes and percentages are read, not
+// calculated with, so more precision is noise on the screen.
+func round1(v float64) float64 {
+	return math.Round(v*10) / 10
 }
 
 // fillDayGaps returns one point per day in the window.

@@ -25,16 +25,33 @@ func TestAdminRouteRegistration(t *testing.T) {
 		return nil
 	})
 
-	want := []string{
-		// Tenant user lifecycle
+	// Routes the console must NOT expose. The platform administers the business
+	// account, never the shop: a console that could rewrite a tenant's theme or
+	// hire its staff would blur the line the product draws between the two.
+	forbidden := []string{
 		"GET /api/v1/admin/tenants/{id}/users",
 		"POST /api/v1/admin/tenants/{id}/users",
 		"PATCH /api/v1/admin/tenants/{id}/users/{userId}",
 		"POST /api/v1/admin/tenants/{id}/users/{userId}/reset-access",
 		"POST /api/v1/admin/tenants/{id}/users/{userId}/resend-invite",
-		// Flat user aliases
+		"GET /api/v1/admin/tenants/{id}/admins",
+		"PATCH /api/v1/admin/tenants/{id}/theme",
+	}
+	for _, route := range forbidden {
+		if got[route] {
+			t.Errorf("route %s is registered, but the console must not manage a business's shop or staff", route)
+		}
+	}
+
+	want := []string{
+		// Console access. These manage who can reach the platform console; a
+		// business's own staff are managed inside that business.
+		"GET /api/v1/admin/users",
 		"POST /api/v1/admin/users",
 		"PATCH /api/v1/admin/users/{id}",
+		"POST /api/v1/admin/users/{id}/resend-invite",
+		// Recovering a business owner's access is support, not staff management.
+		"POST /api/v1/admin/tenants/{id}/resend-invite",
 		// Plan catalog CRUD
 		"GET /api/v1/admin/plans",
 		"POST /api/v1/admin/plans",

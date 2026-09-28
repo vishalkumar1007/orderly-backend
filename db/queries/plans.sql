@@ -48,6 +48,10 @@ SET
     price = COALESCE(sqlc.narg(price), price),
     max_staff = COALESCE(sqlc.narg(max_staff), max_staff),
     max_products = COALESCE(sqlc.narg(max_products), max_products),
+    -- features carries the commercial terms the plans table has no column for:
+    -- billing period, trial length, the feature list and which business types
+    -- the plan is offered to. NULL leaves the stored document untouched.
+    features = COALESCE(sqlc.narg(features)::jsonb, features),
     is_active = COALESCE(sqlc.narg(is_active), is_active),
     updated_at = now()
 WHERE id = sqlc.arg(id)
@@ -61,3 +65,13 @@ WHERE plan_id = sqlc.arg(plan_id);
 -- name: ListAllPlans :many
 SELECT * FROM plans
 ORDER BY price ASC, name ASC;
+
+-- Every plan with the number of tenants provisioned on it, so the console can
+-- warn before deactivating one that businesses are still using.
+-- name: ListPlansWithUsage :many
+SELECT
+    p.*,
+    (SELECT COUNT(*) FROM tenants t WHERE t.plan_id = p.id)::bigint AS tenant_count,
+    (SELECT COUNT(*) FROM subscriptions s WHERE s.plan_id = p.id AND s.status IN ('TRIAL', 'ACTIVE'))::bigint AS active_subscriptions
+FROM plans p
+ORDER BY p.price ASC, p.name ASC;

@@ -83,6 +83,65 @@ func (q *Queries) AdminTenantsByWeek(ctx context.Context) ([]AdminTenantsByWeekR
 	return items, nil
 }
 
+const countActivePlatformAdmins = `-- name: CountActivePlatformAdmins :one
+SELECT COUNT(*)::bigint
+FROM users
+WHERE tenant_id IS NULL
+  AND role IN ('SUPER_ADMIN', 'PLATFORM_ADMIN')
+  AND status = 'ACTIVE'
+`
+
+func (q *Queries) CountActivePlatformAdmins(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActivePlatformAdmins)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const createConsoleUser = `-- name: CreateConsoleUser :one
+INSERT INTO users (tenant_id, name, email, phone, password_hash, role, status, must_set_password, invite_token_hash)
+VALUES (NULL, $1, $2, $3, $4,
+        $5, 'ACTIVE', TRUE, $6)
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme
+`
+
+type CreateConsoleUserParams struct {
+	Name            string      `json:"name"`
+	Email           string      `json:"email"`
+	Phone           string      `json:"phone"`
+	PasswordHash    string      `json:"password_hash"`
+	Role            string      `json:"role"`
+	InviteTokenHash pgtype.Text `json:"invite_token_hash"`
+}
+
+func (q *Queries) CreateConsoleUser(ctx context.Context, arg CreateConsoleUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, createConsoleUser,
+		arg.Name,
+		arg.Email,
+		arg.Phone,
+		arg.PasswordHash,
+		arg.Role,
+		arg.InviteTokenHash,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Email,
+		&i.Phone,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.MustSetPassword,
+		&i.InviteTokenHash,
+		&i.ConsoleTheme,
+	)
+	return i, err
+}
+
 const listAuditLogsByResult = `-- name: ListAuditLogsByResult :many
 SELECT
     a.id, a.action, a.entity_type, a.entity_id, a.result, a.metadata,
@@ -362,28 +421,157 @@ func (q *Queries) ListAuditLogsEnrichedByTenant(ctx context.Context, arg ListAud
 	return items, nil
 }
 
+const listConsoleUsers = `-- name: ListConsoleUsers :many
+SELECT
+    u.id,
+    u.name,
+    u.email,
+    u.phone,
+    u.role,
+    u.status,
+    u.must_set_password,
+    u.created_at,
+    (SELECT MAX(rt.created_at) FROM refresh_tokens rt WHERE rt.user_id = u.id) AS last_activity,
+    (SELECT COUNT(*)::bigint FROM refresh_tokens rt
+      WHERE rt.user_id = u.id AND rt.expires_at > now()) AS active_sessions
+FROM users u
+WHERE u.tenant_id IS NULL
+ORDER BY
+    CASE u.role WHEN 'SUPER_ADMIN' THEN 0 WHEN 'PLATFORM_ADMIN' THEN 1 ELSE 2 END,
+    u.created_at ASC
+`
+
+type ListConsoleUsersRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	Name            string             `json:"name"`
+	Email           string             `json:"email"`
+	Phone           string             `json:"phone"`
+	Role            string             `json:"role"`
+	Status          string             `json:"status"`
+	MustSetPassword bool               `json:"must_set_password"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	LastActivity    interface{}        `json:"last_activity"`
+	ActiveSessions  int64              `json:"active_sessions"`
+}
+
+// Everyone who can reach the platform console. Business users are excluded by
+// construction: a console identity has no tenant.
+func (q *Queries) ListConsoleUsers(ctx context.Context) ([]ListConsoleUsersRow, error) {
+	rows, err := q.db.Query(ctx, listConsoleUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConsoleUsersRow{}
+	for rows.Next() {
+		var i ListConsoleUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Email,
+			&i.Phone,
+			&i.Role,
+			&i.Status,
+			&i.MustSetPassword,
+			&i.CreatedAt,
+			&i.LastActivity,
+			&i.ActiveSessions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiringSubscriptions = `-- name: ListExpiringSubscriptions :many
+SELECT
+    s.id,
+    s.tenant_id,
+    t.name AS tenant_name,
+    t.slug AS tenant_slug,
+    p.name AS plan_name,
+    s.status,
+    s.end_at
+FROM subscriptions s
+JOIN tenants t ON t.id = s.tenant_id
+JOIN plans p ON p.id = s.plan_id
+WHERE s.end_at IS NOT NULL
+  AND s.status IN ('TRIAL', 'ACTIVE')
+  AND s.end_at <= now() + make_interval(days => $1::int)
+ORDER BY s.end_at ASC
+LIMIT 20
+`
+
+type ListExpiringSubscriptionsRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	TenantName string             `json:"tenant_name"`
+	TenantSlug string             `json:"tenant_slug"`
+	PlanName   string             `json:"plan_name"`
+	Status     string             `json:"status"`
+	EndAt      pgtype.Timestamptz `json:"end_at"`
+}
+
+// Subscriptions whose trial or term ends inside the window, newest deadline
+// first. The dashboard's "needs attention" list is built from this rather than
+// from a client-side scan of every subscription.
+func (q *Queries) ListExpiringSubscriptions(ctx context.Context, withinDays int32) ([]ListExpiringSubscriptionsRow, error) {
+	rows, err := q.db.Query(ctx, listExpiringSubscriptions, withinDays)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiringSubscriptionsRow{}
+	for rows.Next() {
+		var i ListExpiringSubscriptionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.TenantName,
+			&i.TenantSlug,
+			&i.PlanName,
+			&i.Status,
+			&i.EndAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlatformUsers = `-- name: ListPlatformUsers :many
 SELECT
     u.id,
     u.name,
     u.email,
+    u.phone,
     u.role,
     u.status,
     u.must_set_password,
     u.created_at,
     u.tenant_id,
     t.name AS tenant_name,
-    t.slug AS tenant_slug
+    t.slug AS tenant_slug,
+    t.status AS tenant_status,
+    (SELECT MAX(rt.created_at) FROM refresh_tokens rt WHERE rt.user_id = u.id) AS last_activity
 FROM users u
 LEFT JOIN tenants t ON t.id = u.tenant_id
-WHERE u.role IN ('TENANT_ADMIN', 'STAFF')
-ORDER BY u.created_at DESC
+ORDER BY (u.tenant_id IS NOT NULL), u.created_at DESC
 `
 
 type ListPlatformUsersRow struct {
 	ID              pgtype.UUID        `json:"id"`
 	Name            string             `json:"name"`
 	Email           string             `json:"email"`
+	Phone           string             `json:"phone"`
 	Role            string             `json:"role"`
 	Status          string             `json:"status"`
 	MustSetPassword bool               `json:"must_set_password"`
@@ -391,8 +579,15 @@ type ListPlatformUsersRow struct {
 	TenantID        pgtype.UUID        `json:"tenant_id"`
 	TenantName      pgtype.Text        `json:"tenant_name"`
 	TenantSlug      pgtype.Text        `json:"tenant_slug"`
+	TenantStatus    pgtype.Text        `json:"tenant_status"`
+	LastActivity    interface{}        `json:"last_activity"`
 }
 
+// Every identity the platform knows about, tenant-scoped or not. The platform
+// owner (SUPER_ADMIN, tenant_id NULL) is included on purpose: IAM has to show
+// who can reach the console, and leaving the one account that can out of the
+// list made the page lie. last_activity is the most recent session issued to
+// the user, which is the closest thing to a sign-in time the schema records.
 func (q *Queries) ListPlatformUsers(ctx context.Context) ([]ListPlatformUsersRow, error) {
 	rows, err := q.db.Query(ctx, listPlatformUsers)
 	if err != nil {
@@ -406,6 +601,7 @@ func (q *Queries) ListPlatformUsers(ctx context.Context) ([]ListPlatformUsersRow
 			&i.ID,
 			&i.Name,
 			&i.Email,
+			&i.Phone,
 			&i.Role,
 			&i.Status,
 			&i.MustSetPassword,
@@ -413,6 +609,8 @@ func (q *Queries) ListPlatformUsers(ctx context.Context) ([]ListPlatformUsersRow
 			&i.TenantID,
 			&i.TenantName,
 			&i.TenantSlug,
+			&i.TenantStatus,
+			&i.LastActivity,
 		); err != nil {
 			return nil, err
 		}
@@ -475,6 +673,56 @@ func (q *Queries) ListSubscriptionsAdmin(ctx context.Context) ([]ListSubscriptio
 			&i.TenantName,
 			&i.PlanName,
 			&i.PlanPrice,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantsAwaitingSetup = `-- name: ListTenantsAwaitingSetup :many
+SELECT
+    t.id,
+    t.name,
+    t.slug,
+    t.status,
+    t.created_at
+FROM tenants t
+WHERE t.setup_status <> 'COMPLETED'
+ORDER BY t.created_at DESC
+LIMIT 20
+`
+
+type ListTenantsAwaitingSetupRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	Status    string             `json:"status"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Businesses whose administrator has never set a password. They are onboarded
+// but nobody can sign in, which is the single most common thing a Super Admin
+// needs to chase.
+func (q *Queries) ListTenantsAwaitingSetup(ctx context.Context) ([]ListTenantsAwaitingSetupRow, error) {
+	rows, err := q.db.Query(ctx, listTenantsAwaitingSetup)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTenantsAwaitingSetupRow{}
+	for rows.Next() {
+		var i ListTenantsAwaitingSetupRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Slug,
+			&i.Status,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

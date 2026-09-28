@@ -270,6 +270,65 @@ func (q *Queries) ListPlans(ctx context.Context) ([]Plan, error) {
 	return items, nil
 }
 
+const listPlansWithUsage = `-- name: ListPlansWithUsage :many
+SELECT
+    p.id, p.name, p.description, p.price, p.max_staff, p.max_products, p.features, p.is_active, p.created_at, p.updated_at,
+    (SELECT COUNT(*) FROM tenants t WHERE t.plan_id = p.id)::bigint AS tenant_count,
+    (SELECT COUNT(*) FROM subscriptions s WHERE s.plan_id = p.id AND s.status IN ('TRIAL', 'ACTIVE'))::bigint AS active_subscriptions
+FROM plans p
+ORDER BY p.price ASC, p.name ASC
+`
+
+type ListPlansWithUsageRow struct {
+	ID                  pgtype.UUID        `json:"id"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Price               pgtype.Numeric     `json:"price"`
+	MaxStaff            int32              `json:"max_staff"`
+	MaxProducts         int32              `json:"max_products"`
+	Features            []byte             `json:"features"`
+	IsActive            bool               `json:"is_active"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	TenantCount         int64              `json:"tenant_count"`
+	ActiveSubscriptions int64              `json:"active_subscriptions"`
+}
+
+// Every plan with the number of tenants provisioned on it, so the console can
+// warn before deactivating one that businesses are still using.
+func (q *Queries) ListPlansWithUsage(ctx context.Context) ([]ListPlansWithUsageRow, error) {
+	rows, err := q.db.Query(ctx, listPlansWithUsage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPlansWithUsageRow{}
+	for rows.Next() {
+		var i ListPlansWithUsageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Price,
+			&i.MaxStaff,
+			&i.MaxProducts,
+			&i.Features,
+			&i.IsActive,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TenantCount,
+			&i.ActiveSubscriptions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updatePlan = `-- name: UpdatePlan :one
 UPDATE plans
 SET
@@ -278,9 +337,13 @@ SET
     price = COALESCE($3, price),
     max_staff = COALESCE($4, max_staff),
     max_products = COALESCE($5, max_products),
-    is_active = COALESCE($6, is_active),
+    -- features carries the commercial terms the plans table has no column for:
+    -- billing period, trial length, the feature list and which business types
+    -- the plan is offered to. NULL leaves the stored document untouched.
+    features = COALESCE($6::jsonb, features),
+    is_active = COALESCE($7, is_active),
     updated_at = now()
-WHERE id = $7
+WHERE id = $8
 RETURNING id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at
 `
 
@@ -290,6 +353,7 @@ type UpdatePlanParams struct {
 	Price       pgtype.Numeric `json:"price"`
 	MaxStaff    pgtype.Int4    `json:"max_staff"`
 	MaxProducts pgtype.Int4    `json:"max_products"`
+	Features    []byte         `json:"features"`
 	IsActive    pgtype.Bool    `json:"is_active"`
 	ID          pgtype.UUID    `json:"id"`
 }
@@ -301,6 +365,7 @@ func (q *Queries) UpdatePlan(ctx context.Context, arg UpdatePlanParams) (Plan, e
 		arg.Price,
 		arg.MaxStaff,
 		arg.MaxProducts,
+		arg.Features,
 		arg.IsActive,
 		arg.ID,
 	)

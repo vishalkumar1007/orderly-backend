@@ -108,6 +108,13 @@ type UserResponse struct {
 	TenantID        *string `json:"tenant_id"`
 	Status          string  `json:"status"`
 	MustSetPassword bool    `json:"must_set_password"`
+
+	// RoleLabel and Permissions travel with the identity so the console can
+	// draw a rail that matches what the API will actually allow. Without them
+	// the client would need its own copy of the role table, and the first time
+	// the two disagreed a user would see a menu item that 403s when clicked.
+	RoleLabel   string                `json:"role_label"`
+	Permissions []identity.Permission `json:"permissions"`
 }
 
 func (s *Service) NeedsSetup(ctx context.Context) (bool, error) {
@@ -410,9 +417,12 @@ func (s *Service) parseToken(tokenStr, secret string) (*Claims, error) {
 // staffRoles is the set of roles that may act as an operator of the platform.
 // A storefront customer is deliberately not in it.
 var staffRoles = map[string]bool{
-	identity.RoleSuperAdmin:  true,
-	identity.RoleTenantAdmin: true,
-	identity.RoleStaff:       true,
+	identity.RoleSuperAdmin:    true,
+	identity.RolePlatformAdmin: true,
+	identity.RoleSupport:       true,
+	identity.RoleTenantAdmin:   true,
+	identity.RoleManager:       true,
+	identity.RoleStaff:         true,
 }
 
 // AuthenticateRequest resolves the operator behind a request from its bearer
@@ -462,11 +472,13 @@ func (s *Service) AuthenticateRequest(r *http.Request) (identity.User, error) {
 	// A tenant admin's token must not outlive a change of shop, and a super
 	// admin must not be able to act through a tenant claim.
 	switch row.Role {
-	case identity.RoleSuperAdmin:
+	case identity.RoleSuperAdmin, identity.RolePlatformAdmin, identity.RoleSupport:
+		// A console identity has no business. A token claiming one is either
+		// stale or forged; either way it is not this account.
 		if u.TenantID != nil {
 			return identity.User{}, ErrUnauthorized
 		}
-	case identity.RoleTenantAdmin, identity.RoleStaff:
+	case identity.RoleTenantAdmin, identity.RoleManager, identity.RoleStaff:
 		if !row.TenantID.Valid || u.TenantID == nil || uuid.UUID(row.TenantID.Bytes) != *u.TenantID {
 			return identity.User{}, ErrUnauthorized
 		}
@@ -501,6 +513,33 @@ func RequireRoles(roles ...string) func(http.Handler) http.Handler {
 			}
 			if _, ok := allowed[user.Role]; !ok {
 				response.Error(w, http.StatusForbidden, "forbidden", "insufficient permissions")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequirePermission guards a route with a capability rather than a role list.
+//
+// Roles change shape — a manager was added after staff and owner already
+// existed — and every route that named roles directly had to be revisited when
+// that happened. Naming the capability instead means the role table is the only
+// thing that moves.
+func RequirePermission(permission identity.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := identity.UserFromContext(r.Context())
+			if !ok {
+				response.Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+				return
+			}
+			if !identity.Can(user.Role, permission) {
+				// The message names what is missing, not the role that is
+				// missing it: "you need X" is actionable, "you are not an
+				// owner" invites an argument with the person who is.
+				response.Error(w, http.StatusForbidden, "forbidden",
+					"this account does not have access to "+string(permission))
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -713,6 +752,13 @@ func (s *Service) HandleMe(w http.ResponseWriter, r *http.Request) {
 			"host_tenant": map[string]any{
 				"id": t.ID.String(), "slug": t.Slug, "name": t.Name,
 				"setup_status": t.SetupStatus, "is_published": t.IsPublished,
+				// The business type travels with the identity because the
+				// console is shaped by it: the navigation, what a catalogue
+				// and its groups are called, and which operational screens
+				// exist at all. Fetching it separately would mean the shell
+				// renders once with the wrong words and again with the right
+				// ones.
+				"business_type": t.BusinessType,
 			},
 		})
 		return
@@ -725,6 +771,8 @@ func toUserResponse(user sqlc.User) UserResponse {
 		ID: pgutil.UUIDString(user.ID), Email: user.Email, Name: user.Name,
 		Role: user.Role, TenantID: pgutil.UUIDPtr(user.TenantID), Status: user.Status,
 		MustSetPassword: user.MustSetPassword,
+		RoleLabel:       identity.RoleLabel(user.Role),
+		Permissions:     identity.PermissionsFor(user.Role),
 	}
 }
 

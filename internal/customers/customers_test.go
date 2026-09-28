@@ -1,6 +1,7 @@
 package customers
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -93,16 +94,53 @@ func TestCodeAlphabetIsDigitsOnly(t *testing.T) {
 }
 
 func TestCodesAreNotPredictable(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 500; i++ {
+	// This deliberately does not assert that 500 draws are all distinct.
+	//
+	// A six-digit code has a million values, so by the birthday bound a
+	// collision appears in 500 draws about 12% of the time — a correct
+	// generator would fail that assertion roughly one run in eight, and a
+	// suite that cries wolf is worse than no suite. What actually matters is
+	// that codes are spread across the range and do not follow each other,
+	// which is what a predictable generator gets wrong.
+	const draws = 500
+
+	seen := map[string]int{}
+	var previous string
+	firstDigits := map[byte]int{}
+
+	for i := 0; i < draws; i++ {
 		code, err := newCode()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if seen[code] {
-			t.Fatalf("generated a duplicate code %q within 500 draws", code)
+		if len(code) != 6 {
+			t.Fatalf("code %q is not six digits", code)
 		}
-		seen[code] = true
+		for _, r := range code {
+			if r < '0' || r > '9' {
+				t.Fatalf("code %q contains a non-digit", code)
+			}
+		}
+		if code == previous {
+			t.Fatalf("the same code %q was issued twice in a row", code)
+		}
+		if n, err := strconv.Atoi(code); err == nil && previous != "" {
+			if p, err := strconv.Atoi(previous); err == nil && n == p+1 {
+				t.Fatalf("codes are sequential: %q followed %q", code, previous)
+			}
+		}
+		previous = code
+		seen[code]++
+		firstDigits[code[0]]++
+	}
+
+	// A generator stuck on part of the range is the failure worth catching. A
+	// handful of repeats across 500 draws is expected; hundreds are not.
+	if len(seen) < draws-10 {
+		t.Errorf("only %d distinct codes in %d draws, which is far more repetition than chance", len(seen), draws)
+	}
+	if len(firstDigits) < 8 {
+		t.Errorf("leading digit only took %d of 10 values across %d draws", len(firstDigits), draws)
 	}
 }
 

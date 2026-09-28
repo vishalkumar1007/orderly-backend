@@ -358,6 +358,80 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 // PutTheme updates the controlled design tokens. Values are validated against
 // the platform catalogue: an unknown preset, radius or component style is
 // rejected rather than stored.
+// themeRequest is the set of design tokens a client may change. Shared by the
+// direct endpoint and by publishing a draft, so a value that is refused on one
+// path cannot slip through the other.
+type themeRequest struct {
+	Preset       *string `json:"preset"`
+	Mode         *string `json:"mode"`
+	Font         *string `json:"font"`
+	Radius       *string `json:"radius"`
+	Button       *string `json:"button"`
+	Card         *string `json:"card"`
+	Header       *string `json:"header"`
+	Hero         *string `json:"hero"`
+	Layout       *string `json:"product_layout"`
+	Filter       *string `json:"filter_style"`
+	Primary      *string `json:"primary"`
+	Secondary    *string `json:"secondary"`
+	Accent       *string `json:"accent"`
+	HeroImageURL *string `json:"hero_image_url"`
+}
+
+// themeParams validates a theme request and turns it into update parameters.
+//
+// Every token is a closed enum; an unrecognised value is refused with the name
+// of the thing that was wrong rather than normalised away, because a design
+// choice that silently becomes something else is worse than one that fails.
+func themeParams(req themeRequest, tenantID uuid.UUID) (sqlc.UpdateStorefrontThemeParams, error) {
+	params := sqlc.UpdateStorefrontThemeParams{TenantID: pgutil.UUID(tenantID)}
+
+	enums := []struct {
+		value   *string
+		valid   []string
+		code    string
+		message string
+		set     func(string)
+	}{
+		{req.Preset, validPresets, "invalid_preset", "Pick one of the available theme presets",
+			func(v string) { params.ThemePreset = pgutil.NullText(&v) }},
+		{req.Mode, validModes, "invalid_mode", "Theme must be light, dark or system",
+			func(v string) { params.ThemeMode = pgutil.NullText(&v) }},
+		{req.Font, validFonts, "invalid_font", "Pick one of the available fonts",
+			func(v string) { params.FontFamily = pgutil.NullText(&v) }},
+		{req.Radius, validRadii, "invalid_radius", "Pick one of the available corner styles",
+			func(v string) { params.Radius = pgutil.NullText(&v) }},
+		{req.Button, validButtons, "invalid_button_style", "Pick one of the available button styles",
+			func(v string) { params.ButtonStyle = pgutil.NullText(&v) }},
+		{req.Card, validCards, "invalid_card_style", "Pick one of the available card styles",
+			func(v string) { params.CardStyle = pgutil.NullText(&v) }},
+		{req.Header, validHeaders, "invalid_header_style", "Pick one of the available header styles",
+			func(v string) { params.HeaderStyle = pgutil.NullText(&v) }},
+		{req.Hero, validHeros, "invalid_hero_style", "Pick one of the available hero styles",
+			func(v string) { params.HeroStyle = pgutil.NullText(&v) }},
+		{req.Layout, validLayouts, "invalid_product_layout", "Pick list, grid or compact for product cards",
+			func(v string) { params.ProductLayout = pgutil.NullText(&v) }},
+		{req.Filter, validFilters, "invalid_filter_style", "Pick chips, pills or rail for filters",
+			func(v string) { params.FilterStyle = pgutil.NullText(&v) }},
+	}
+	for _, e := range enums {
+		if e.value == nil {
+			continue
+		}
+		v := strings.ToLower(strings.TrimSpace(*e.value))
+		if !contains(e.valid, v) {
+			return params, badDraft(e.code, e.message)
+		}
+		e.set(v)
+	}
+
+	params.PrimaryColor = trimmedText(req.Primary, 20)
+	params.SecondaryColor = trimmedText(req.Secondary, 20)
+	params.AccentColor = trimmedText(req.Accent, 20)
+	params.HeroImageUrl = trimmedText(req.HeroImageURL, 500)
+	return params, nil
+}
+
 func (a *AdminHandler) PutTheme(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantOf(r)
 	if !ok {
@@ -368,102 +442,20 @@ func (a *AdminHandler) PutTheme(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load your storefront")
 		return
 	}
-	var req struct {
-		Preset       *string `json:"preset"`
-		Mode         *string `json:"mode"`
-		Font         *string `json:"font"`
-		Radius       *string `json:"radius"`
-		Button       *string `json:"button"`
-		Card         *string `json:"card"`
-		Header       *string `json:"header"`
-		Hero         *string `json:"hero"`
-		Layout       *string `json:"product_layout"`
-		Filter       *string `json:"filter_style"`
-		Primary      *string `json:"primary"`
-		Secondary    *string `json:"secondary"`
-		Accent       *string `json:"accent"`
-		HeroImageURL *string `json:"hero_image_url"`
-	}
+	var req themeRequest
 	if err := decodeAdmin(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "Could not read those settings")
 		return
 	}
-	params := sqlc.UpdateStorefrontThemeParams{TenantID: pgutil.UUID(tenantID)}
-	if req.Preset != nil {
-		if !contains(validPresets, strings.ToLower(strings.TrimSpace(*req.Preset))) {
-			writeAdminError(w, "invalid_preset", "Pick one of the available theme presets")
+	params, err := themeParams(req, tenantID)
+	if err != nil {
+		if msg, code, ok := draftFieldError(err); ok {
+			writeAdminError(w, code, msg)
 			return
 		}
-		params.ThemePreset = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Preset))))
+		response.Error(w, http.StatusBadRequest, "invalid_request", "Could not read those settings")
+		return
 	}
-	if req.Mode != nil {
-		if !contains(validModes, strings.ToLower(strings.TrimSpace(*req.Mode))) {
-			writeAdminError(w, "invalid_mode", "Theme must be light, dark or system")
-			return
-		}
-		params.ThemeMode = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Mode))))
-	}
-	if req.Font != nil {
-		if !contains(validFonts, strings.ToLower(strings.TrimSpace(*req.Font))) {
-			writeAdminError(w, "invalid_font", "Pick one of the available fonts")
-			return
-		}
-		params.FontFamily = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Font))))
-	}
-	if req.Radius != nil {
-		if !contains(validRadii, strings.ToLower(strings.TrimSpace(*req.Radius))) {
-			writeAdminError(w, "invalid_radius", "Pick one of the available corner styles")
-			return
-		}
-		params.Radius = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Radius))))
-	}
-	if req.Button != nil {
-		if !contains(validButtons, strings.ToLower(strings.TrimSpace(*req.Button))) {
-			writeAdminError(w, "invalid_button_style", "Pick one of the available button styles")
-			return
-		}
-		params.ButtonStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Button))))
-	}
-	if req.Card != nil {
-		if !contains(validCards, strings.ToLower(strings.TrimSpace(*req.Card))) {
-			writeAdminError(w, "invalid_card_style", "Pick one of the available card styles")
-			return
-		}
-		params.CardStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Card))))
-	}
-	if req.Header != nil {
-		if !contains(validHeaders, strings.ToLower(strings.TrimSpace(*req.Header))) {
-			writeAdminError(w, "invalid_header_style", "Pick one of the available header styles")
-			return
-		}
-		params.HeaderStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Header))))
-	}
-	if req.Hero != nil {
-		if !contains(validHeros, strings.ToLower(strings.TrimSpace(*req.Hero))) {
-			writeAdminError(w, "invalid_hero_style", "Pick one of the available hero styles")
-			return
-		}
-		params.HeroStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Hero))))
-	}
-	if req.Layout != nil {
-		if !contains(validLayouts, strings.ToLower(strings.TrimSpace(*req.Layout))) {
-			writeAdminError(w, "invalid_product_layout", "Pick list, grid or compact for product cards")
-			return
-		}
-		params.ProductLayout = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Layout))))
-	}
-	if req.Filter != nil {
-		if !contains(validFilters, strings.ToLower(strings.TrimSpace(*req.Filter))) {
-			writeAdminError(w, "invalid_filter_style", "Pick chips, pills or rail for filters")
-			return
-		}
-		params.FilterStyle = pgutil.NullText(strPtr(strings.ToLower(strings.TrimSpace(*req.Filter))))
-	}
-	params.PrimaryColor = trimmedText(req.Primary, 20)
-	params.SecondaryColor = trimmedText(req.Secondary, 20)
-	params.AccentColor = trimmedText(req.Accent, 20)
-	params.HeroImageUrl = trimmedText(req.HeroImageURL, 500)
-
 	if _, err := a.q.UpdateStorefrontTheme(r.Context(), params); err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not save your theme")
 		return

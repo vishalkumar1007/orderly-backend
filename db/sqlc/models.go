@@ -258,6 +258,14 @@ type TenantServicePreference struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type TenantStorefrontDraft struct {
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	Document    []byte             `json:"document"`
+	BaseVersion pgtype.Timestamptz `json:"base_version"`
+	UpdatedBy   pgtype.UUID        `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type TenantStorefrontSetting struct {
 	TenantID             pgtype.UUID        `json:"tenant_id"`
 	LogoUrl              string             `json:"logo_url"`
@@ -324,4 +332,6 @@ type User struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	MustSetPassword bool               `json:"must_set_password"`
 	InviteTokenHash pgtype.Text        `json:"invite_token_hash"`
+	// Per-user console appearance override. NULL = follow the business default.
+	ConsoleTheme []byte `json:"console_theme"`
 }

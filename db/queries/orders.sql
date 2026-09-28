@@ -193,3 +193,85 @@ SELECT
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'PREPARING') AS preparing_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'READY') AS ready_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'COMPLETED' AND o.created_at >= date_trunc('day', now())) AS completed_today;
+
+-- Order history for the tenant console. Unlike the Selling board — which shows
+-- the live queue — this searches the whole record, so every filter is optional
+-- and applied in SQL rather than by shipping the table to the browser.
+--
+-- sqlc.narg values are NULL when the console did not filter on them, and the
+-- COALESCE pairs below turn that into "match everything".
+-- name: ListOrderHistory :many
+SELECT
+    o.*,
+    (SELECT COUNT(*)::bigint FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+    -- Coalesced because the join is optional: an order with no payment row
+    -- yields NULL, which the generated scanner would refuse for a column the
+    -- payments table declares NOT NULL.
+    COALESCE(p.status, '')::text AS payment_status,
+    COALESCE(p.method, '')::text AS payment_method
+FROM orders o
+LEFT JOIN LATERAL (
+    SELECT status, method FROM payments
+    WHERE payments.order_id = o.id
+    ORDER BY created_at DESC LIMIT 1
+) p ON TRUE
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(status)::text IS NULL OR o.status = sqlc.narg(status)::text)
+  AND (sqlc.narg(source)::text IS NULL OR o.source = sqlc.narg(source)::text)
+  AND (sqlc.narg(from_date)::timestamptz IS NULL OR o.created_at >= sqlc.narg(from_date)::timestamptz)
+  AND (sqlc.narg(to_date)::timestamptz IS NULL OR o.created_at < sqlc.narg(to_date)::timestamptz)
+  AND (
+        sqlc.narg(search)::text IS NULL
+        OR o.customer_name ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR o.customer_phone ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR o.order_number::text = sqlc.narg(search)::text
+      )
+ORDER BY o.created_at DESC
+LIMIT sqlc.arg(row_limit) OFFSET sqlc.arg(row_offset);
+
+-- The totals that go with a filtered history page: how many rows match, and
+-- what they are worth. Counting in SQL keeps the pager honest when the page
+-- itself is only twenty rows.
+-- name: SummarizeOrderHistory :one
+SELECT
+    COUNT(*)::bigint AS total_orders,
+    COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' THEN o.total ELSE 0 END), 0)::text AS total_revenue,
+    COUNT(*) FILTER (WHERE o.status = 'COMPLETED')::bigint AS completed,
+    COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint AS cancelled
+FROM orders o
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(status)::text IS NULL OR o.status = sqlc.narg(status)::text)
+  AND (sqlc.narg(source)::text IS NULL OR o.source = sqlc.narg(source)::text)
+  AND (sqlc.narg(from_date)::timestamptz IS NULL OR o.created_at >= sqlc.narg(from_date)::timestamptz)
+  AND (sqlc.narg(to_date)::timestamptz IS NULL OR o.created_at < sqlc.narg(to_date)::timestamptz)
+  AND (
+        sqlc.narg(search)::text IS NULL
+        OR o.customer_name ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR o.customer_phone ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR o.order_number::text = sqlc.narg(search)::text
+      );
+
+-- The business activity feed: what happened in the shop, as opposed to who
+-- changed its configuration (that is the audit log).
+--
+-- Every row is an order moving through the workflow, joined back to the order
+-- so the feed can name it without a second query per row.
+-- name: ListTenantActivity :many
+SELECT
+    h.id,
+    h.order_id,
+    h.from_status,
+    h.to_status,
+    h.actor,
+    h.created_at,
+    o.order_number,
+    o.customer_name,
+    o.customer_phone,
+    o.total,
+    o.source
+FROM order_status_history h
+JOIN orders o ON o.id = h.order_id
+WHERE h.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(to_status)::text IS NULL OR h.to_status = sqlc.narg(to_status)::text)
+ORDER BY h.created_at DESC
+LIMIT sqlc.arg(row_limit);

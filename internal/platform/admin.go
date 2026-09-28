@@ -23,6 +23,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/brand"
 	"github.com/orderly/orderly-backend/internal/configsvc"
 	"github.com/orderly/orderly-backend/internal/secretbox"
+	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -70,6 +71,61 @@ type createTenantRequest struct {
 	Language         string          `json:"language"`
 	StoreStatus      string          `json:"store_status"`
 	StatusMessage    string          `json:"status_message"`
+
+	// Configuration is the business-type template the Super Admin confirmed
+	// during onboarding. It seeds the tenant's storefront row inside the same
+	// transaction, so a new business arrives configured rather than blank.
+	Configuration *tenantConfigurationRequest `json:"configuration"`
+}
+
+// tenantConfigurationRequest mirrors storefront.Defaults over the wire. Every
+// field is optional; an omitted or unrecognised value leaves the storefront
+// schema default in place.
+type tenantConfigurationRequest struct {
+	ThemePreset       string          `json:"theme_preset"`
+	ThemeMode         string          `json:"theme_mode"`
+	PrimaryColor      string          `json:"primary_color"`
+	SecondaryColor    string          `json:"secondary_color"`
+	AccentColor       string          `json:"accent_color"`
+	FilterStyle       string          `json:"filter_style"`
+	ProductLayout     string          `json:"product_layout"`
+	HeroStyle         string          `json:"hero_style"`
+	FontFamily        string          `json:"font_family"`
+	Radius            string          `json:"radius"`
+	CardStyle         string          `json:"card_style"`
+	ButtonStyle       string          `json:"button_style"`
+	OrderingEnabled   *bool           `json:"ordering_enabled"`
+	CustomerLoginMode string          `json:"customer_login_mode"`
+	PrepTimeMinutes   *int            `json:"prep_time_minutes"`
+	Payments          json.RawMessage `json:"payments"`
+	Workflow          json.RawMessage `json:"workflow"`
+}
+
+// defaults converts the request into the storefront package's own type. The
+// validation lives there, beside the schema it has to satisfy.
+func (c *tenantConfigurationRequest) defaults() storefront.Defaults {
+	if c == nil {
+		return storefront.Defaults{}
+	}
+	return storefront.Defaults{
+		ThemePreset:       c.ThemePreset,
+		ThemeMode:         c.ThemeMode,
+		PrimaryColor:      c.PrimaryColor,
+		SecondaryColor:    c.SecondaryColor,
+		AccentColor:       c.AccentColor,
+		FilterStyle:       c.FilterStyle,
+		ProductLayout:     c.ProductLayout,
+		HeroStyle:         c.HeroStyle,
+		FontFamily:        c.FontFamily,
+		Radius:            c.Radius,
+		CardStyle:         c.CardStyle,
+		ButtonStyle:       c.ButtonStyle,
+		OrderingEnabled:   c.OrderingEnabled,
+		CustomerLoginMode: c.CustomerLoginMode,
+		PrepTimeMinutes:   c.PrepTimeMinutes,
+		Payments:          c.Payments,
+		Workflow:          c.Workflow,
+	}
 }
 
 type updateTenantRequest struct {
@@ -130,20 +186,59 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 			"tenant_count": row.TenantCount,
 		})
 	}
+	// "Needs attention" is answered by the database, not by the browser: a
+	// client-side scan would need every subscription and every tenant on the
+	// wire to find the handful that matter.
+	expiring, err := h.q.ListExpiringSubscriptions(ctx, 14)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load expiring subscriptions")
+		return
+	}
+	expiringOut := make([]any, 0, len(expiring))
+	for _, row := range expiring {
+		expiringOut = append(expiringOut, map[string]any{
+			"subscription_id": pgutil.UUIDString(row.ID),
+			"tenant_id":       pgutil.UUIDString(row.TenantID),
+			"tenant_name":     row.TenantName,
+			"tenant_slug":     row.TenantSlug,
+			"plan":            row.PlanName,
+			"status":          row.Status,
+			"ends_at":         timestampOrEmpty(row.EndAt),
+		})
+	}
+
+	awaiting, err := h.q.ListTenantsAwaitingSetup(ctx)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load pending setups")
+		return
+	}
+	awaitingOut := make([]any, 0, len(awaiting))
+	for _, row := range awaiting {
+		awaitingOut = append(awaitingOut, map[string]any{
+			"tenant_id":   pgutil.UUIDString(row.ID),
+			"tenant_name": row.Name,
+			"tenant_slug": row.Slug,
+			"status":      row.Status,
+			"created_at":  row.CreatedAt.Time.Format(time.RFC3339),
+		})
+	}
+
 	response.JSON(w, http.StatusOK, map[string]any{
-		"total_tenants":     stats.TotalTenants,
-		"active_tenants":    stats.ActiveTenants,
-		"suspended_tenants": stats.SuspendedTenants,
-		"trial_tenants":     stats.TrialTenants,
-		"total_orders":      stats.TotalOrders,
-		"total_revenue":     stats.TotalRevenue,
-		"orders_today":      stats.OrdersToday,
-		"order_value_today": stats.OrderValueToday,
-		"active_users":      stats.ActiveUsers,
-		"pending_setup":     stats.PendingSetup,
-		"orders_by_day":     orderSeries,
-		"tenants_by_week":   tenantSeries,
-		"recent_activity":   activity,
+		"expiring_subscriptions": expiringOut,
+		"awaiting_setup":         awaitingOut,
+		"total_tenants":          stats.TotalTenants,
+		"active_tenants":         stats.ActiveTenants,
+		"suspended_tenants":      stats.SuspendedTenants,
+		"trial_tenants":          stats.TrialTenants,
+		"total_orders":           stats.TotalOrders,
+		"total_revenue":          stats.TotalRevenue,
+		"orders_today":           stats.OrdersToday,
+		"order_value_today":      stats.OrderValueToday,
+		"active_users":           stats.ActiveUsers,
+		"pending_setup":          stats.PendingSetup,
+		"orders_by_day":          orderSeries,
+		"tenants_by_week":        tenantSeries,
+		"recent_activity":        activity,
 	})
 }
 
@@ -301,6 +396,20 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = qtx.EnsureOrderCounter(ctx, tenant.ID)
+
+	// Seed the storefront from the chosen business type. This runs inside the
+	// transaction: a business that cannot be configured is not created, rather
+	// than created and left half-set-up.
+	if err := storefront.Provision(ctx, qtx, uuid.UUID(tenant.ID.Bytes), storefront.Seed{
+		Name:       req.Name,
+		Phone:      req.Phone,
+		Address:    req.Address,
+		LogoURL:    req.LogoURL,
+		FaviconURL: req.FaviconURL,
+	}, req.Configuration.defaults()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to configure the storefront")
+		return
+	}
 
 	admin, err := qtx.CreateUser(ctx, sqlc.CreateUserParams{
 		TenantID: tenant.ID, Name: req.AdminName, Email: req.AdminEmail, Phone: adminPhone,
@@ -736,22 +845,35 @@ func (h *Handler) ListPlatformUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]any, 0, len(rows))
 	for _, u := range rows {
+		// A user who has never set a password is invited, not active. The
+		// distinction matters on this page: an "active" row nobody can sign in
+		// as is the thing an operator most often needs to chase.
 		status := u.Status
 		if u.MustSetPassword {
 			status = "INVITED"
 		}
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"id":            pgutil.UUIDString(u.ID),
 			"name":          u.Name,
 			"email":         u.Email,
+			"phone":         u.Phone,
 			"role":          u.Role,
 			"status":        status,
+			"scope":         "TENANT",
 			"tenant_id":     pgutil.UUIDPtr(u.TenantID),
 			"tenant_name":   textOrEmpty(u.TenantName),
 			"tenant_slug":   textOrEmpty(u.TenantSlug),
+			"tenant_status": textOrEmpty(u.TenantStatus),
 			"last_activity": nil,
 			"created_at":    u.CreatedAt.Time.Format(time.RFC3339),
-		})
+		}
+		if !u.TenantID.Valid {
+			row["scope"] = "PLATFORM"
+		}
+		if ts := timestampOrEmpty(u.LastActivity); ts != "" {
+			row["last_activity"] = ts
+		}
+		out = append(out, row)
 	}
 	response.JSON(w, http.StatusOK, map[string]any{"users": out})
 }
@@ -993,6 +1115,11 @@ func timestampOrEmpty(t interface{}) string {
 			return ""
 		}
 		return v.Format(time.RFC3339)
+	case pgtype.Timestamptz:
+		if !v.Valid || v.Time.IsZero() {
+			return ""
+		}
+		return v.Time.Format(time.RFC3339)
 	case nil:
 		return ""
 	default:
