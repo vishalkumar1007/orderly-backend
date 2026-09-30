@@ -324,6 +324,21 @@ func TestHoursAlwaysOpen(t *testing.T) {
 	}
 }
 
+func TestHoursConfiguredRequiresExplicitSave(t *testing.T) {
+	if HoursConfigured(nil) || HoursConfigured([]byte("{}")) || HoursConfigured([]byte("null")) {
+		t.Error("virgin / empty hours must not count as configured")
+	}
+	if !HoursConfigured([]byte(`{"always_open":true}`)) {
+		t.Error("explicit always_open should count as configured")
+	}
+	if !HoursConfigured([]byte(`{"always_open":false,"schedule":{"mon":[["09:00","17:00"]]}}`)) {
+		t.Error("a weekly schedule should count as configured")
+	}
+	if HoursConfigured([]byte(`{"timezone":"UTC"}`)) {
+		t.Error("timezone alone without always_open or schedule is not configured")
+	}
+}
+
 func TestHoursRespectsTheSchedule(t *testing.T) {
 	doc := []byte(`{"always_open":false,"schedule":{"mon":[["09:00","12:00"]]}}`)
 	h := parseHours(doc, "UTC")

@@ -338,4 +338,41 @@ func TestSetupChecklistReflectsRealState(t *testing.T) {
 	if steps["business_info"] != true {
 		t.Error("business details were filled in but the step did not complete")
 	}
+
+	// Virgin hours must stay incomplete; always-open after an explicit save completes.
+	if steps["hours"] == true {
+		t.Error("a brand-new shop must not report hours as complete")
+	}
+	status, body = env.doOn(http.MethodPut, "/api/v1/tenant/storefront/hours", owner, map[string]any{
+		"always_open": true,
+		"timezone":    "Asia/Kolkata",
+		"schedule":    map[string]any{},
+	}, host)
+	env.mustStatus(http.StatusOK, status, "save always-open hours", body)
+	status, body = env.doOn(http.MethodGet, "/api/v1/tenant/setup", owner, nil, host)
+	env.mustStatus(http.StatusOK, status, "checklist after hours", body)
+	steps, _ = body["steps"].(map[string]any)
+	if steps["hours"] != true {
+		t.Error("explicit always-open hours should complete the hours step")
+	}
+}
+
+func TestSetupBusinessInfoFromStorefrontIdentity(t *testing.T) {
+	env := newTestEnv(t)
+	tenantID := env.createTenant("SF Checklist", "sf-check-"+randSuffix())
+	host := env.hostFor(tenantID)
+	owner := tenantUser(env, identity.RoleTenantAdmin, tenantID)
+
+	status, body := env.doOn(http.MethodPut, "/api/v1/tenant/storefront", owner, map[string]any{
+		"phone":   "9876500001",
+		"address": "2 Storefront Lane",
+	}, host)
+	env.mustStatus(http.StatusOK, status, "save storefront identity", body)
+
+	status, body = env.doOn(http.MethodGet, "/api/v1/tenant/setup", owner, nil, host)
+	env.mustStatus(http.StatusOK, status, "read checklist", body)
+	steps, _ := body["steps"].(map[string]any)
+	if steps["business_info"] != true {
+		t.Error("storefront phone+address should complete business_info")
+	}
 }

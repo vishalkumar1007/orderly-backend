@@ -576,44 +576,37 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cats, _ := h.q.ListCategoriesByTenant(ctx, t.ID)
-	prods, _ := h.q.ListProductsByTenant(ctx, t.ID)
-	hasCategory := false
-	for _, c := range cats {
-		if c.IsActive {
-			hasCategory = true
-			break
-		}
-	}
-	// A product nobody can order does not make the shop sellable.
-	hasSellable := false
-	for _, p := range prods {
-		if p.IsAvailable {
-			hasSellable = true
-			break
-		}
-	}
+	// Existence checks only — never pull the full menu catalogue into memory.
+	hasCategory, _ := h.q.TenantHasActiveCategory(ctx, t.ID)
+	hasSellable, _ := h.q.TenantHasAvailableProduct(ctx, t.ID)
 
-	// Contact details customers and the platform both depend on.
-	hasBusinessInfo := strings.TrimSpace(t.Name) != "" &&
-		(strings.TrimSpace(t.Phone) != "" || strings.TrimSpace(t.Email) != "") &&
-		strings.TrimSpace(t.Address) != ""
+	// Contact: Settings writes storefront identity; platform may still hold
+	// tenants.phone/address. Prefer storefront, fall back to the tenant row.
+	name := strings.TrimSpace(t.Name)
+	phone := strings.TrimSpace(t.Phone)
+	address := strings.TrimSpace(t.Address)
+	email := strings.TrimSpace(t.Email)
 
-	// The storefront documents answer the remaining three steps. A shop with no
-	// storefront row has simply not started, so the zero values are correct.
 	var hasPayment, hasHours, hasStorefront bool
 	if sf, err := storefront.NewLoaderFromQueries(h.q).Load(ctx, id); err == nil && sf != nil {
+		if n := strings.TrimSpace(sf.Name); n != "" {
+			name = n
+		}
+		if p := strings.TrimSpace(sf.Phone); p != "" {
+			phone = p
+		}
+		if a := strings.TrimSpace(sf.Address); a != "" {
+			address = a
+		}
 		hasPayment = len(sf.Payments.Methods()) > 0
-		// "Always open" is the default nobody chose. A real schedule, or an
-		// explicit decision to stay always open, both count — the difference is
-		// whether the document was ever written.
-		hasHours = len(sf.OpeningHours.Schedule) > 0
-		// Saved at least once: created_at and updated_at diverge on first write.
+		hasHours = sf.HoursConfigured()
 		hasStorefront = sf.UpdatedAt.After(t.CreatedAt.Time.Add(time.Second)) &&
 			strings.TrimSpace(sf.Name) != ""
 	}
 
-	users, _ := h.q.ListTenantUsers(ctx, t.ID)
+	hasBusinessInfo := name != "" && (phone != "" || email != "") && address != ""
+
+	userCount, _ := h.q.CountTenantUsers(ctx, t.ID)
 
 	response.JSON(w, http.StatusOK, map[string]any{
 		"setup_status": t.SetupStatus,
@@ -625,7 +618,7 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 			"hours":         hasHours,
 			"storefront":    hasStorefront,
 			// Optional: a one-person shop is a complete shop.
-			"staff":  len(users) > 1,
+			"staff":  userCount > 1,
 			"launch": t.IsPublished,
 		},
 		// The steps the product calls the minimum to launch. The console greys

@@ -2,6 +2,8 @@ package storefront
 
 import (
 	"net/http"
+	neturl "net/url"
+	"strings"
 
 	"github.com/orderly/orderly-backend/pkg/response"
 )
@@ -42,8 +44,24 @@ func (a *AdminHandler) QRCode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// StoreLink returns just the public URL. The shop shell uses it for its
-// "View storefront" link.
+// storeLinkHostAndPath splits an absolute public URL into host (with port) and
+// path so legacy clients that assemble `http://${host}${path}` stay correct.
+// public_url remains the canonical absolute address.
+func storeLinkHostAndPath(absolute string) (host, path string) {
+	path = "/"
+	u, err := neturl.Parse(strings.TrimSpace(absolute))
+	if err != nil || u.Host == "" {
+		return strings.TrimPrefix(strings.TrimPrefix(absolute, "https://"), "http://"), path
+	}
+	host = u.Host
+	if u.Path != "" && u.Path != "/" {
+		path = u.Path
+	}
+	return host, path
+}
+
+// StoreLink returns the public URL plus live ops fields the shop dashboard
+// needs for its hero (publish badge, status toggles, identity).
 func (a *AdminHandler) StoreLink(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantOf(r)
 	if !ok {
@@ -56,13 +74,17 @@ func (a *AdminHandler) StoreLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	url := a.base(sf.Slug)
+	host, path := storeLinkHostAndPath(url)
 	response.JSON(w, http.StatusOK, map[string]any{
-		"name":          sf.Name,
-		"slug":          sf.Slug,
-		"public_url":    url,
-		"public_host":   url,
-		"public_path":   "",
-		"is_published":  sf.IsPublished,
-		"ordering_open": sf.OrderingAllowed(),
+		"name":               sf.Name,
+		"slug":               sf.Slug,
+		"public_url":         url,
+		"public_host":        host,
+		"public_path":        path,
+		"is_published":       sf.IsPublished,
+		"ordering_open":      sf.OrderingAllowed(),
+		"store_status":       sf.StoreStatus,
+		"status_message":     sf.StatusMessage,
+		"store_status_label": sf.StoreStatusLabel(),
 	})
 }

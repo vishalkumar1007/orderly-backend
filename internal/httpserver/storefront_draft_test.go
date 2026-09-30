@@ -145,6 +145,84 @@ func TestAStaleDraftIsRefusedRatherThanOverwriting(t *testing.T) {
 	}
 }
 
+func TestDraftPublishLeavesLiveOpsUntouched(t *testing.T) {
+	env, host, owner := draftHost(t)
+
+	// Set live ops via the immediate APIs (Action / Customize).
+	status, body := env.doOn(http.MethodPut, "/api/v1/tenant/customize", owner, map[string]any{
+		"store_status":   "BUSY",
+		"status_message": "[offer] Live banner",
+	}, host)
+	env.mustStatus(http.StatusOK, status, "set live status + banner", body)
+
+	status, body = env.doOn(http.MethodPut, "/api/v1/tenant/customize/hours", owner, map[string]any{
+		"always_open": true,
+		"timezone":    "Asia/Kolkata",
+	}, host)
+	env.mustStatus(http.StatusOK, status, "set live hours", body)
+
+	// An older draft that still carries ops fields must not overwrite them.
+	draft := map[string]any{
+		"behaviour": map[string]any{
+			"store_status":      "CLOSED",
+			"status_message":    "[alert] Stale draft banner",
+			"prep_time_minutes": 45,
+		},
+		"hours": map[string]any{
+			"always_open": false,
+			"timezone":    "UTC",
+		},
+	}
+	status, body = env.doOn(http.MethodPut, "/api/v1/tenant/customize/draft", owner, draft, host)
+	env.mustStatus(http.StatusOK, status, "save draft with stale ops", body)
+
+	status, body = env.doOn(http.MethodPost, "/api/v1/tenant/customize/draft/publish", owner, nil, host)
+	env.mustStatus(http.StatusOK, status, "publish draft", body)
+
+	behaviour, _ := body["behaviour"].(map[string]any)
+	if behaviour["store_status"] != "BUSY" {
+		t.Errorf("published store_status = %v, want BUSY (live ops)", behaviour["store_status"])
+	}
+	if behaviour["status_message"] != "[offer] Live banner" {
+		t.Errorf("published status_message = %v, want live banner", behaviour["status_message"])
+	}
+	if behaviour["prep_time_minutes"] != float64(45) && behaviour["prep_time_minutes"] != 45 {
+		t.Errorf("published prep_time_minutes = %v, want 45", behaviour["prep_time_minutes"])
+	}
+	hours, _ := body["hours"].(map[string]any)
+	if hours["always_open"] != true {
+		t.Errorf("published hours.always_open = %v, want true (live ops)", hours["always_open"])
+	}
+}
+
+func TestDraftPublishAppliesPrepTimeWithoutTouchingBanner(t *testing.T) {
+	env, host, owner := draftHost(t)
+
+	status, body := env.doOn(http.MethodPut, "/api/v1/tenant/customize", owner, map[string]any{
+		"status_message": "[offer] Keep me",
+	}, host)
+	env.mustStatus(http.StatusOK, status, "set live banner", body)
+
+	draft := map[string]any{
+		"behaviour": map[string]any{
+			"prep_time_minutes": 30,
+		},
+	}
+	status, body = env.doOn(http.MethodPut, "/api/v1/tenant/customize/draft", owner, draft, host)
+	env.mustStatus(http.StatusOK, status, "save draft", body)
+
+	status, body = env.doOn(http.MethodPost, "/api/v1/tenant/customize/draft/publish", owner, nil, host)
+	env.mustStatus(http.StatusOK, status, "publish draft", body)
+
+	behaviour, _ := body["behaviour"].(map[string]any)
+	if behaviour["status_message"] != "[offer] Keep me" {
+		t.Errorf("published status_message = %v, want live banner kept", behaviour["status_message"])
+	}
+	if behaviour["prep_time_minutes"] != float64(30) && behaviour["prep_time_minutes"] != 30 {
+		t.Errorf("published prep_time_minutes = %v, want 30", behaviour["prep_time_minutes"])
+	}
+}
+
 func TestDraftsAreOwnerOnlyAndNeverCrossShops(t *testing.T) {
 	env := newTestEnv(t)
 	tenantID := env.createTenant("Draft Fence", "draft-fence-"+randSuffix())

@@ -122,6 +122,7 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 			"secondary":      sf.Theme.Secondary,
 			"accent":         sf.Theme.Accent,
 			"hero_image_url": sf.HeroImageURL,
+			"customer_mode_switch_enabled": sf.Theme.CustomerModeSwitch,
 			"vars":           sf.Theme.CSSVars(),
 		},
 		"behaviour": map[string]any{
@@ -238,6 +239,24 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not save your details")
 			return
+		}
+		// Keep tenants contact in sync so setup checklist / platform views match
+		// what the owner saved on the storefront identity form.
+		tenantPatch := sqlc.UpdateTenantParams{ID: pgutil.UUID(tenantID)}
+		if req.Name != nil {
+			tenantPatch.Name = nameParam
+		}
+		if req.Phone != nil {
+			tenantPatch.Phone = trimmedText(req.Phone, 40)
+		}
+		if req.Address != nil {
+			tenantPatch.Address = trimmedText(req.Address, 300)
+		}
+		if req.Name != nil || req.Phone != nil || req.Address != nil {
+			if _, err := a.q.UpdateTenant(r.Context(), tenantPatch); err != nil {
+				response.Error(w, http.StatusInternalServerError, "internal_error", "could not sync business contact")
+				return
+			}
 		}
 	}
 	if req.OrderingEnabled != nil || req.ClosedMessage != nil || req.CustomerLogin != nil || req.CustomerLoginMode != nil || req.PrepTimeMinutes != nil {
@@ -376,6 +395,7 @@ type themeRequest struct {
 	Secondary    *string `json:"secondary"`
 	Accent       *string `json:"accent"`
 	HeroImageURL *string `json:"hero_image_url"`
+	CustomerModeSwitch *bool `json:"customer_mode_switch_enabled"`
 }
 
 // themeParams validates a theme request and turns it into update parameters.
@@ -429,6 +449,9 @@ func themeParams(req themeRequest, tenantID uuid.UUID) (sqlc.UpdateStorefrontThe
 	params.SecondaryColor = trimmedText(req.Secondary, 20)
 	params.AccentColor = trimmedText(req.Accent, 20)
 	params.HeroImageUrl = trimmedText(req.HeroImageURL, 500)
+	if req.CustomerModeSwitch != nil {
+		params.CustomerThemeSwitchEnabled = pgtype.Bool{Bool: *req.CustomerModeSwitch, Valid: true}
+	}
 	return params, nil
 }
 

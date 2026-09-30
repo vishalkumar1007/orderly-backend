@@ -67,7 +67,7 @@ func Merge(presetJSON, overridesJSON []byte) Tokens {
 
 // Payload is the theme object returned to clients.
 func Payload(presetID, presetName, mode string, presetJSON, overridesJSON []byte) map[string]any {
-	if mode != "light" && mode != "dark" && mode != "system" {
+	if mode != "light" && mode != "soft" && mode != "dark" && mode != "night" && mode != "system" {
 		mode = "system"
 	}
 	name := presetName

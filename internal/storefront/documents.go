@@ -1,6 +1,7 @@
 package storefront
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -213,6 +214,35 @@ func parseHours(raw []byte, timezone string) Hours {
 	}
 	h.index()
 	return h
+}
+
+// HoursConfigured reports whether an admin has explicitly saved opening hours.
+// Virgin default '{}' parses as always-open for ordering but is not "configured"
+// for the launch checklist — otherwise every new shop would look finished.
+func HoursConfigured(raw []byte) bool {
+	trim := bytes.TrimSpace(raw)
+	if len(trim) == 0 || bytes.Equal(trim, []byte("{}")) || bytes.Equal(trim, []byte("null")) {
+		return false
+	}
+	var doc struct {
+		AlwaysOpen *bool          `json:"always_open"`
+		Schedule   map[string]any `json:"schedule"`
+	}
+	if err := json.Unmarshal(trim, &doc); err != nil {
+		return false
+	}
+	if doc.AlwaysOpen != nil {
+		return true
+	}
+	if doc.Schedule == nil {
+		return false
+	}
+	return len(normaliseSchedule(doc.Schedule)) > 0
+}
+
+// HoursConfigured reports whether this storefront has explicitly saved opening hours.
+func (s *Storefront) HoursConfigured() bool {
+	return HoursConfigured(s.rawOpeningHours)
 }
 
 // normaliseSchedule accepts both shapes an admin might hand us:

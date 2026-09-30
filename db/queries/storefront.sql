@@ -51,6 +51,7 @@ SELECT
     s.hero_image_url,
     s.product_layout,
     s.filter_style,
+    s.customer_theme_switch_enabled,
     s.ordering_enabled,
     s.closed_message,
     s.customer_login_enabled,
@@ -110,6 +111,7 @@ SET
     hero_image_url  = COALESCE(sqlc.narg(hero_image_url), hero_image_url),
     product_layout  = COALESCE(sqlc.narg(product_layout), product_layout),
     filter_style    = COALESCE(sqlc.narg(filter_style), filter_style),
+    customer_theme_switch_enabled = COALESCE(sqlc.narg(customer_theme_switch_enabled), customer_theme_switch_enabled),
     updated_at      = now()
 WHERE tenant_id = sqlc.arg(tenant_id)
 RETURNING *;

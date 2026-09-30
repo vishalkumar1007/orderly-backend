@@ -55,21 +55,28 @@ type draftDocument struct {
 	} `json:"store"`
 
 	Theme *struct {
-		Preset        *string `json:"preset"`
-		Mode          *string `json:"mode"`
-		Font          *string `json:"font"`
-		Radius        *string `json:"radius"`
-		Button        *string `json:"button"`
-		Card          *string `json:"card"`
-		Header        *string `json:"header"`
-		Hero          *string `json:"hero"`
-		ProductLayout *string `json:"product_layout"`
-		FilterStyle   *string `json:"filter_style"`
-		Primary       *string `json:"primary"`
-		Secondary     *string `json:"secondary"`
-		Accent        *string `json:"accent"`
-		HeroImageURL  *string `json:"hero_image_url"`
+		Preset             *string `json:"preset"`
+		Mode               *string `json:"mode"`
+		Font               *string `json:"font"`
+		Radius             *string `json:"radius"`
+		Button             *string `json:"button"`
+		Card               *string `json:"card"`
+		Header             *string `json:"header"`
+		Hero               *string `json:"hero"`
+		ProductLayout      *string `json:"product_layout"`
+		FilterStyle        *string `json:"filter_style"`
+		Primary            *string `json:"primary"`
+		Secondary          *string `json:"secondary"`
+		Accent             *string `json:"accent"`
+		HeroImageURL       *string `json:"hero_image_url"`
+		CustomerModeSwitch *bool   `json:"customer_mode_switch_enabled"`
 	} `json:"theme"`
+
+	Hours *struct {
+		AlwaysOpen *bool          `json:"always_open"`
+		Timezone   *string        `json:"timezone"`
+		Schedule   map[string]any `json:"schedule"`
+	} `json:"hours"`
 
 	Behaviour *struct {
 		OrderingEnabled   *bool   `json:"ordering_enabled"`
@@ -80,6 +87,7 @@ type draftDocument struct {
 		PackagingFee      any     `json:"packaging_fee"`
 		Published         *bool   `json:"published"`
 		StoreStatus       *string `json:"store_status"`
+		StatusMessage     *string `json:"status_message"`
 	} `json:"behaviour"`
 
 	Homepage *struct {
@@ -342,7 +350,7 @@ func (a *AdminHandler) applyDraft(
 			Button: t.Button, Card: t.Card, Header: t.Header, Hero: t.Hero,
 			Layout: t.ProductLayout, Filter: t.FilterStyle,
 			Primary: t.Primary, Secondary: t.Secondary, Accent: t.Accent,
-			HeroImageURL: t.HeroImageURL,
+			HeroImageURL: t.HeroImageURL, CustomerModeSwitch: t.CustomerModeSwitch,
 		}, tenantID)
 		if err != nil {
 			return err
@@ -420,7 +428,13 @@ func (a *AdminHandler) applyDraft(
 				return err
 			}
 		}
+		// store_status and status_message are live ops (Action / Customize save
+		// them immediately). Publishing a Studio draft must not overwrite them.
 	}
+
+	// Opening hours are live ops — same as store status. Ignore any hours
+	// still present on older draft documents.
+	_ = doc.Hours
 
 	if h := doc.Homepage; h != nil && len(h.Sections) > 0 {
 		var sections []Section

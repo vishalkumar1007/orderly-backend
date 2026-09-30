@@ -146,6 +146,28 @@ func TestPublicStoreServesConfiguration(t *testing.T) {
 	}
 }
 
+func TestPublicStoreExposesStatusMessage(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+
+	status, body := shop.admin(http.MethodPut, "/api/v1/tenant/storefront", map[string]any{
+		"status_message": "[alert] Kitchen running 15 minutes behind",
+	})
+	env.mustStatus(http.StatusOK, status, "set customer banner", body)
+
+	status, public := shop.guest(http.MethodGet, "/api/v1/public/store", nil)
+	env.mustStatus(http.StatusOK, status, "GET /public/store after banner", public)
+
+	ordering, _ := public["ordering"].(map[string]any)
+	if ordering["status_message"] != "[alert] Kitchen running 15 minutes behind" {
+		t.Errorf("ordering.status_message = %v, want stored banner", ordering["status_message"])
+	}
+	display, _ := ordering["status_message_display"].(string)
+	if display == "" {
+		t.Error("ordering.status_message_display must be set for the customer layout")
+	}
+}
+
 func TestPublicStoreRequiresATenantHost(t *testing.T) {
 	env := newTestEnv(t)
 	// The API host is not a storefront host.
@@ -1673,8 +1695,28 @@ func TestStoreLinkEndpoint(t *testing.T) {
 	shop := newShop(t, env)
 	status, body := shop.admin(http.MethodGet, "/api/v1/tenant/store-link", nil)
 	env.mustStatus(http.StatusOK, status, "store link", body)
-	if !strings.Contains(str(t, body, "public_url"), shop.slug) {
-		t.Errorf("public_url = %q", body["public_url"])
+	publicURL := str(t, body, "public_url")
+	if !strings.Contains(publicURL, shop.slug) {
+		t.Errorf("public_url = %q", publicURL)
+	}
+	if !strings.HasPrefix(publicURL, "http://") && !strings.HasPrefix(publicURL, "https://") {
+		t.Errorf("public_url must be absolute, got %q", publicURL)
+	}
+	host := str(t, body, "public_host")
+	if host == "" {
+		t.Fatalf("public_host missing: %#v", body)
+	}
+	if strings.Contains(host, "://") {
+		t.Errorf("public_host must be host-only (no scheme), got %q", host)
+	}
+	if path := str(t, body, "public_path"); path != "/" {
+		t.Errorf("public_path = %q, want /", path)
+	}
+	if got := str(t, body, "store_status"); got == "" {
+		t.Fatalf("store_status missing from store-link response: %#v", body)
+	}
+	if _, ok := body["store_status_label"]; !ok {
+		t.Fatalf("store_status_label missing from store-link response: %#v", body)
 	}
 }
 

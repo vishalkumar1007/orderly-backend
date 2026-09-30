@@ -29,6 +29,8 @@ type Theme struct {
 	Primary   string
 	Secondary string
 	Accent    string
+	// CustomerModeSwitch lets shoppers override light/dark on the storefront.
+	CustomerModeSwitch bool
 }
 
 // PresetDef is one entry in the platform theme catalogue.
@@ -128,8 +130,9 @@ var FontImports = map[string]string{
 func resolveTheme(row sqlc.GetStorefrontConfigRow) Theme {
 	base := PresetByID(row.ThemePreset)
 	return Theme{
-		Preset:    base.ID,
-		Mode:      oneOf(row.ThemeMode, base.Mode, validModes),
+		Preset:             base.ID,
+		Mode:               oneOf(row.ThemeMode, base.Mode, validModes),
+		CustomerModeSwitch: row.CustomerThemeSwitchEnabled,
 		Font:      oneOf(row.FontFamily, base.Font, validFonts),
 		Radius:    oneOf(row.Radius, base.Radius, validRadii),
 		Button:    oneOf(row.ButtonStyle, base.ButtonStyle, validButtons),

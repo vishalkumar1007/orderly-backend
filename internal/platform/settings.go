@@ -277,9 +277,9 @@ func (h *Handler) PatchSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		switch cfg.BrandColorMode {
-		case "", "light", "dark", "system":
+		case "", "light", "soft", "dark", "night", "system":
 		default:
-			response.Error(w, http.StatusBadRequest, "invalid_request", "color mode must be light, dark, or system")
+			response.Error(w, http.StatusBadRequest, "invalid_request", "color mode must be light, soft, dark, night, or system")
 			return
 		}
 		if cfg.BrandPrimary != "" && !hexColorRe.MatchString(cfg.BrandPrimary) {

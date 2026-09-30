@@ -58,6 +58,19 @@ SELECT * FROM products
 WHERE tenant_id = $1
 ORDER BY sort_order ASC, name ASC;
 
+-- name: TenantHasActiveCategory :one
+-- Launch checklist only needs existence — never pull the full catalogue.
+SELECT EXISTS(
+    SELECT 1 FROM categories
+    WHERE tenant_id = $1 AND is_active = true
+);
+
+-- name: TenantHasAvailableProduct :one
+SELECT EXISTS(
+    SELECT 1 FROM products
+    WHERE tenant_id = $1 AND is_available = true
+);
+
 -- name: GetProductByID :one
 SELECT * FROM products
 WHERE id = $1 AND tenant_id = $2
