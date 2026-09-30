@@ -77,7 +77,7 @@ func (q *Queries) GetCustomerByPhone(ctx context.Context, arg GetCustomerByPhone
 }
 
 const listCustomerOrders = `-- name: ListCustomerOrders :many
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE tenant_id = $1 AND customer_id = $2
 ORDER BY created_at DESC
 LIMIT $3
@@ -125,6 +125,7 @@ func (q *Queries) ListCustomerOrders(ctx context.Context, arg ListCustomerOrders
 			&i.Source,
 			&i.ClientToken,
 			&i.PackagingFee,
+			&i.TableID,
 		); err != nil {
 			return nil, err
 		}

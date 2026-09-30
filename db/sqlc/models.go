@@ -8,6 +8,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Appointment struct {
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	CustomerID  pgtype.UUID        `json:"customer_id"`
+	ServiceID   pgtype.UUID        `json:"service_id"`
+	StaffID     pgtype.UUID        `json:"staff_id"`
+	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AuditLog struct {
 	ID         pgtype.UUID        `json:"id"`
 	TenantID   pgtype.UUID        `json:"tenant_id"`
@@ -20,6 +32,25 @@ type AuditLog struct {
 	Result     string             `json:"result"`
 }
 
+type BusinessTypeCapability struct {
+	BusinessTypeCode string `json:"business_type_code"`
+	CapabilityCode   string `json:"capability_code"`
+	DefaultEnabled   bool   `json:"default_enabled"`
+	Configurable     bool   `json:"configurable"`
+}
+
+type BusinessTypeDefault struct {
+	BusinessTypeCode string `json:"business_type_code"`
+	CapabilityCode   string `json:"capability_code"`
+	Seed             []byte `json:"seed"`
+}
+
+type Capability struct {
+	Code      string             `json:"code"`
+	Label     string             `json:"label"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Category struct {
 	ID          pgtype.UUID        `json:"id"`
 	TenantID    pgtype.UUID        `json:"tenant_id"`
@@ -30,6 +61,15 @@ type Category struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	ImageUrl    pgtype.Text        `json:"image_url"`
+}
+
+type Charge struct {
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	FolioID     pgtype.UUID        `json:"folio_id"`
+	Description string             `json:"description"`
+	Amount      pgtype.Numeric     `json:"amount"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type Customer struct {
@@ -52,6 +92,46 @@ type CustomerOtpCode struct {
 	Attempts   int32              `json:"attempts"`
 	ConsumedAt pgtype.Timestamptz `json:"consumed_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type Folio struct {
+	ID            pgtype.UUID        `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	ReservationID pgtype.UUID        `json:"reservation_id"`
+	Status        string             `json:"status"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type HousekeepingTask struct {
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	RoomID      pgtype.UUID        `json:"room_id"`
+	TaskType    string             `json:"task_type"`
+	Status      string             `json:"status"`
+	AssignedTo  pgtype.UUID        `json:"assigned_to"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+}
+
+type License struct {
+	ID            pgtype.UUID        `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	TemplateID    pgtype.UUID        `json:"template_id"`
+	Status        string             `json:"status"`
+	IssuedAt      pgtype.Timestamptz `json:"issued_at"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	RevokedReason string             `json:"revoked_reason"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type LicenseTemplate struct {
+	ID              pgtype.UUID        `json:"id"`
+	PlanID          pgtype.UUID        `json:"plan_id"`
+	Name            string             `json:"name"`
+	ValidityDays    pgtype.Int4        `json:"validity_days"`
+	GracePeriodDays int32              `json:"grace_period_days"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 type Order struct {
@@ -81,6 +161,7 @@ type Order struct {
 	Source           string             `json:"source"`
 	ClientToken      string             `json:"client_token"`
 	PackagingFee     pgtype.Numeric     `json:"packaging_fee"`
+	TableID          pgtype.UUID        `json:"table_id"`
 }
 
 type OrderCounter struct {
@@ -126,6 +207,9 @@ type Payment struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	FailureReason     string             `json:"failure_reason"`
 	AttemptCount      int32              `json:"attempt_count"`
+	PayableType       string             `json:"payable_type"`
+	PayableID         pgtype.UUID        `json:"payable_id"`
+	Purpose           string             `json:"purpose"`
 }
 
 type Plan struct {
@@ -181,12 +265,77 @@ type Product struct {
 	Addons                   []byte             `json:"addons"`
 }
 
+type QueueEntry struct {
+	ID            pgtype.UUID        `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	AppointmentID pgtype.UUID        `json:"appointment_id"`
+	CustomerID    pgtype.UUID        `json:"customer_id"`
+	QueueDate     pgtype.Date        `json:"queue_date"`
+	QueueNumber   int32              `json:"queue_number"`
+	Status        string             `json:"status"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type RefreshToken struct {
 	ID        pgtype.UUID        `json:"id"`
 	UserID    pgtype.UUID        `json:"user_id"`
 	TokenHash string             `json:"token_hash"`
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Reservation struct {
+	ID           pgtype.UUID        `json:"id"`
+	TenantID     pgtype.UUID        `json:"tenant_id"`
+	CustomerID   pgtype.UUID        `json:"customer_id"`
+	RoomTypeID   pgtype.UUID        `json:"room_type_id"`
+	RoomID       pgtype.UUID        `json:"room_id"`
+	CheckInDate  pgtype.Date        `json:"check_in_date"`
+	CheckOutDate pgtype.Date        `json:"check_out_date"`
+	Guests       int32              `json:"guests"`
+	Status       string             `json:"status"`
+	CheckedInAt  pgtype.Timestamptz `json:"checked_in_at"`
+	CheckedOutAt pgtype.Timestamptz `json:"checked_out_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Room struct {
+	ID         pgtype.UUID        `json:"id"`
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	RoomTypeID pgtype.UUID        `json:"room_type_id"`
+	Number     string             `json:"number"`
+	Status     string             `json:"status"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type RoomType struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Name      string             `json:"name"`
+	BasePrice pgtype.Numeric     `json:"base_price"`
+	MaxGuests int32              `json:"max_guests"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Service struct {
+	ID              pgtype.UUID        `json:"id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+	Name            string             `json:"name"`
+	DurationMinutes int32              `json:"duration_minutes"`
+	Price           pgtype.Numeric     `json:"price"`
+	IsActive        bool               `json:"is_active"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type StaffAvailability struct {
+	ID        pgtype.UUID `json:"id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	StaffID   pgtype.UUID `json:"staff_id"`
+	Weekday   int32       `json:"weekday"`
+	StartTime pgtype.Time `json:"start_time"`
+	EndTime   pgtype.Time `json:"end_time"`
 }
 
 type Subscription struct {
@@ -198,6 +347,15 @@ type Subscription struct {
 	EndAt     pgtype.Timestamptz `json:"end_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Table struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Label     string             `json:"label"`
+	Seats     int32              `json:"seats"`
+	Status    string             `json:"status"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Tenant struct {
@@ -225,8 +383,15 @@ type Tenant struct {
 	Timezone         string             `json:"timezone"`
 	Language         string             `json:"language"`
 	StoreStatus      string             `json:"store_status"`
-	ShopType         string             `json:"shop_type"`
 	StatusMessage    string             `json:"status_message"`
+}
+
+type TenantCapability struct {
+	TenantID       pgtype.UUID        `json:"tenant_id"`
+	CapabilityCode string             `json:"capability_code"`
+	Enabled        bool               `json:"enabled"`
+	Source         string             `json:"source"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
 type TenantConfiguration struct {
@@ -242,6 +407,17 @@ type TenantConfiguration struct {
 	LastTestedAt pgtype.Timestamptz `json:"last_tested_at"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type TenantOnboardingDraft struct {
+	ID                  pgtype.UUID        `json:"id"`
+	CreatedBy           pgtype.UUID        `json:"created_by"`
+	Step                string             `json:"step"`
+	Payload             []byte             `json:"payload"`
+	Status              string             `json:"status"`
+	ProvisionedTenantID pgtype.UUID        `json:"provisioned_tenant_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type TenantServiceAccess struct {
@@ -310,6 +486,23 @@ type TenantType struct {
 	Active    bool               `json:"active"`
 	SortOrder int32              `json:"sort_order"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type TermsAcceptance struct {
+	ID         pgtype.UUID        `json:"id"`
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	DocumentID pgtype.UUID        `json:"document_id"`
+	AcceptedAt pgtype.Timestamptz `json:"accepted_at"`
+	Metadata   []byte             `json:"metadata"`
+}
+
+type TermsDocument struct {
+	ID          pgtype.UUID        `json:"id"`
+	Version     string             `json:"version"`
+	ContentUrl  string             `json:"content_url"`
+	ContentHash string             `json:"content_hash"`
+	PublishedAt pgtype.Timestamptz `json:"published_at"`
 }
 
 type ThemePreset struct {

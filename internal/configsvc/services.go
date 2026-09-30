@@ -206,6 +206,24 @@ func (st *Storage) Put(ctx context.Context, tenantID uuid.UUID, req PutRequest) 
 	return provider.Put(ctx, req)
 }
 
+// PutPlatform writes an object using the platform's storage configuration.
+func (st *Storage) PutPlatform(ctx context.Context, req PutRequest) (StoredObject, error) {
+	provider, err := st.svc.storageProvider(ctx, nil)
+	if err != nil {
+		return StoredObject{}, err
+	}
+	return provider.Put(ctx, req)
+}
+
+// PresignGetPlatform returns a time-limited download URL for platform-scoped objects.
+func (st *Storage) PresignGetPlatform(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	provider, err := st.svc.storageProvider(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	return provider.PresignGet(ctx, key, ttl)
+}
+
 // Delete removes an object.
 func (st *Storage) Delete(ctx context.Context, tenantID uuid.UUID, key string) error {
 	provider, err := st.svc.storageProvider(ctx, &tenantID)

@@ -33,14 +33,46 @@ const (
 
 // Info is the resolved tenant for the request host.
 type Info struct {
-	ID           uuid.UUID
-	Slug         string
-	Name         string
-	Status       string
-	SetupStatus  string
-	IsPublished  bool
-	BusinessType string
+	ID            uuid.UUID
+	Slug          string
+	Name          string
+	Status        string
+	SetupStatus   string
+	IsPublished   bool
+	BusinessType  string
+	LicenseStatus string
+	// Capabilities is the tenant's enabled capability set, loaded once per
+	// request from tenant_capabilities. RequireCapability reads it; nothing
+	// else should query tenant_capabilities per-request.
+	Capabilities map[string]bool
 }
+
+// HasCapability reports whether the tenant has a capability enabled. Safe to
+// call on a zero-value Info (e.g. a host with no resolved tenant).
+func (i Info) HasCapability(code string) bool {
+	return i.Capabilities[code]
+}
+
+// Capability codes. This is the exact set seeded in business_type_capabilities
+// (see db/migrations/20260929190000_capabilities_catalog.sql) — the platform
+// capability matrix from HLD §6, as Go constants instead of bare strings.
+const (
+	CapCustomers    = "CUSTOMERS"
+	CapStaff        = "STAFF"
+	CapPayments     = "PAYMENTS"
+	CapBilling      = "BILLING"
+	CapCatalog      = "CATALOG"
+	CapCart         = "CART"
+	CapOrders       = "ORDERS"
+	CapKitchen      = "KITCHEN"
+	CapServices     = "SERVICES"
+	CapAppointments = "APPOINTMENTS"
+	CapQueue        = "QUEUE"
+	CapReservations = "RESERVATIONS"
+	CapTables       = "TABLES"
+	CapRooms        = "ROOMS"
+	CapHousekeeping = "HOUSEKEEPING"
+)
 
 type HostInfo struct {
 	Kind HostKind
@@ -140,16 +172,67 @@ func Middleware(pool *pgxpool.Pool, baseDomain string) func(http.Handler) http.H
 				return
 			}
 
+			// License is the enforcement gate (HLD §16), separate from
+			// tenant.status: a business can be ACTIVE on billing and still have
+			// its license SUSPENDED/EXPIRED/REVOKED (e.g. a compliance hold). A
+			// missing license row is treated the same as an inactive one — fail
+			// closed, matching the SUSPENDED check above rather than silently
+			// letting an unlicensed tenant trade.
+			licenseStatus, err := q.GetTenantLicenseStatus(ctx, row.ID)
+			if err != nil && err != pgx.ErrNoRows {
+				response.Error(w, http.StatusInternalServerError, "internal_error", "failed to resolve license")
+				return
+			}
+			if licenseStatus != "ACTIVE" {
+				response.Error(w, http.StatusForbidden, "license_inactive", "this business's license is not active")
+				return
+			}
+
+			capRows, err := q.ListEnabledCapabilities(ctx, row.ID)
+			if err != nil {
+				response.Error(w, http.StatusInternalServerError, "internal_error", "failed to resolve capabilities")
+				return
+			}
+			caps := make(map[string]bool, len(capRows))
+			for _, c := range capRows {
+				caps[c] = true
+			}
+
 			info := Info{
-				ID:           uuid.UUID(row.ID.Bytes),
-				Slug:         row.Slug,
-				Name:         row.Name,
-				Status:       row.Status,
-				SetupStatus:  row.SetupStatus,
-				IsPublished:  row.IsPublished,
-				BusinessType: row.BusinessType,
+				ID:            uuid.UUID(row.ID.Bytes),
+				Slug:          row.Slug,
+				Name:          row.Name,
+				Status:        row.Status,
+				SetupStatus:   row.SetupStatus,
+				IsPublished:   row.IsPublished,
+				BusinessType:  row.BusinessType,
+				LicenseStatus: licenseStatus,
+				Capabilities:  caps,
 			}
 			next.ServeHTTP(w, r.WithContext(WithTenant(ctx, info)))
+		})
+	}
+}
+
+// RequireCapability guards a route with a business capability rather than a
+// role or a permission. A route names the module it needs; whether that
+// module exists for this tenant at all is decided by business_type
+// (business_type_capabilities → tenant_capabilities), never by the caller's
+// role. This is what stops a Hotel tenant's token from ever reaching an
+// orders/kitchen endpoint, and vice versa, regardless of who is asking.
+//
+// Requires tenantctx.Middleware to have already run (it is mounted globally),
+// so Capabilities is always populated for a resolved tenant host.
+func RequireCapability(code string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t, ok := FromContext(r.Context())
+			if !ok || !t.HasCapability(code) {
+				response.Error(w, http.StatusForbidden, "capability_disabled",
+					"this business does not have the \""+code+"\" module enabled")
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

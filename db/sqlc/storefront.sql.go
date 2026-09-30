@@ -315,7 +315,7 @@ const setStorefrontPublished = `-- name: SetStorefrontPublished :one
 UPDATE tenants
 SET is_published = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, shop_type, status_message
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message
 `
 
 type SetStorefrontPublishedParams struct {
@@ -351,7 +351,6 @@ func (q *Queries) SetStorefrontPublished(ctx context.Context, arg SetStorefrontP
 		&i.Timezone,
 		&i.Language,
 		&i.StoreStatus,
-		&i.ShopType,
 		&i.StatusMessage,
 	)
 	return i, err

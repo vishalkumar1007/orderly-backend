@@ -50,7 +50,7 @@ const confirmPayment = `-- name: ConfirmPayment :one
 UPDATE payments
 SET status = 'PAID', paid_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
 `
 
 type ConfirmPaymentParams struct {
@@ -75,6 +75,9 @@ func (q *Queries) ConfirmPayment(ctx context.Context, arg ConfirmPaymentParams) 
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
@@ -87,7 +90,7 @@ INSERT INTO orders (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type CreateOrderParams struct {
@@ -158,6 +161,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
@@ -219,7 +223,7 @@ INSERT INTO payments (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
 `
 
 type CreatePaymentParams struct {
@@ -257,6 +261,9 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
@@ -276,7 +283,7 @@ func (q *Queries) EnsureOrderCounter(ctx context.Context, tenantID pgtype.UUID) 
 }
 
 const getOrderByClientToken = `-- name: GetOrderByClientToken :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE tenant_id = $1 AND client_token = $2
 LIMIT 1
 `
@@ -318,12 +325,13 @@ func (q *Queries) GetOrderByClientToken(ctx context.Context, arg GetOrderByClien
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -363,12 +371,13 @@ func (q *Queries) GetOrderByID(ctx context.Context, arg GetOrderByIDParams) (Ord
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
 
 const getOrderByTenantAndNumber = `-- name: GetOrderByTenantAndNumber :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE tenant_id = $1 AND order_number = $2
 LIMIT 1
 `
@@ -408,12 +417,13 @@ func (q *Queries) GetOrderByTenantAndNumber(ctx context.Context, arg GetOrderByT
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
 
 const getOrderByTenantNumberAndPhone = `-- name: GetOrderByTenantNumberAndPhone :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE tenant_id = $1 AND order_number = $2 AND customer_phone = $3
 LIMIT 1
 `
@@ -456,12 +466,13 @@ func (q *Queries) GetOrderByTenantNumberAndPhone(ctx context.Context, arg GetOrd
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
 
 const getPaymentByID = `-- name: GetPaymentByID :one
-SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count FROM payments
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose FROM payments
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -488,12 +499,15 @@ func (q *Queries) GetPaymentByID(ctx context.Context, arg GetPaymentByIDParams) 
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
 
 const getPaymentByOrderID = `-- name: GetPaymentByOrderID :one
-SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count FROM payments
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose FROM payments
 WHERE order_id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -520,13 +534,16 @@ func (q *Queries) GetPaymentByOrderID(ctx context.Context, arg GetPaymentByOrder
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
 
 const listOrderHistory = `-- name: ListOrderHistory :many
 SELECT
-    o.id, o.tenant_id, o.customer_id, o.order_number, o.status, o.order_type, o.subtotal, o.tax, o.discount, o.total, o.customer_name, o.customer_phone, o.created_at, o.updated_at, o.customer_email, o.notes, o.estimated_ready_at, o.accepted_at, o.preparing_at, o.ready_at, o.completed_at, o.cancelled_at, o.cancel_reason, o.source, o.client_token, o.packaging_fee,
+    o.id, o.tenant_id, o.customer_id, o.order_number, o.status, o.order_type, o.subtotal, o.tax, o.discount, o.total, o.customer_name, o.customer_phone, o.created_at, o.updated_at, o.customer_email, o.notes, o.estimated_ready_at, o.accepted_at, o.preparing_at, o.ready_at, o.completed_at, o.cancelled_at, o.cancel_reason, o.source, o.client_token, o.packaging_fee, o.table_id,
     (SELECT COUNT(*)::bigint FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
     -- Coalesced because the join is optional: an order with no payment row
     -- yields NULL, which the generated scanner would refuse for a column the
@@ -592,6 +609,7 @@ type ListOrderHistoryRow struct {
 	Source           string             `json:"source"`
 	ClientToken      string             `json:"client_token"`
 	PackagingFee     pgtype.Numeric     `json:"packaging_fee"`
+	TableID          pgtype.UUID        `json:"table_id"`
 	ItemCount        int64              `json:"item_count"`
 	PaymentStatus    string             `json:"payment_status"`
 	PaymentMethod    string             `json:"payment_method"`
@@ -648,6 +666,7 @@ func (q *Queries) ListOrderHistory(ctx context.Context, arg ListOrderHistoryPara
 			&i.Source,
 			&i.ClientToken,
 			&i.PackagingFee,
+			&i.TableID,
 			&i.ItemCount,
 			&i.PaymentStatus,
 			&i.PaymentMethod,
@@ -772,7 +791,7 @@ func (q *Queries) ListOrderStatusHistory(ctx context.Context, arg ListOrderStatu
 }
 
 const listOrdersByTenant = `-- name: ListOrdersByTenant :many
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -819,6 +838,7 @@ func (q *Queries) ListOrdersByTenant(ctx context.Context, arg ListOrdersByTenant
 			&i.Source,
 			&i.ClientToken,
 			&i.PackagingFee,
+			&i.TableID,
 		); err != nil {
 			return nil, err
 		}
@@ -831,7 +851,7 @@ func (q *Queries) ListOrdersByTenant(ctx context.Context, arg ListOrdersByTenant
 }
 
 const listOrdersByTenantAndPhone = `-- name: ListOrdersByTenantAndPhone :many
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
 WHERE tenant_id = $1 AND customer_phone = $2
 ORDER BY created_at DESC
 LIMIT $3
@@ -881,6 +901,7 @@ func (q *Queries) ListOrdersByTenantAndPhone(ctx context.Context, arg ListOrders
 			&i.Source,
 			&i.ClientToken,
 			&i.PackagingFee,
+			&i.TableID,
 		); err != nil {
 			return nil, err
 		}
@@ -977,7 +998,7 @@ SET status = 'FAILED',
     attempt_count = attempt_count + 1,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status <> 'PAID'
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
 `
 
 type MarkPaymentFailedParams struct {
@@ -1003,6 +1024,9 @@ func (q *Queries) MarkPaymentFailed(ctx context.Context, arg MarkPaymentFailedPa
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
@@ -1014,7 +1038,7 @@ SET status = 'PAID',
     paid_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status <> 'PAID'
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
 `
 
 type MarkPaymentPaidParams struct {
@@ -1040,6 +1064,9 @@ func (q *Queries) MarkPaymentPaid(ctx context.Context, arg MarkPaymentPaidParams
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
@@ -1070,7 +1097,7 @@ SET status = 'PENDING',
     paid_at = NULL,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status <> 'PAID'
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
 `
 
 type SetPaymentPendingParams struct {
@@ -1104,6 +1131,9 @@ func (q *Queries) SetPaymentPending(ctx context.Context, arg SetPaymentPendingPa
 		&i.UpdatedAt,
 		&i.FailureReason,
 		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
 	)
 	return i, err
 }
@@ -1112,7 +1142,7 @@ const stampOrderAccepted = `-- name: StampOrderAccepted :one
 UPDATE orders
 SET status = 'ACCEPTED', accepted_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderAcceptedParams struct {
@@ -1152,6 +1182,7 @@ func (q *Queries) StampOrderAccepted(ctx context.Context, arg StampOrderAccepted
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
@@ -1160,7 +1191,7 @@ const stampOrderCancelled = `-- name: StampOrderCancelled :one
 UPDATE orders
 SET status = 'CANCELLED', cancelled_at = now(), cancel_reason = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderCancelledParams struct {
@@ -1199,6 +1230,7 @@ func (q *Queries) StampOrderCancelled(ctx context.Context, arg StampOrderCancell
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
@@ -1207,7 +1239,7 @@ const stampOrderCompleted = `-- name: StampOrderCompleted :one
 UPDATE orders
 SET status = 'COMPLETED', completed_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderCompletedParams struct {
@@ -1245,6 +1277,7 @@ func (q *Queries) StampOrderCompleted(ctx context.Context, arg StampOrderComplet
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
@@ -1253,7 +1286,7 @@ const stampOrderPreparing = `-- name: StampOrderPreparing :one
 UPDATE orders
 SET status = 'PREPARING', preparing_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderPreparingParams struct {
@@ -1291,6 +1324,7 @@ func (q *Queries) StampOrderPreparing(ctx context.Context, arg StampOrderPrepari
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
@@ -1299,7 +1333,7 @@ const stampOrderReady = `-- name: StampOrderReady :one
 UPDATE orders
 SET status = 'READY', ready_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderReadyParams struct {
@@ -1337,6 +1371,7 @@ func (q *Queries) StampOrderReady(ctx context.Context, arg StampOrderReadyParams
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }
@@ -1436,7 +1471,7 @@ const updateOrderStatus = `-- name: UpdateOrderStatus :one
 UPDATE orders
 SET status = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type UpdateOrderStatusParams struct {
@@ -1475,6 +1510,7 @@ func (q *Queries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusPa
 		&i.Source,
 		&i.ClientToken,
 		&i.PackagingFee,
+		&i.TableID,
 	)
 	return i, err
 }

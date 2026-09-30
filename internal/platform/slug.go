@@ -64,3 +64,22 @@ func slugValidationError(slug string) (int, string, string) {
 	}
 	return 0, "", ""
 }
+
+func (h *Handler) EmailAvailable(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("email")))
+	if email == "" || !strings.Contains(email, "@") {
+		response.JSON(w, http.StatusOK, map[string]any{"available": false, "email": email, "reason": "invalid_email"})
+		return
+	}
+	_, err := h.q.GetUserByEmail(r.Context(), email)
+	if err == nil {
+		response.JSON(w, http.StatusOK, map[string]any{"available": false, "email": email, "reason": "email_taken"})
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		response.JSON(w, http.StatusOK, map[string]any{"available": true, "email": email})
+		return
+	}
+	response.Error(w, http.StatusInternalServerError, "internal_error", "email check failed")
+}
+

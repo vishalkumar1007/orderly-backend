@@ -208,13 +208,14 @@ func TestOnboardingAppliesBusinessTypeConfiguration(t *testing.T) {
 	slug := "cfg-" + randSuffix()
 
 	status, body := env.do(http.MethodPost, "/api/v1/admin/tenants", env.superAdmin(), map[string]any{
-		"name":          "Configured Business",
-		"slug":          slug,
-		"business_type": "GROCERY",
-		"owner_name":    "Owner",
-		"admin_name":    "Admin",
-		"admin_email":   "admin-" + randSuffix() + "@test.local",
-		"email":         "owner@test.local",
+		"name":           "Configured Business",
+		"slug":           slug,
+		"business_type":  "GROCERY",
+		"owner_name":     "Owner",
+		"admin_name":     "Admin",
+		"admin_email":    "admin-" + randSuffix() + "@test.local",
+		"email":          "owner@test.local",
+		"terms_accepted": true,
 		"configuration": map[string]any{
 			"theme_preset":        "fresh",
 			"product_layout":      "list",
@@ -297,13 +298,14 @@ func TestOnboardingRejectsAnUnknownStorefrontValue(t *testing.T) {
 	// A template with a typo must not create a shop the storefront cannot
 	// render. The unknown value is dropped and the schema default stands.
 	status, body := env.do(http.MethodPost, "/api/v1/admin/tenants", env.superAdmin(), map[string]any{
-		"name":          "Fallback Business",
-		"slug":          slug,
-		"business_type": "CAFE",
-		"owner_name":    "Owner",
-		"admin_name":    "Admin",
-		"admin_email":   "admin-" + randSuffix() + "@test.local",
-		"email":         "owner@test.local",
+		"name":           "Fallback Business",
+		"slug":           slug,
+		"business_type":  "CAFE",
+		"owner_name":     "Owner",
+		"admin_name":     "Admin",
+		"admin_email":    "admin-" + randSuffix() + "@test.local",
+		"email":          "owner@test.local",
+		"terms_accepted": true,
 		"configuration": map[string]any{
 			"theme_preset":   "neon-disco",
 			"product_layout": "grid",

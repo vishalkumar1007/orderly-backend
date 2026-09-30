@@ -372,17 +372,44 @@ func (e *testEnv) mustStatus(want, got int, label string, body map[string]any) {
 	}
 }
 
-// createTenant inserts a tenant directly so configuration tests do not depend on
-// the onboarding flow.
+// createTenant inserts a RESTAURANT tenant directly so configuration tests do
+// not depend on the onboarding flow. See createTenantOfType for what "directly"
+// still has to include.
 func (e *testEnv) createTenant(name, slug string) uuid.UUID {
 	e.t.Helper()
+	return e.createTenantOfType(name, slug, "RESTAURANT")
+}
+
+// createTenantOfType inserts a tenant directly with a given business type. It
+// still has to leave the tenant in the same shape real onboarding does —
+// licensed and with its business type's capabilities turned on — because
+// tenantctx.Middleware now enforces both on every tenant-host request; a
+// tenant fixture without them would 403 before reaching a handler.
+func (e *testEnv) createTenantOfType(name, slug, businessType string) uuid.UUID {
+	e.t.Helper()
+	ctx := context.Background()
 	var id uuid.UUID
-	err := e.server.pool.QueryRow(context.Background(),
+	// businessType must be a real business_type_capabilities row for the
+	// capability grant below to have anything to copy.
+	err := e.server.pool.QueryRow(ctx,
 		`INSERT INTO tenants (name, slug, business_type, owner_name, email, status)
-		 VALUES ($1, $2, 'restaurant', 'Owner', 'owner@test.local', 'ACTIVE')
-		 RETURNING id`, name, slug).Scan(&id)
+		 VALUES ($1, $2, $3, 'Owner', 'owner@test.local', 'ACTIVE')
+		 RETURNING id`, name, slug, businessType).Scan(&id)
 	if err != nil {
 		e.t.Fatalf("create tenant: %v", err)
+	}
+	if _, err := e.server.pool.Exec(ctx,
+		`INSERT INTO licenses (tenant_id, template_id, status, issued_at)
+		 SELECT $1, lt.id, 'ACTIVE', now()
+		 FROM license_templates lt JOIN plans p ON p.id = lt.plan_id
+		 WHERE p.name = 'TRIAL' LIMIT 1`, id); err != nil {
+		e.t.Fatalf("license test tenant: %v", err)
+	}
+	if _, err := e.server.pool.Exec(ctx,
+		`INSERT INTO tenant_capabilities (tenant_id, capability_code, enabled, source)
+		 SELECT $1, capability_code, default_enabled, 'DEFAULT'
+		 FROM business_type_capabilities WHERE business_type_code = $2`, id, businessType); err != nil {
+		e.t.Fatalf("grant test tenant capabilities: %v", err)
 	}
 	// Clean up so a test run does not leave a growing pile of tenants behind.
 	e.createdTenants = append(e.createdTenants, id)
@@ -398,6 +425,8 @@ func (e *testEnv) removeTestTenants() {
 	for _, id := range e.createdTenants {
 		for _, stmt := range []string{
 			`DELETE FROM audit_logs WHERE tenant_id = $1`,
+			`DELETE FROM licenses WHERE tenant_id = $1`,
+			`DELETE FROM terms_acceptances WHERE tenant_id = $1`,
 			`DELETE FROM order_items WHERE tenant_id = $1`,
 			`DELETE FROM payments WHERE tenant_id = $1`,
 			`DELETE FROM orders WHERE tenant_id = $1`,

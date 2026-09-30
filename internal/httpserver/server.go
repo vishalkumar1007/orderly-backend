@@ -15,36 +15,42 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/appointments"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/config"
 	"github.com/orderly/orderly-backend/internal/confighttp"
 	"github.com/orderly/orderly-backend/internal/configsvc"
 	"github.com/orderly/orderly-backend/internal/customers"
+	"github.com/orderly/orderly-backend/internal/hotel"
 	"github.com/orderly/orderly-backend/internal/menu"
 	"github.com/orderly/orderly-backend/internal/orders"
 	"github.com/orderly/orderly-backend/internal/payments"
 	"github.com/orderly/orderly-backend/internal/platform"
 	"github.com/orderly/orderly-backend/internal/secretbox"
 	"github.com/orderly/orderly-backend/internal/storefront"
+	"github.com/orderly/orderly-backend/internal/tables"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
 type Server struct {
-	log       *slog.Logger
-	pool      *pgxpool.Pool
-	cfg       config.Config
-	auth      *auth.Service
-	admin     *platform.Handler
-	menu      *menu.Handler
-	upload    *menu.UploadHandler
-	orders    *orders.Handler
-	shop      *storefront.AdminHandler
-	loader    *storefront.Loader
-	customers *customers.Handler
-	payments  *payments.Handler
-	configs   *confighttp.Handler
+	log          *slog.Logger
+	pool         *pgxpool.Pool
+	cfg          config.Config
+	auth         *auth.Service
+	admin        *platform.Handler
+	menu         *menu.Handler
+	upload       *menu.UploadHandler
+	orders       *orders.Handler
+	shop         *storefront.AdminHandler
+	loader       *storefront.Loader
+	customers    *customers.Handler
+	payments     *payments.Handler
+	configs      *confighttp.Handler
+	appointments *appointments.Handler
+	hotel        *hotel.Handler
+	tables       *tables.Handler
 }
 
 func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
@@ -71,14 +77,17 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 	loader := storefront.NewLoader(pool)
 	s := &Server{
 		log: log, pool: pool, cfg: cfg,
-		auth:      authSvc,
-		admin:     admin,
-		menu:      menu.NewHandler(pool),
-		upload:    uploadHandler,
-		orders:    orderHandler,
-		customers: customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
-		payments:  payments.NewHandler(pool, orderHandler, log),
-		configs:   confighttp.NewHandler(configService, box, admin, log),
+		auth:         authSvc,
+		admin:        admin,
+		menu:         menu.NewHandler(pool),
+		upload:       uploadHandler,
+		orders:       orderHandler,
+		customers:    customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
+		payments:     payments.NewHandler(pool, orderHandler, log),
+		configs:      confighttp.NewHandler(configService, box, admin, log),
+		appointments: appointments.NewHandler(pool),
+		hotel:        hotel.NewHandler(pool),
+		tables:       tables.NewHandler(pool),
 	}
 	// The admin storefront handler needs the server to build public store URLs,
 	// so it is attached after the server value exists.
@@ -207,6 +216,7 @@ func (s *Server) Router() http.Handler {
 			// needs these to label it, including the read-only ones.
 			ar.Get("/theme-presets", s.admin.ListThemePresets)
 			ar.Get("/tenant-types", s.admin.ListTenantTypes)
+			ar.Get("/business-types/{code}/capabilities", s.admin.ListBusinessTypeCapabilities)
 
 			/* ---------- Plans and subscriptions ---------- */
 			ar.With(canPlans).Get("/plans", s.admin.ListAllPlans)
@@ -225,6 +235,7 @@ func (s *Server) Router() http.Handler {
 			 */
 			ar.With(canBusinesses).Get("/tenants", s.admin.ListTenants)
 			ar.With(canBusinesses).Get("/tenants/slug-available", s.admin.SlugAvailable)
+			ar.With(canBusinesses).Get("/tenants/email-available", s.admin.EmailAvailable)
 			ar.With(canBusinesses).Post("/tenants", s.admin.CreateTenant)
 			ar.With(canBusinesses).Get("/tenants/{id}", s.admin.GetTenant)
 			ar.With(canBusinesses).Get("/tenants/{id}/metrics", s.admin.TenantMetrics)
@@ -235,6 +246,7 @@ func (s *Server) Router() http.Handler {
 			// without it a business whose administrator lost their invitation
 			// has no way back in.
 			ar.With(canBusinesses).Post("/tenants/{id}/resend-invite", s.admin.ResendTenantInvite)
+			ar.With(canBusinesses).Post("/upload", s.admin.UploadAsset)
 
 			/* ---------- Console access ----------
 			 *
@@ -273,6 +285,7 @@ func (s *Server) Router() http.Handler {
 			// (pkg/identity/permissions.go) instead of a sweep through here.
 			var (
 				canSell        = auth.RequirePermission(identity.PermSelling)
+				canKitchen     = auth.RequirePermission(identity.PermKitchen)
 				canMenu        = auth.RequirePermission(identity.PermMenu)
 				canCustomers   = auth.RequirePermission(identity.PermCustomers)
 				canStaff       = auth.RequirePermission(identity.PermStaff)
@@ -282,6 +295,26 @@ func (s *Server) Router() http.Handler {
 				canAnalytics   = auth.RequirePermission(identity.PermAnalytics)
 				canActivity    = auth.RequirePermission(identity.PermActivity)
 				canIAM         = auth.RequirePermission(identity.PermIAM)
+			)
+
+			// Business capability guards. A permission says who inside the
+			// business may touch a module; a capability says whether the module
+			// exists for this business type at all — a Hotel tenant's own owner
+			// token still 403s on /orders, because there is no (HOTEL, ORDERS)
+			// row for this tenant to have been granted. See
+			// planing/business_saas_lld.md §2.
+			var (
+				reqCatalog      = tenantctx.RequireCapability(tenantctx.CapCatalog)
+				reqOrders       = tenantctx.RequireCapability(tenantctx.CapOrders)
+				reqCustomers    = tenantctx.RequireCapability(tenantctx.CapCustomers)
+				reqStaff        = tenantctx.RequireCapability(tenantctx.CapStaff)
+				reqServices     = tenantctx.RequireCapability(tenantctx.CapServices)
+				reqAppointments = tenantctx.RequireCapability(tenantctx.CapAppointments)
+				reqQueue        = tenantctx.RequireCapability(tenantctx.CapQueue)
+				reqRooms        = tenantctx.RequireCapability(tenantctx.CapRooms)
+				reqReservations = tenantctx.RequireCapability(tenantctx.CapReservations)
+				reqHousekeeping = tenantctx.RequireCapability(tenantctx.CapHousekeeping)
+				reqTables       = tenantctx.RequireCapability(tenantctx.CapTables)
 			)
 
 			tr.With(canIntegration).Get("/configurations", s.configs.ListTenantServicesFunc(s.tenantIDOf))
@@ -325,47 +358,108 @@ func (s *Server) Router() http.Handler {
 			// Access control.
 			tr.With(canIAM).Get("/iam", s.admin.ShopIAM)
 
-			tr.With(canMenu).Get("/categories", s.menu.ListCategories)
-			tr.With(canMenu).Post("/categories", s.menu.CreateCategory)
-			tr.With(canMenu).Post("/categories/reorder", s.menu.ReorderCategories)
-			tr.With(canMenu).Patch("/categories/{id}", s.menu.UpdateCategory)
-			tr.With(canMenu).Delete("/categories/{id}", s.menu.DeleteCategory)
+			tr.With(canMenu, reqCatalog).Get("/categories", s.menu.ListCategories)
+			tr.With(canMenu, reqCatalog).Post("/categories", s.menu.CreateCategory)
+			tr.With(canMenu, reqCatalog).Post("/categories/reorder", s.menu.ReorderCategories)
+			tr.With(canMenu, reqCatalog).Patch("/categories/{id}", s.menu.UpdateCategory)
+			tr.With(canMenu, reqCatalog).Delete("/categories/{id}", s.menu.DeleteCategory)
 
-			tr.With(canMenu).Get("/products", s.menu.ListProducts)
-			tr.With(canMenu).Post("/products", s.menu.CreateProduct)
-			tr.With(canMenu).Post("/products/reorder", s.menu.ReorderProducts)
-			tr.With(canMenu).Get("/products/{id}", s.menu.GetProduct)
-			tr.With(canMenu).Post("/products/{id}/duplicate", s.menu.DuplicateProduct)
-			tr.With(canMenu).Patch("/products/{id}", s.menu.UpdateProduct)
-			tr.With(canMenu).Delete("/products/{id}", s.menu.DeleteProduct)
+			tr.With(canMenu, reqCatalog).Get("/products", s.menu.ListProducts)
+			tr.With(canMenu, reqCatalog).Post("/products", s.menu.CreateProduct)
+			tr.With(canMenu, reqCatalog).Post("/products/reorder", s.menu.ReorderProducts)
+			tr.With(canMenu, reqCatalog).Get("/products/{id}", s.menu.GetProduct)
+			tr.With(canMenu, reqCatalog).Post("/products/{id}/duplicate", s.menu.DuplicateProduct)
+			tr.With(canMenu, reqCatalog).Patch("/products/{id}", s.menu.UpdateProduct)
+			tr.With(canMenu, reqCatalog).Delete("/products/{id}", s.menu.DeleteProduct)
 
-			// Image upload for menu items, so it follows the menu permission.
+			// Image upload for menu items, so it follows the menu permission and
+			// capability.
 			tr.Group(func(ur chi.Router) {
-				ur.Use(canMenu)
+				ur.Use(canMenu, reqCatalog)
 				s.upload.UploadRoutes(ur)
 			})
 
-			tr.With(canSell).Get("/orders", s.orders.ListOrders)
-			tr.With(canSell).Post("/orders", s.orders.StaffCreateOrder)
-			tr.With(canSell).Get("/orders/{id}", s.orders.GetOrder)
-			tr.With(canSell).Post("/orders/{id}/accept", s.orders.Transition("accept"))
-			tr.With(canSell).Post("/orders/{id}/prepare", s.orders.Transition("prepare"))
-			tr.With(canSell).Post("/orders/{id}/ready", s.orders.Transition("ready"))
-			tr.With(canSell).Post("/orders/{id}/complete", s.orders.Transition("complete"))
-			tr.With(canSell).Post("/orders/{id}/cancel", s.orders.CancelStaffOrder)
-			tr.With(canSell).Post("/payments/{id}/confirm", s.orders.ConfirmPayment)
+			tr.With(canSell, reqOrders).Get("/orders", s.orders.ListOrders)
+			tr.With(canSell, reqOrders).Post("/orders", s.orders.StaffCreateOrder)
+			tr.With(canSell, reqOrders).Get("/orders/{id}", s.orders.GetOrder)
+			tr.With(canSell, reqOrders).Post("/orders/{id}/accept", s.orders.Transition("accept"))
+			tr.With(canSell, reqOrders).Post("/orders/{id}/prepare", s.orders.Transition("prepare"))
+			tr.With(canSell, reqOrders).Post("/orders/{id}/ready", s.orders.Transition("ready"))
+			tr.With(canSell, reqOrders).Post("/orders/{id}/complete", s.orders.Transition("complete"))
+			tr.With(canSell, reqOrders).Post("/orders/{id}/cancel", s.orders.CancelStaffOrder)
+			tr.With(canSell, reqOrders).Post("/payments/{id}/confirm", s.orders.ConfirmPayment)
 
 			// Staff and customers. A manager runs both; staff reach neither.
-			tr.With(canStaff).Get("/users", s.admin.ShopListUsers)
-			tr.With(canStaff).Post("/users", s.admin.ShopCreateUser)
-			tr.With(canStaff).Patch("/users/{userId}", s.admin.ShopUpdateUser)
-			tr.With(canStaff).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
-			tr.With(canStaff).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
+			// CUSTOMERS/STAFF are "Yes" for every business type in the capability
+			// matrix, so these guards never actually block a real tenant today —
+			// they exist so that stays true by construction, not by convention.
+			tr.With(canStaff, reqStaff).Get("/users", s.admin.ShopListUsers)
+			tr.With(canStaff, reqStaff).Post("/users", s.admin.ShopCreateUser)
+			tr.With(canStaff, reqStaff).Patch("/users/{userId}", s.admin.ShopUpdateUser)
+			tr.With(canStaff, reqStaff).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
+			tr.With(canStaff, reqStaff).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
 
-			tr.With(canCustomers).Get("/customers", s.customers.ShopListCustomers)
-			tr.With(canCustomers).Get("/customers/guest", s.customers.ShopGetGuestCustomer)
-			tr.With(canCustomers).Get("/customers/{id}", s.customers.ShopGetCustomer)
-			tr.With(canCustomers).Post("/customers/{id}/block", s.customers.ShopSetCustomerBlocked)
+			tr.With(canCustomers, reqCustomers).Get("/customers", s.customers.ShopListCustomers)
+			tr.With(canCustomers, reqCustomers).Get("/customers/guest", s.customers.ShopGetGuestCustomer)
+			tr.With(canCustomers, reqCustomers).Get("/customers/{id}", s.customers.ShopGetCustomer)
+			tr.With(canCustomers, reqCustomers).Post("/customers/{id}/block", s.customers.ShopSetCustomerBlocked)
+
+			/* ---------- Barber Shop: services, appointments, queue ---------- */
+			tr.With(canMenu, reqServices).Get("/services", s.appointments.ListServices)
+			tr.With(canMenu, reqServices).Post("/services", s.appointments.CreateService)
+			tr.With(canMenu, reqServices).Patch("/services/{id}", s.appointments.UpdateService)
+			tr.With(canMenu, reqServices).Delete("/services/{id}", s.appointments.DeleteService)
+
+			tr.With(canStaff, reqServices).Get("/staff-availability", s.appointments.ListStaffAvailability)
+			tr.With(canStaff, reqServices).Post("/staff-availability", s.appointments.CreateStaffAvailability)
+			tr.With(canStaff, reqServices).Delete("/staff-availability/{id}", s.appointments.DeleteStaffAvailability)
+
+			tr.With(canSell, reqAppointments).Get("/appointments", s.appointments.ListAppointments)
+			tr.With(canSell, reqAppointments).Post("/appointments", s.appointments.CreateAppointment)
+			tr.With(canSell, reqAppointments).Get("/appointments/{id}", s.appointments.GetAppointment)
+			tr.With(canSell, reqAppointments).Post("/appointments/{id}/confirm", s.appointments.Transition("confirm"))
+			tr.With(canSell, reqAppointments).Post("/appointments/{id}/checkin", s.appointments.Transition("checkin"))
+			tr.With(canSell, reqAppointments).Post("/appointments/{id}/cancel", s.appointments.Transition("cancel"))
+			tr.With(canSell, reqAppointments).Post("/appointments/{id}/no-show", s.appointments.Transition("noshow"))
+
+			tr.With(canSell, reqQueue).Get("/queue", s.appointments.ListQueue)
+			tr.With(canSell, reqQueue).Post("/queue", s.appointments.JoinQueue)
+			tr.With(canSell, reqQueue).Post("/queue/{id}/call", s.appointments.QueueTransition("call"))
+			tr.With(canSell, reqQueue).Post("/queue/{id}/start", s.appointments.QueueTransition("start"))
+			tr.With(canSell, reqQueue).Post("/queue/{id}/complete", s.appointments.QueueTransition("complete"))
+			tr.With(canSell, reqQueue).Post("/queue/{id}/cancel", s.appointments.QueueTransition("cancel"))
+
+			/* ---------- Hotel: rooms, reservations, folios, housekeeping ---------- */
+			tr.With(canMenu, reqRooms).Get("/room-types", s.hotel.ListRoomTypes)
+			tr.With(canMenu, reqRooms).Post("/room-types", s.hotel.CreateRoomType)
+			tr.With(canMenu, reqRooms).Patch("/room-types/{id}", s.hotel.UpdateRoomType)
+			tr.With(canMenu, reqRooms).Delete("/room-types/{id}", s.hotel.DeleteRoomType)
+
+			tr.With(canMenu, reqRooms).Get("/rooms", s.hotel.ListRooms)
+			tr.With(canMenu, reqRooms).Post("/rooms", s.hotel.CreateRoom)
+			tr.With(canSell, reqRooms).Post("/rooms/{id}/status", s.hotel.SetRoomStatus)
+
+			tr.With(canSell, reqReservations).Get("/reservations", s.hotel.ListReservations)
+			tr.With(canSell, reqReservations).Post("/reservations", s.hotel.CreateReservation)
+			tr.With(canSell, reqReservations).Get("/reservations/{id}", s.hotel.GetReservation)
+			tr.With(canSell, reqReservations).Post("/reservations/{id}/confirm", s.hotel.Transition("confirm"))
+			tr.With(canSell, reqReservations).Post("/reservations/{id}/cancel", s.hotel.Transition("cancel"))
+			tr.With(canSell, reqReservations).Post("/reservations/{id}/no-show", s.hotel.Transition("noshow"))
+			tr.With(canSell, reqReservations).Post("/reservations/{id}/check-in", s.hotel.CheckIn)
+			tr.With(canSell, reqReservations).Post("/reservations/{id}/check-out", s.hotel.CheckOut)
+			tr.With(canSell, reqReservations).Get("/reservations/{id}/folio", s.hotel.GetFolio)
+			tr.With(canSell, reqReservations).Post("/reservations/{id}/folio/charges", s.hotel.CreateCharge)
+
+			tr.With(canKitchen, reqHousekeeping).Get("/housekeeping", s.hotel.ListHousekeepingTasks)
+			tr.With(canKitchen, reqHousekeeping).Post("/housekeeping", s.hotel.CreateHousekeepingTask)
+			tr.With(canKitchen, reqHousekeeping).Post("/housekeeping/{id}/complete", s.hotel.CompleteHousekeepingTask)
+
+			/* ---------- Cafe/Restaurant: dine-in tables ---------- */
+			tr.With(canMenu, reqTables).Get("/tables", s.tables.List)
+			tr.With(canMenu, reqTables).Post("/tables", s.tables.Create)
+			tr.With(canMenu, reqTables).Patch("/tables/{id}", s.tables.Update)
+			tr.With(canSell, reqTables).Post("/tables/{id}/status", s.tables.SetStatus)
+			tr.With(canMenu, reqTables).Delete("/tables/{id}", s.tables.Delete)
 
 			// Storefront configuration. The tenant comes from the verified
 			// staff token and the request host, so one shop can never read or
@@ -380,7 +474,7 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStorefront).Put("/storefront", s.shop.PutStorefront)
 			tr.With(canStorefront).Put("/storefront/theme", s.shop.PutTheme)
 			tr.With(canStorefront).Put("/storefront/homepage", s.shop.PutHomepage)
-			tr.With(canOrg).Put("/storefront/hours", s.shop.PutOpeningHours)
+			tr.With(canStorefront).Put("/storefront/hours", s.shop.PutOpeningHours)
 			tr.With(canStorefront).Get("/storefront/preview", s.shop.PreviewMenu)
 			tr.With(canStorefront).Get("/storefront/qr", s.shop.QRCode)
 
@@ -391,7 +485,7 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStorefront).Put("/customize", s.shop.PutStorefront)
 			tr.With(canStorefront).Put("/customize/theme", s.shop.PutTheme)
 			tr.With(canStorefront).Put("/customize/homepage", s.shop.PutHomepage)
-			tr.With(canOrg).Put("/customize/hours", s.shop.PutOpeningHours)
+			tr.With(canStorefront).Put("/customize/hours", s.shop.PutOpeningHours)
 			tr.With(canOrg).Put("/customize/payments", s.shop.PutPaymentSettings)
 			tr.With(canOrg).Put("/customize/workflow", s.shop.PutOrderWorkflow)
 			// The Studio's draft: a working copy that belongs to the shop
@@ -422,6 +516,10 @@ func (s *Server) Router() http.Handler {
 		// all, and a signed-in customer simply gets a richer response.
 		api.Route("/public", func(pr chi.Router) {
 			pr.Use(auth.OptionalCustomerMiddleware(s.auth))
+
+			reqCatalog := tenantctx.RequireCapability(tenantctx.CapCatalog)
+			reqOrders := tenantctx.RequireCapability(tenantctx.CapOrders)
+
 			pr.Get("/store", s.orders.PublicStore)
 
 			// The console brand theme, public.
@@ -438,16 +536,16 @@ func (s *Server) Router() http.Handler {
 			// shop's theme or nothing.
 			pr.Get("/theme", s.admin.GetMyTenantTheme)
 
-			pr.Get("/menu", s.orders.PublicMenu)
-			pr.Get("/products/{id}", s.orders.PublicProduct)
-			pr.Post("/quote", s.orders.PublicQuote)
-			pr.Post("/orders", s.orders.PublicCreateOrder)
-			pr.Get("/orders/lookup", s.orders.PublicLookupOrder)
-			pr.Get("/orders/{orderNumber}", s.orders.PublicTrackOrder)
+			pr.With(reqCatalog).Get("/menu", s.orders.PublicMenu)
+			pr.With(reqCatalog).Get("/products/{id}", s.orders.PublicProduct)
+			pr.With(reqOrders).Post("/quote", s.orders.PublicQuote)
+			pr.With(reqOrders).Post("/orders", s.orders.PublicCreateOrder)
+			pr.With(reqOrders).Get("/orders/lookup", s.orders.PublicLookupOrder)
+			pr.With(reqOrders).Get("/orders/{orderNumber}", s.orders.PublicTrackOrder)
 
-			pr.Post("/orders/{orderNumber}/pay", s.payments.Start)
-			pr.Post("/orders/{orderNumber}/pay/confirm", s.payments.Confirm)
-			pr.Get("/orders/{orderNumber}/pay", s.payments.Status)
+			pr.With(reqOrders).Post("/orders/{orderNumber}/pay", s.payments.Start)
+			pr.With(reqOrders).Post("/orders/{orderNumber}/pay/confirm", s.payments.Confirm)
+			pr.With(reqOrders).Get("/orders/{orderNumber}/pay", s.payments.Status)
 		})
 
 		// Storefront customer identity. Reachable before an order exists, so

@@ -5,6 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -76,6 +79,20 @@ type createTenantRequest struct {
 	// during onboarding. It seeds the tenant's storefront row inside the same
 	// transaction, so a new business arrives configured rather than blank.
 	Configuration *tenantConfigurationRequest `json:"configuration"`
+
+	// TermsAccepted records that the Super Admin performing onboarding
+	// confirmed the platform's terms on the business's behalf (POC: "Terms and
+	// Conditions acceptance"). Required — there is no implicit consent.
+	TermsAccepted bool `json:"terms_accepted"`
+
+	// CapabilityOverrides lets onboarding turn an *optional* module on or off
+	// for this specific tenant (e.g. Cafe deciding whether it takes
+	// reservations). A code is only ever applied when
+	// business_type_capabilities marks it configurable for this business
+	// type; anything else in this map is silently ignored rather than
+	// erroring, since a stale or over-eager client payload should not be able
+	// to force open a module the business type structurally does not have.
+	CapabilityOverrides map[string]bool `json:"capability_overrides"`
 }
 
 // tenantConfigurationRequest mirrors storefront.Defaults over the wire. Every
@@ -300,6 +317,10 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "name, slug, owner_name, and admin email required")
 		return
 	}
+	if !req.TermsAccepted {
+		response.Error(w, http.StatusBadRequest, "terms_not_accepted", "terms and conditions must be accepted to onboard a business")
+		return
+	}
 	if code, errCode, msg := slugValidationError(req.Slug); code != 0 {
 		response.Error(w, code, errCode, msg)
 		return
@@ -354,6 +375,8 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	placeholderHash, _ := bcrypt.GenerateFromPassword([]byte(uuid.NewString()), bcrypt.DefaultCost)
 
 	ctx := r.Context()
+	actor, _ := identity.UserFromContext(ctx)
+
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "transaction failed")
@@ -397,6 +420,28 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 
 	_ = qtx.EnsureOrderCounter(ctx, tenant.ID)
 
+	// License, terms and capabilities are provisioned in the same transaction
+	// as the tenant itself: a business that cannot be licensed, cannot record
+	// consent, or cannot be given a valid capability set is not created at
+	// all, rather than created and left half a business (POC: "Provisioning
+	// must be idempotent and must not leave a partially active tenant").
+	if err := h.issueLicense(ctx, qtx, tenant.ID, plan.ID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to issue license")
+		return
+	}
+	if err := h.recordTermsAcceptance(ctx, qtx, tenant.ID, pgutil.UUID(actor.ID)); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to record terms acceptance")
+		return
+	}
+	if err := h.seedCapabilities(ctx, qtx, tenant.ID, req.BusinessType, req.CapabilityOverrides); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to configure business capabilities")
+		return
+	}
+	if err := h.seedBusinessTypeDefaults(ctx, qtx, tenant.ID, req.BusinessType); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to seed starter content")
+		return
+	}
+
 	// Seed the storefront from the chosen business type. This runs inside the
 	// transaction: a business that cannot be configured is not created, rather
 	// than created and left half-set-up.
@@ -422,7 +467,6 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, _ := identity.UserFromContext(ctx)
 	_ = insertAudit(ctx, qtx, &tenant.ID, &actor.ID, "Business Created", "tenant", tenant.ID)
 	_ = insertAudit(ctx, qtx, &tenant.ID, &actor.ID, "Admin Created", "user", admin.ID)
 
@@ -993,7 +1037,6 @@ func tenantJSONEnriched(t sqlc.Tenant, planName pgtype.Text, planPrice pgtype.Nu
 		"language":          t.Language,
 		"store_status":      t.StoreStatus,
 		"status_message":    t.StatusMessage,
-		"shop_type":         t.ShopType,
 	}
 	if planName.Valid {
 		out["plan"] = planName.String
@@ -1196,4 +1239,267 @@ func insertAuditResult(
 		EntityID: entityID, Result: result, Metadata: []byte(metadata),
 	})
 	return err
+}
+
+/* ------------------------------------------------------------------ *
+ * Onboarding: license, terms and capability provisioning.
+ *
+ * All four helpers below run inside CreateTenant's transaction. See
+ * planing/business_saas_lld.md §4 and business_saas_db_map.md §7 for why:
+ * a tenant that cannot be licensed, cannot record consent, or cannot be
+ * given a valid capability set must not exist at all, not exist half-built.
+ * ------------------------------------------------------------------ */
+
+// issueLicense creates the tenant's enforcement gate (HLD §16), resolved from
+// its plan's license template. A missing template is a platform
+// configuration error, not a tenant error — every plan gets one seeded in
+// db/migrations/20260929192000_licensing.sql.
+func (h *Handler) issueLicense(ctx context.Context, qtx *sqlc.Queries, tenantID, planID pgtype.UUID) error {
+	tmpl, err := qtx.GetLicenseTemplateByPlan(ctx, planID)
+	if err != nil {
+		return err
+	}
+	issuedAt := time.Now()
+	var expiresAt pgtype.Timestamptz
+	if tmpl.ValidityDays.Valid {
+		expiresAt = pgtype.Timestamptz{Time: issuedAt.AddDate(0, 0, int(tmpl.ValidityDays.Int32)), Valid: true}
+	}
+	_, err = qtx.CreateLicense(ctx, sqlc.CreateLicenseParams{
+		TenantID: tenantID, TemplateID: tmpl.ID, Status: "ACTIVE",
+		IssuedAt: pgtype.Timestamptz{Time: issuedAt, Valid: true}, ExpiresAt: expiresAt,
+	})
+	return err
+}
+
+// recordTermsAcceptance stores the Super Admin's acceptance of the latest
+// published terms on the business's behalf (POC: "Terms and Conditions
+// acceptance"). Immutable once written — see
+// db/migrations/20260929193000_terms_and_conditions.sql.
+func (h *Handler) recordTermsAcceptance(ctx context.Context, qtx *sqlc.Queries, tenantID, userID pgtype.UUID) error {
+	doc, err := qtx.GetLatestTermsDocument(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = qtx.CreateTermsAcceptance(ctx, sqlc.CreateTermsAcceptanceParams{
+		TenantID: tenantID, UserID: userID, DocumentID: doc.ID, Metadata: []byte("{}"),
+	})
+	return err
+}
+
+// seedCapabilities copies the business type's default capability set onto the
+// new tenant, applying a client override only where business_type_capabilities
+// marks that capability configurable for this business type. A Hotel tenant
+// can never end up with KITCHEN enabled regardless of what a client sends,
+// because there is no (HOTEL, KITCHEN) row for the override to match — the
+// wall is the absence of the row, not this validation.
+func (h *Handler) seedCapabilities(ctx context.Context, qtx *sqlc.Queries, tenantID pgtype.UUID, businessType string, overrides map[string]bool) error {
+	rows, err := qtx.GetBusinessTypeCapabilities(ctx, businessType)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		enabled := row.DefaultEnabled
+		source := "DEFAULT"
+		if row.Configurable {
+			if override, ok := overrides[row.CapabilityCode]; ok {
+				enabled = override
+				source = "OVERRIDE"
+			}
+		}
+		if err := qtx.UpsertTenantCapability(ctx, sqlc.UpsertTenantCapabilityParams{
+			TenantID: tenantID, CapabilityCode: row.CapabilityCode, Enabled: enabled, Source: source,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedBusinessTypeDefaults applies the starter content in
+// business_type_defaults (categories, services, room types) so a new tenant
+// is not a blank screen on day one — see
+// db/migrations/20260929198000_onboarding_drafts_and_defaults.sql. A business
+// type with no default row (GENERAL) is left empty on purpose.
+func (h *Handler) seedBusinessTypeDefaults(ctx context.Context, qtx *sqlc.Queries, tenantID pgtype.UUID, businessType string) error {
+	rows, err := qtx.GetBusinessTypeDefaults(ctx, businessType)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		switch row.CapabilityCode {
+		case "CATALOG":
+			var seed struct {
+				Categories []string `json:"categories"`
+			}
+			if err := json.Unmarshal(row.Seed, &seed); err != nil {
+				return err
+			}
+			for i, name := range seed.Categories {
+				if _, err := qtx.CreateCategory(ctx, sqlc.CreateCategoryParams{
+					TenantID: tenantID, Name: name, SortOrder: int32(i), IsActive: true,
+				}); err != nil {
+					return err
+				}
+			}
+		case "SERVICES":
+			var seed struct {
+				Services []struct {
+					Name            string  `json:"name"`
+					DurationMinutes int32   `json:"duration_minutes"`
+					Price           float64 `json:"price"`
+				} `json:"services"`
+			}
+			if err := json.Unmarshal(row.Seed, &seed); err != nil {
+				return err
+			}
+			for _, svc := range seed.Services {
+				price, err := pgutil.NumericFromFloat(svc.Price)
+				if err != nil {
+					return err
+				}
+				if _, err := qtx.CreateService(ctx, sqlc.CreateServiceParams{
+					TenantID: tenantID, Name: svc.Name, DurationMinutes: svc.DurationMinutes,
+					Price: price, IsActive: true,
+				}); err != nil {
+					return err
+				}
+			}
+		case "ROOMS":
+			var seed struct {
+				RoomTypes []struct {
+					Name      string  `json:"name"`
+					BasePrice float64 `json:"base_price"`
+					MaxGuests int32   `json:"max_guests"`
+				} `json:"room_types"`
+			}
+			if err := json.Unmarshal(row.Seed, &seed); err != nil {
+				return err
+			}
+			for _, rt := range seed.RoomTypes {
+				price, err := pgutil.NumericFromFloat(rt.BasePrice)
+				if err != nil {
+					return err
+				}
+				if _, err := qtx.CreateRoomType(ctx, sqlc.CreateRoomTypeParams{
+					TenantID: tenantID, Name: rt.Name, BasePrice: price, MaxGuests: rt.MaxGuests,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+const maxAdminUploadSize = 5 << 20 // 5MB
+
+var allowedAdminImageTypes = map[string]string{
+	"image/jpeg":    ".jpg",
+	"image/png":     ".png",
+	"image/webp":    ".webp",
+	"image/svg+xml": ".svg",
+}
+
+// UploadAsset handles platform-level asset uploads (e.g. business logos during onboarding).
+// It stores files under platform/branding/ using the platform's configured storage provider.
+func (h *Handler) UploadAsset(w http.ResponseWriter, r *http.Request) {
+	if h.configs == nil || h.configs.StorageService() == nil {
+		response.Error(w, http.StatusServiceUnavailable, "storage_not_configured", "Storage service is not available")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminUploadSize)
+	if err := r.ParseMultipartForm(maxAdminUploadSize); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "File too large (max 5MB)")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		file, header, err = r.FormFile("image")
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "No file provided in form field 'file' or 'image'")
+			return
+		}
+	}
+	defer file.Close()
+
+	contentType := header.Header.Get("Content-Type")
+	ext, ok := allowedAdminImageTypes[contentType]
+	if !ok {
+		lowerName := strings.ToLower(header.Filename)
+		if strings.HasSuffix(lowerName, ".png") {
+			contentType = "image/png"
+			ext = ".png"
+		} else if strings.HasSuffix(lowerName, ".jpg") || strings.HasSuffix(lowerName, ".jpeg") {
+			contentType = "image/jpeg"
+			ext = ".jpg"
+		} else if strings.HasSuffix(lowerName, ".webp") {
+			contentType = "image/webp"
+			ext = ".webp"
+		} else if strings.HasSuffix(lowerName, ".svg") {
+			contentType = "image/svg+xml"
+			ext = ".svg"
+		} else {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "Invalid file type. Allowed: JPEG, PNG, WebP, SVG")
+			return
+		}
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "Failed to read file")
+		return
+	}
+
+	if !isValidAdminImage(data, contentType) {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "Invalid or corrupted image content")
+		return
+	}
+
+	key := fmt.Sprintf("platform/branding/%s%s", uuid.New().String(), ext)
+	storage := h.configs.StorageService()
+	obj, err := storage.PutPlatform(r.Context(), configsvc.PutRequest{
+		Key:         key,
+		Body:        data,
+		ContentType: contentType,
+	})
+	if err != nil {
+		var unavail *configsvc.UnavailableError
+		if errors.As(err, &unavail) {
+			response.Error(w, http.StatusServiceUnavailable, "storage_not_configured", "Platform storage is not configured. Configure a storage provider first.")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "upload_failed", configsvc.SafeErrorMessage(err))
+		return
+	}
+
+	url := obj.URL
+	if url == "" {
+		url, err = storage.PresignGetPlatform(r.Context(), obj.Key, 24*time.Hour)
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "Failed to generate asset URL")
+			return
+		}
+	}
+
+	response.JSON(w, http.StatusOK, map[string]string{
+		"url": url,
+		"key": obj.Key,
+	})
+}
+
+func isValidAdminImage(data []byte, contentType string) bool {
+	switch contentType {
+	case "image/jpeg":
+		return len(data) > 2 && data[0] == 0xFF && data[1] == 0xD8
+	case "image/png":
+		return len(data) > 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47
+	case "image/webp":
+		return len(data) > 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP"
+	case "image/svg+xml":
+		str := strings.TrimSpace(string(data[:min(len(data), 512)]))
+		return strings.HasPrefix(str, "<svg") || strings.HasPrefix(str, "<?xml")
+	}
+	return false
 }

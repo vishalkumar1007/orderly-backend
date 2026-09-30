@@ -188,6 +188,7 @@ func TestOnboardingSeedsTheBusinessConsoleTheme(t *testing.T) {
 		"theme_preset_id":  "emerald",
 		"theme_color_mode": "light",
 		"theme_overrides":  map[string]string{"accent": "#123456", "accent2": "#654321"},
+		"terms_accepted":   true,
 	})
 	env.mustStatus(http.StatusCreated, status, "create a themed business", body)
 

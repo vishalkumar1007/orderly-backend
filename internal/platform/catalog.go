@@ -60,6 +60,29 @@ func (h *Handler) ListTenantTypes(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, map[string]any{"types": out})
 }
 
+// ListBusinessTypeCapabilities returns the capability matrix row for one
+// business type — what the onboarding wizard needs to render "included"
+// badges for the fixed capabilities and toggles for the configurable ones,
+// without carrying its own copy of business_type_capabilities.
+func (h *Handler) ListBusinessTypeCapabilities(w http.ResponseWriter, r *http.Request) {
+	code := normalizeTypeCode(chi.URLParam(r, "code"))
+	rows, err := h.q.GetBusinessTypeCapabilitiesWithLabels(r.Context(), code)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to list capabilities")
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"code":            row.CapabilityCode,
+			"label":           row.Label,
+			"default_enabled": row.DefaultEnabled,
+			"configurable":    row.Configurable,
+		})
+	}
+	response.JSON(w, http.StatusOK, map[string]any{"capabilities": out})
+}
+
 type tenantTypeWrite struct {
 	Code      string `json:"code"`
 	Label     string `json:"label"`
