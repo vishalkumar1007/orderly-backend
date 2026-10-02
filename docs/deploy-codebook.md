@@ -91,10 +91,10 @@ Image transfer: Docker image → tar → gzip → GitHub Actions artifact → SC
 
 | Kind | Value |
 |------|--------|
-| Image | `fs-A1-d3e4-k9:<github-sha>` |
+| Image | `fs-a1-d3e4-k9:<github-sha>` (lowercase; Docker requirement) |
 | Container | `fs-A1-d3e4-k9` |
-| Archive | `fs-A1-d3e4-k9-<sha>.tar.gz` |
-| Artifact | `fs-A1-d3e4-k9-<sha>` |
+| Archive | `fs-a1-d3e4-k9-<sha>.tar.gz` |
+| Artifact | `fs-a1-d3e4-k9-<sha>` |
 | Network | `fs-A1-d3e4-n2` |
 | Env file | `/opt/fs-A1-d3e4/config/k9.env` |
 
@@ -147,7 +147,7 @@ PostgreSQL. Do **not** publish PostgreSQL to a host port.
   restore-on-failure.
 - If deployment fails, the workflow fails; unrelated resources stay untouched.
 - The target container is stopped/replaced only after its configured image
-  identity is verified to start with `fs-A1-d3e4-k9:`.
+  identity is verified to start with `fs-a1-d3e4-k9:`.
 - Post-deploy check: target container is running (`docker ps`). No
   application-level health endpoint / rollback loop yet.
 
@@ -159,7 +159,7 @@ docker run -d \
   --restart unless-stopped \
   --network fs-A1-d3e4-n2 \
   --env-file /opt/fs-A1-d3e4/config/k9.env \
-  fs-A1-d3e4-k9:<sha>
+  fs-a1-d3e4-k9:<sha>
 ```
 
 Listens inside the network on `:8080`. Do **not** publish host ports (existing

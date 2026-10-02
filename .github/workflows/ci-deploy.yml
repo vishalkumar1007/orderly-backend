@@ -15,7 +15,8 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: fs-A1-d3e4-k9
+  # Docker image repos must be lowercase; container name keeps opaque casing.
+  IMAGE_NAME: fs-a1-d3e4-k9
   CONTAINER_NAME: fs-A1-d3e4-k9
   NETWORK_NAME: fs-A1-d3e4-n2
   DEPLOY_USER_EXPECTED: fs-A1-d3e4-u4
@@ -291,7 +292,7 @@ jobs:
             exit 1
           fi
 
-          if [ "${CONTAINER_NAME}" != "fs-A1-d3e4-k9" ] || [ "${IMAGE_NAME}" != "fs-A1-d3e4-k9" ]; then
+          if [ "${CONTAINER_NAME}" != "fs-A1-d3e4-k9" ] || [ "${IMAGE_NAME}" != "fs-a1-d3e4-k9" ]; then
             echo "ERROR: Invalid image/container identity."
             exit 1
           fi
