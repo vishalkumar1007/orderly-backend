@@ -1,0 +1,404 @@
+name: CI Deploy
+
+# Opaque deploy for Backend runtime fs-A1-d3e4-k9 (fe4b → k9).
+# - No container registry (artifact → SCP → docker load only)
+# - No host port publish
+# - No rollback / restore-on-failure
+# - Does not create, stop, or remove PostgreSQL (fs-A1-d3e4-p5 / v8)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: fs-A1-d3e4-k9
+  CONTAINER_NAME: fs-A1-d3e4-k9
+  NETWORK_NAME: fs-A1-d3e4-n2
+  DEPLOY_USER_EXPECTED: fs-A1-d3e4-u4
+  OPT_ROOT: /opt/fs-A1-d3e4
+  IMAGE_DIR: /opt/fs-A1-d3e4/k9/images
+  ENV_FILE: /opt/fs-A1-d3e4/config/k9.env
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Compile
+        run: go build -o /dev/null ./cmd/server
+
+  build:
+    name: Build
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/server ./cmd/server
+
+  create-docker-image:
+    name: Create Docker Image
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          outputs: type=docker,dest=/tmp/${{ env.IMAGE_NAME }}-${{ github.sha }}.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Gzip archive
+        run: gzip -f "/tmp/${{ env.IMAGE_NAME }}-${{ github.sha }}.tar"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IMAGE_NAME }}-${{ github.sha }}
+          path: /tmp/${{ env.IMAGE_NAME }}-${{ github.sha }}.tar.gz
+          retention-days: 1
+
+  ssh-access:
+    name: SSH Access
+    needs: create-docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate secrets present
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.FS_A1_D3E4_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FS_A1_D3E4_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_HOST}" ]; then
+            echo "ERROR: FS_A1_D3E4_DEPLOY_HOST is not configured."
+            exit 1
+          fi
+          if [ -z "${DEPLOY_USER}" ]; then
+            echo "ERROR: FS_A1_D3E4_DEPLOY_USER is not configured."
+            exit 1
+          fi
+          if [ "${DEPLOY_USER}" != "${DEPLOY_USER_EXPECTED}" ]; then
+            echo "ERROR: Invalid deployment user."
+            echo "Expected: ${DEPLOY_USER_EXPECTED}"
+            exit 1
+          fi
+          if [ -z "${DEPLOY_SSH_KEY}" ]; then
+            echo "ERROR: FS_A1_D3E4_DEPLOY_SSH_KEY is not configured."
+            exit 1
+          fi
+          if [ -z "${SSH_KNOWN_HOSTS}" ]; then
+            echo "ERROR: FS_A1_D3E4_SSH_KNOWN_HOSTS is not configured."
+            exit 1
+          fi
+          echo "GitHub deployment secrets validated."
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.FS_A1_D3E4_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FS_A1_D3E4_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Verify deployment target
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "OPT_ROOT='${OPT_ROOT}' IMAGE_DIR='${IMAGE_DIR}' ENV_FILE='${ENV_FILE}' NETWORK_NAME='${NETWORK_NAME}' CONTAINER_NAME='${CONTAINER_NAME}' DEPLOY_USER_EXPECTED='${DEPLOY_USER_EXPECTED}' bash -s" <<'REMOTE_CHECK'
+          set -euo pipefail
+
+          echo "Checking deployment target..."
+
+          CURRENT_USER="$(id -un)"
+          if [ "${CURRENT_USER}" != "${DEPLOY_USER_EXPECTED}" ]; then
+            echo "ERROR: Wrong remote user."
+            echo "Expected: ${DEPLOY_USER_EXPECTED}"
+            echo "Actual: ${CURRENT_USER}"
+            exit 1
+          fi
+          if [ "$(id -u)" = "0" ] || [ "${CURRENT_USER}" = "root" ]; then
+            echo "ERROR: Deployment must never run as root."
+            exit 1
+          fi
+
+          if [ ! -d "${OPT_ROOT}" ]; then
+            echo "ERROR: Missing directory ${OPT_ROOT}"
+            exit 1
+          fi
+          if [ ! -d "${IMAGE_DIR}" ]; then
+            echo "ERROR: Missing directory ${IMAGE_DIR}"
+            exit 1
+          fi
+          if [ ! -f "${ENV_FILE}" ]; then
+            echo "ERROR: Missing env file ${ENV_FILE}"
+            exit 1
+          fi
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "ERROR: Docker is not installed."
+            exit 1
+          fi
+          if ! docker info >/dev/null 2>&1; then
+            echo "ERROR: Deployment user cannot access Docker."
+            exit 1
+          fi
+
+          if ! docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
+            echo "ERROR: Required network ${NETWORK_NAME} does not exist."
+            exit 1
+          fi
+
+          # Presence note only — never modify these workloads.
+          for name in fs-worker trino ollama fs-A1-d3e4-x7 fs-A1-d3e4-p5; do
+            if docker ps -a --format '{{.Names}}' | grep -Fixq "${name}"; then
+              echo "Protected/sibling container detected (will not modify): ${name}"
+            fi
+          done
+
+          if [ "${CONTAINER_NAME}" != "fs-A1-d3e4-k9" ]; then
+            echo "ERROR: Invalid container name constant."
+            exit 1
+          fi
+
+          case "${CONTAINER_NAME}" in
+            fs-worker|trino|ollama|fs-A1-d3e4-x7|fs-A1-d3e4-p5)
+              echo "ERROR: Attempt to target a protected container."
+              exit 1
+              ;;
+          esac
+
+          echo "Deployment target validated successfully."
+          REMOTE_CHECK
+
+  deployment:
+    name: Deployment
+    needs: ssh-access
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.IMAGE_NAME }}-${{ github.sha }}
+          path: /tmp
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.FS_A1_D3E4_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FS_A1_D3E4_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy archive to server
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="/tmp/${{ env.IMAGE_NAME }}-${{ github.sha }}.tar.gz"
+          if [ ! -f "${ARCHIVE}" ]; then
+            echo "ERROR: Local archive not found: ${ARCHIVE}"
+            ls -la /tmp || true
+            exit 1
+          fi
+          scp \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${ARCHIVE}" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+
+      - name: Deploy safely
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+          VERSION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "VERSION='${VERSION}' IMAGE_NAME='${IMAGE_NAME}' CONTAINER_NAME='${CONTAINER_NAME}' NETWORK_NAME='${NETWORK_NAME}' IMAGE_DIR='${IMAGE_DIR}' ENV_FILE='${ENV_FILE}' DEPLOY_USER_EXPECTED='${DEPLOY_USER_EXPECTED}' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          if [ "$(id -un)" != "${DEPLOY_USER_EXPECTED}" ]; then
+            echo "ERROR: Invalid deployment user."
+            exit 1
+          fi
+          if [ "$(id -u)" = "0" ]; then
+            echo "ERROR: Deployment cannot run as root."
+            exit 1
+          fi
+
+          if [ "${CONTAINER_NAME}" != "fs-A1-d3e4-k9" ] || [ "${IMAGE_NAME}" != "fs-A1-d3e4-k9" ]; then
+            echo "ERROR: Invalid image/container identity."
+            exit 1
+          fi
+
+          case "${CONTAINER_NAME}" in
+            fs-worker|trino|ollama|fs-A1-d3e4-x7|fs-A1-d3e4-p5)
+              echo "ERROR: Protected container."
+              exit 1
+              ;;
+          esac
+
+          if ! echo "${VERSION}" | grep -Eq '^[a-f0-9]{40}$'; then
+            echo "ERROR: Invalid Git SHA."
+            exit 1
+          fi
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "ERROR: Docker unavailable."
+            exit 1
+          fi
+          if ! docker info >/dev/null 2>&1; then
+            echo "ERROR: Docker access unavailable."
+            exit 1
+          fi
+
+          if ! docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
+            echo "ERROR: Network ${NETWORK_NAME} missing."
+            exit 1
+          fi
+
+          if [ ! -f "${ENV_FILE}" ]; then
+            echo "ERROR: Missing ${ENV_FILE}"
+            exit 1
+          fi
+
+          mkdir -p "${IMAGE_DIR}"
+
+          STAGED="/tmp/${IMAGE_NAME}-${VERSION}.tar.gz"
+          IMAGE_ARCHIVE="${IMAGE_DIR}/${IMAGE_NAME}-${VERSION}.tar.gz"
+          TEMP_ARCHIVE="${IMAGE_ARCHIVE}.tmp"
+
+          if [ ! -f "${STAGED}" ]; then
+            echo "ERROR: Docker image archive not found at ${STAGED}"
+            exit 1
+          fi
+
+          mv "${STAGED}" "${TEMP_ARCHIVE}"
+          mv "${TEMP_ARCHIVE}" "${IMAGE_ARCHIVE}"
+
+          echo "Loading Docker image..."
+          gunzip -c "${IMAGE_ARCHIVE}" | docker load
+
+          if ! docker image inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "ERROR: Docker image failed verification after load."
+            exit 1
+          fi
+          echo "Image verified: ${IMAGE_NAME}:${VERSION}"
+
+          if docker ps -aq --filter "name=^${CONTAINER_NAME}$" | grep -q .; then
+            EXISTING_IMAGE="$(docker inspect --format '{{.Config.Image}}' "${CONTAINER_NAME}")"
+            case "${EXISTING_IMAGE}" in
+              "${IMAGE_NAME}:"*)
+                echo "Existing container image identity OK: ${EXISTING_IMAGE}"
+                ;;
+              *)
+                echo "ERROR: Unexpected existing container image."
+                echo "Expected prefix: ${IMAGE_NAME}:"
+                echo "Actual: ${EXISTING_IMAGE}"
+                echo "ABORT — will not replace unexpected container."
+                exit 1
+                ;;
+            esac
+
+            echo "Stopping ${CONTAINER_NAME}..."
+            docker stop "${CONTAINER_NAME}" || true
+            echo "Removing ${CONTAINER_NAME}..."
+            docker rm "${CONTAINER_NAME}"
+          fi
+
+          echo "Starting ${CONTAINER_NAME}..."
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --restart unless-stopped \
+            --network "${NETWORK_NAME}" \
+            --env-file "${ENV_FILE}" \
+            "${IMAGE_NAME}:${VERSION}"
+
+          sleep 5
+
+          if ! docker ps \
+            --filter "name=^${CONTAINER_NAME}$" \
+            --format '{{.Names}}' \
+            | grep -Fxq "${CONTAINER_NAME}"; then
+            echo "ERROR: New container failed to start."
+            docker logs --tail 100 "${CONTAINER_NAME}" || true
+            exit 1
+          fi
+
+          echo "New container is running."
+
+          cd "${IMAGE_DIR}"
+          ls -1t "${IMAGE_NAME}"-*.tar.gz 2>/dev/null \
+            | tail -n +6 \
+            | while IFS= read -r old; do
+                rm -f -- "${old}"
+              done
+
+          echo "Deployment completed safely."
+          docker ps --filter "name=^${CONTAINER_NAME}$"
+          REMOTE_SCRIPT
