@@ -1,4 +1,4 @@
-.PHONY: run migrate-up migrate-down migrate-status sqlc-generate tidy docker-up docker-down docker-reset wait-db up down down-v restart db-clear db-migrate fresh-run
+.PHONY: run check check-integration migrate-up migrate-down migrate-status sqlc-generate tidy docker-up docker-down docker-reset wait-db up down down-v restart db-clear db-migrate fresh-run
 
 DATABASE_URL ?= postgres://orderly:orderly@localhost:5432/orderly?sslmode=disable
 MIGRATIONS_DIR := db/migrations
@@ -11,6 +11,28 @@ SQLC := $(shell if [ -x "$(CURDIR)/.tools/sqlc" ]; then echo "$(CURDIR)/.tools/s
 
 run:
 	go run ./cmd/server
+
+# Same gates as the GitHub Actions "Checks" job — run before push.
+# Clears DATABASE_URL / CONFIG_ENCRYPTION_KEY so a local .env does not force
+# integration tests (those skip in CI when no DB is configured).
+check:
+	@echo "==> go vet"
+	go vet ./...
+	@echo "==> go test"
+	DATABASE_URL= CONFIG_ENCRYPTION_KEY= go test ./...
+	@echo "==> go build ./cmd/server"
+	go build -o /dev/null ./cmd/server
+	@echo "Checks passed."
+
+# Full suite including DB-backed integration tests (requires: make up).
+check-integration:
+	@echo "==> go vet"
+	go vet ./...
+	@echo "==> go test (with DATABASE_URL from environment/.env)"
+	go test ./...
+	@echo "==> go build ./cmd/server"
+	go build -o /dev/null ./cmd/server
+	@echo "Integration checks passed."
 
 migrate-up:
 	$(GOOSE) -dir $(MIGRATIONS_DIR) postgres "$(DATABASE_URL)" up
