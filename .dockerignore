@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.env.*
+.claude
+.tools
+.DS_Store
+docker/
+scripts/
+*.md
+bin/
+coverage*
+*.out
+*.test
