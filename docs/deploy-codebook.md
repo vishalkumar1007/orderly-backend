@@ -77,17 +77,19 @@ Infrastructure on the server only exposes opaque codes: `x7`, `k9`, `n2`, `p5`,
 
 Workflow: `.github/workflows/ci-deploy.yml` (**CI Deploy**)
 
-Five jobs:
+Six jobs:
 
 1. Checks
 2. Build
 3. Create Docker Image
 4. SSH Access
-5. Deployment
+5. Migrate (goose — must be clean before deploy)
+6. Deployment
 
 Deploys **Backend only** (`fe4b` → `k9`). No registry (no GHCR / Docker Hub / ECR).
 Image transfer: Docker image → tar → gzip → GitHub Actions artifact → SCP →
-`docker load` on AWS.
+`docker load` on AWS. Schema is applied by the **Migrate** job before the
+container is replaced (see **Database migrations** below).
 
 | Kind | Value |
 |------|--------|
@@ -102,6 +104,53 @@ Frontend (`ef3` / `x7`) is deployed from the **orderly-frontend** repository via
 its own `ci-deploy.yml` (same opaque project, same host/user/network). See
 `orderly-frontend/docs/deploy-codebook.md`. This Backend workflow must never
 modify `fs-A1-d3e4-x7` or `fs-A1-d3e4-p5`.
+
+## Database migrations
+
+SQL source of truth: `db/migrations/` (goose). Local: `make migrate-up` /
+`make migrate-status`.
+
+CI **Migrate** runs on the AWS host over SSH **before** Deployment. It uses
+`DATABASE_URL` from `/opt/fs-A1-d3e4/config/k9.env` and joins network
+`fs-A1-d3e4-n2` so it can reach `fs-A1-d3e4-p5`. Credentials stay on the
+server — not in GitHub secrets.
+
+### Migrate job steps (visible in Actions)
+
+1. Checkout and package `db/migrations`
+2. Detect whether migration files changed in the push (`yes` / `no`)
+3. Download goose `v3.24.1` and SCP migrations + binary to the host
+4. **Show migration status (before)** — full `goose status` in the job log
+5. **Apply migrations (`goose up`)** when files changed, any Pending exists, or
+   `workflow_dispatch` — otherwise skip with a clear log line
+6. **Show migration status (after)** — full `goose status` again
+7. **Assert clean** — fail if any Pending remains; Deployment does not run
+
+“Clean” means: goose commands succeeded and post-status shows **zero Pending**.
+Goose has no separate golang-migrate `dirty` flag; a failed `goose up` fails the
+job and leaves `fs-A1-d3e4-k9` untouched.
+
+### Preconditions
+
+- `fs-A1-d3e4-p5` healthy on `fs-A1-d3e4-n2`
+- `k9.env` contains a valid `DATABASE_URL` pointing at that Postgres
+- Deploy user can run Docker (same as Deployment)
+
+### Recovery if Migrate fails
+
+1. Open the Actions **Migrate** job and read status before / `goose up` / status after
+2. Fix the SQL or DB state on the server (e.g. `docker exec -it fs-A1-d3e4-p5 psql ...`)
+3. Re-run **CI Deploy** via `workflow_dispatch` (or push a fix)
+4. Do **not** force-replace the app container over a broken schema
+
+Manual fallback from a host that can reach the DB with the same URL:
+
+```bash
+export DATABASE_URL='postgres://...@fs-A1-d3e4-p5:5432/...?sslmode=disable'
+make migrate-status
+make migrate-up
+make migrate-status
+```
 
 ## Server layout
 
@@ -292,15 +341,18 @@ exec/`psql` on the host, or a carefully designed tunnel target. Prefer
 
 - [ ] All four GitHub secrets set
 - [ ] User `fs-A1-d3e4-u4` can SSH and run `docker info`
-- [ ] Directories and `k9.env` exist
+- [ ] Directories and `k9.env` exist (`DATABASE_URL` points at `fs-A1-d3e4-p5`)
 - [ ] Network `fs-A1-d3e4-n2` exists
 - [ ] Container `fs-A1-d3e4-p5` healthy on that network
 - [ ] `fs-worker` / Trino / Ollama still running and untouched
 - [ ] Push to `main` (or run **CI Deploy** via `workflow_dispatch`)
+- [ ] **Migrate** job shows status before/after with zero Pending
 
 ## G. After a green Deployment
 
-- Actions shows five green jobs
+- Actions shows six green jobs (including **Migrate** then **Deployment**)
+- Migrate log shows goose status before and after; assert clean passed
 - `docker ps` lists `fs-A1-d3e4-k9`
 - Archives under `/opt/fs-A1-d3e4/k9/images/` (max 5 kept; **not** a rollback system)
+- `GET /api/v1/auth/admin/setup-status` no longer fails with missing-schema 500
 - Reverse proxy / public hostname wiring remains a later change

@@ -5,6 +5,7 @@ name: CI Deploy
 # - No host port publish
 # - No rollback / restore-on-failure
 # - Does not create, stop, or remove PostgreSQL (fs-A1-d3e4-p5 / v8)
+# - Migrate (goose) runs on the host over SSH before Deployment; blocks deploy if not clean
 
 on:
   push:
@@ -23,6 +24,8 @@ env:
   OPT_ROOT: /opt/fs-A1-d3e4
   IMAGE_DIR: /opt/fs-A1-d3e4/k9/images
   ENV_FILE: /opt/fs-A1-d3e4/config/k9.env
+  GOOSE_VERSION: v3.24.1
+  MIGRATIONS_ARCHIVE_PREFIX: fs-a1-d3e4-k9-migrations
 
 jobs:
   checks:
@@ -223,9 +226,370 @@ jobs:
           echo "Deployment target validated successfully."
           REMOTE_CHECK
 
+  migrate:
+    name: Migrate
+    needs: ssh-access
+    runs-on: ubuntu-latest
+    outputs:
+      migrations_changed: ${{ steps.detect.outputs.migrations_changed }}
+    steps:
+      - name: Checkout and package migrations
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Package migrations archive
+        run: |
+          set -euo pipefail
+          ARCHIVE="/tmp/${{ env.MIGRATIONS_ARCHIVE_PREFIX }}-${{ github.sha }}.tar.gz"
+          tar -czf "${ARCHIVE}" -C db migrations
+          ls -la "${ARCHIVE}"
+
+      - name: Detect migration file changes
+        id: detect
+        run: |
+          set -euo pipefail
+          BEFORE="${{ github.event.before }}"
+          SHA="${{ github.sha }}"
+          FORCE=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FORCE=true
+          fi
+          if [ -z "${BEFORE}" ] || [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+            FORCE=true
+          fi
+
+          CHANGED=false
+          if [ "${FORCE}" = "true" ]; then
+            CHANGED=true
+            echo "Treating migrations as changed (workflow_dispatch or missing before SHA)."
+          elif git diff --name-only "${BEFORE}" "${SHA}" -- db/migrations/ | grep -q .; then
+            CHANGED=true
+            echo "Changed migration files:"
+            git diff --name-only "${BEFORE}" "${SHA}" -- db/migrations/ || true
+          else
+            echo "No migration file changes in this push."
+          fi
+
+          if [ "${CHANGED}" = "true" ]; then
+            echo "Migration files changed: yes"
+            echo "migrations_changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Migration files changed: no"
+            echo "migrations_changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Download goose binary
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/goose-tools
+          curl -fsSL \
+            -o /tmp/goose-tools/goose \
+            "https://github.com/pressly/goose/releases/download/${{ env.GOOSE_VERSION }}/goose_linux_x86_64"
+          chmod 755 /tmp/goose-tools/goose
+          /tmp/goose-tools/goose -version
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.FS_A1_D3E4_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FS_A1_D3E4_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy migrations to server
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="/tmp/${{ env.MIGRATIONS_ARCHIVE_PREFIX }}-${{ github.sha }}.tar.gz"
+          scp \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${ARCHIVE}" \
+            /tmp/goose-tools/goose \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+
+      - name: Show migration status (before)
+        id: status_before
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+          VERSION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "VERSION='${VERSION}' NETWORK_NAME='${NETWORK_NAME}' ENV_FILE='${ENV_FILE}' DEPLOY_USER_EXPECTED='${DEPLOY_USER_EXPECTED}' MIGRATIONS_ARCHIVE_PREFIX='${MIGRATIONS_ARCHIVE_PREFIX}' bash -s" <<'REMOTE_STATUS_BEFORE'
+          set -euo pipefail
+
+          if [ "$(id -un)" != "${DEPLOY_USER_EXPECTED}" ] || [ "$(id -u)" = "0" ]; then
+            echo "ERROR: Invalid deployment user."
+            exit 1
+          fi
+          if [ ! -f "${ENV_FILE}" ]; then
+            echo "ERROR: Missing ${ENV_FILE}"
+            exit 1
+          fi
+          if ! docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
+            echo "ERROR: Network ${NETWORK_NAME} missing."
+            exit 1
+          fi
+
+          ARCHIVE="/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}.tar.gz"
+          GOOSE_BIN="/tmp/goose"
+          MIGRATE_DIR="/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}"
+          STATUS_FILE="/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-status-before.txt"
+
+          if [ ! -f "${ARCHIVE}" ] || [ ! -x "${GOOSE_BIN}" ]; then
+            echo "ERROR: Migrations archive or goose binary missing on server."
+            exit 1
+          fi
+
+          rm -rf "${MIGRATE_DIR}"
+          mkdir -p "${MIGRATE_DIR}"
+          tar -xzf "${ARCHIVE}" -C "${MIGRATE_DIR}"
+          if [ ! -d "${MIGRATE_DIR}/migrations" ]; then
+            echo "ERROR: Archive did not contain migrations/."
+            exit 1
+          fi
+
+          DATABASE_URL="$(grep -E '^DATABASE_URL=' "${ENV_FILE}" | head -n1 | cut -d= -f2-)"
+          DATABASE_URL="${DATABASE_URL#\"}"
+          DATABASE_URL="${DATABASE_URL%\"}"
+          DATABASE_URL="${DATABASE_URL#\'}"
+          DATABASE_URL="${DATABASE_URL%\'}"
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "ERROR: DATABASE_URL missing from env file."
+            exit 1
+          fi
+          export DATABASE_URL
+
+          echo "=== goose status (before) ==="
+          set +e
+          docker run --rm \
+            --network "${NETWORK_NAME}" \
+            -e DATABASE_URL \
+            -v "${MIGRATE_DIR}/migrations:/migrations:ro" \
+            -v "${GOOSE_BIN}:/goose:ro" \
+            --entrypoint /goose \
+            debian:bookworm-slim \
+            -dir /migrations postgres "${DATABASE_URL}" status \
+            | tee "${STATUS_FILE}"
+          STATUS_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "${STATUS_RC}" -ne 0 ]; then
+            echo "ERROR: goose status (before) failed."
+            exit 1
+          fi
+
+          if grep -Eqi '[[:space:]]Pending[[:space:]]' "${STATUS_FILE}"; then
+            echo "has_pending=true" > "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending.flag"
+            echo "Pending migrations detected."
+          else
+            echo "has_pending=false" > "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending.flag"
+            echo "No pending migrations."
+          fi
+          REMOTE_STATUS_BEFORE
+
+          HAS_PENDING="$(ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cat /tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending.flag")"
+          echo "has_pending=${HAS_PENDING#has_pending=}" >> "${GITHUB_OUTPUT}"
+          echo "Remote pending flag: ${HAS_PENDING}"
+
+      - name: Apply migrations (goose up)
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+          VERSION: ${{ github.sha }}
+          MIGRATIONS_CHANGED: ${{ steps.detect.outputs.migrations_changed }}
+          HAS_PENDING: ${{ steps.status_before.outputs.has_pending }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          RUN_UP=false
+          if [ "${MIGRATIONS_CHANGED}" = "true" ] || [ "${HAS_PENDING}" = "true" ] || [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            RUN_UP=true
+          fi
+
+          if [ "${RUN_UP}" != "true" ]; then
+            echo "No pending migrations; skipping goose up"
+            exit 0
+          fi
+
+          echo "Running goose up (migrations_changed=${MIGRATIONS_CHANGED} has_pending=${HAS_PENDING} event=${EVENT_NAME})"
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "VERSION='${VERSION}' NETWORK_NAME='${NETWORK_NAME}' ENV_FILE='${ENV_FILE}' DEPLOY_USER_EXPECTED='${DEPLOY_USER_EXPECTED}' MIGRATIONS_ARCHIVE_PREFIX='${MIGRATIONS_ARCHIVE_PREFIX}' bash -s" <<'REMOTE_UP'
+          set -euo pipefail
+
+          if [ "$(id -un)" != "${DEPLOY_USER_EXPECTED}" ] || [ "$(id -u)" = "0" ]; then
+            echo "ERROR: Invalid deployment user."
+            exit 1
+          fi
+
+          MIGRATE_DIR="/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}"
+          GOOSE_BIN="/tmp/goose"
+          if [ ! -d "${MIGRATE_DIR}/migrations" ] || [ ! -x "${GOOSE_BIN}" ]; then
+            echo "ERROR: Migrations or goose binary not prepared."
+            exit 1
+          fi
+
+          DATABASE_URL="$(grep -E '^DATABASE_URL=' "${ENV_FILE}" | head -n1 | cut -d= -f2-)"
+          DATABASE_URL="${DATABASE_URL#\"}"
+          DATABASE_URL="${DATABASE_URL%\"}"
+          DATABASE_URL="${DATABASE_URL#\'}"
+          DATABASE_URL="${DATABASE_URL%\'}"
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "ERROR: DATABASE_URL missing from env file."
+            exit 1
+          fi
+          export DATABASE_URL
+
+          echo "=== goose up ==="
+          docker run --rm \
+            --network "${NETWORK_NAME}" \
+            -e DATABASE_URL \
+            -v "${MIGRATE_DIR}/migrations:/migrations:ro" \
+            -v "${GOOSE_BIN}:/goose:ro" \
+            --entrypoint /goose \
+            debian:bookworm-slim \
+            -dir /migrations postgres "${DATABASE_URL}" up
+          echo "goose up completed."
+          REMOTE_UP
+
+      - name: Show migration status (after)
+        id: status_after
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+          VERSION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "VERSION='${VERSION}' NETWORK_NAME='${NETWORK_NAME}' ENV_FILE='${ENV_FILE}' DEPLOY_USER_EXPECTED='${DEPLOY_USER_EXPECTED}' MIGRATIONS_ARCHIVE_PREFIX='${MIGRATIONS_ARCHIVE_PREFIX}' bash -s" <<'REMOTE_STATUS_AFTER'
+          set -euo pipefail
+
+          if [ "$(id -un)" != "${DEPLOY_USER_EXPECTED}" ] || [ "$(id -u)" = "0" ]; then
+            echo "ERROR: Invalid deployment user."
+            exit 1
+          fi
+
+          MIGRATE_DIR="/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}"
+          GOOSE_BIN="/tmp/goose"
+          STATUS_FILE="/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-status-after.txt"
+
+          DATABASE_URL="$(grep -E '^DATABASE_URL=' "${ENV_FILE}" | head -n1 | cut -d= -f2-)"
+          DATABASE_URL="${DATABASE_URL#\"}"
+          DATABASE_URL="${DATABASE_URL%\"}"
+          DATABASE_URL="${DATABASE_URL#\'}"
+          DATABASE_URL="${DATABASE_URL%\'}"
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "ERROR: DATABASE_URL missing from env file."
+            exit 1
+          fi
+          export DATABASE_URL
+
+          echo "=== goose status (after) ==="
+          set +e
+          docker run --rm \
+            --network "${NETWORK_NAME}" \
+            -e DATABASE_URL \
+            -v "${MIGRATE_DIR}/migrations:/migrations:ro" \
+            -v "${GOOSE_BIN}:/goose:ro" \
+            --entrypoint /goose \
+            debian:bookworm-slim \
+            -dir /migrations postgres "${DATABASE_URL}" status \
+            | tee "${STATUS_FILE}"
+          STATUS_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "${STATUS_RC}" -ne 0 ]; then
+            echo "ERROR: goose status (after) failed."
+            exit 1
+          fi
+
+          if grep -Eqi '[[:space:]]Pending[[:space:]]' "${STATUS_FILE}"; then
+            echo "has_pending=true" > "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending-after.flag"
+            echo "Pending migrations remain after apply."
+          else
+            echo "has_pending=false" > "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending-after.flag"
+            echo "No pending migrations after apply."
+          fi
+          REMOTE_STATUS_AFTER
+
+          HAS_PENDING="$(ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cat /tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending-after.flag")"
+          echo "has_pending=${HAS_PENDING#has_pending=}" >> "${GITHUB_OUTPUT}"
+          echo "Remote pending-after flag: ${HAS_PENDING}"
+
+      - name: Assert clean
+        env:
+          DEPLOY_HOST: ${{ secrets.FS_A1_D3E4_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.FS_A1_D3E4_DEPLOY_USER }}
+          VERSION: ${{ github.sha }}
+          HAS_PENDING_AFTER: ${{ steps.status_after.outputs.has_pending }}
+        run: |
+          set -euo pipefail
+          if [ "${HAS_PENDING_AFTER}" != "false" ]; then
+            echo "ERROR: Migration state is not clean (pending migrations remain)."
+            echo "Deployment will not run. Fix the database, then re-run the workflow."
+            exit 1
+          fi
+          echo "Migration assert clean: OK (zero pending)."
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "VERSION='${VERSION}' MIGRATIONS_ARCHIVE_PREFIX='${MIGRATIONS_ARCHIVE_PREFIX}' bash -s" <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          rm -rf "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}"
+          rm -f \
+            "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}.tar.gz" \
+            "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-status-before.txt" \
+            "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-status-after.txt" \
+            "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending.flag" \
+            "/tmp/${MIGRATIONS_ARCHIVE_PREFIX}-${VERSION}-pending-after.flag" \
+            "/tmp/goose"
+          echo "Migration temp files cleaned up."
+          REMOTE_CLEANUP
+
   deployment:
     name: Deployment
-    needs: ssh-access
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
       - name: Download image artifact
