@@ -591,7 +591,15 @@ func (s *Server) allowOrigin(r *http.Request, origin string) bool {
 	suffix := "." + base + ":" + port
 	if strings.HasPrefix(origin, prefix) && strings.HasSuffix(origin, suffix) {
 		sub := strings.TrimSuffix(strings.TrimPrefix(origin, prefix), suffix)
-		return sub != "" && sub != "www"
+		if sub != "" && sub != "www" && sub != "api" {
+			return true
+		}
+	}
+
+	// Production frontends are served over HTTPS with no Vite port:
+	// https://orderly.qd.je, https://admin.orderly.qd.je, https://{slug}.orderly.qd.je
+	if originIsPublicFrontend(origin, base) {
+		return true
 	}
 
 	// Local Vite often hops ports (5173/5174/…) when one is busy.
@@ -603,6 +611,23 @@ func (s *Server) allowOrigin(r *http.Request, origin string) bool {
 	return false
 }
 
+// originIsPublicFrontend allows browser origins for the deployed frontend:
+// apex, admin subdomain, and single-label tenant subdomains on BASE_DOMAIN.
+func originIsPublicFrontend(origin, baseDomain string) bool {
+	u, err := parseHTTPOrigin(origin)
+	if err != nil {
+		return false
+	}
+	// Portful origins are covered by the Vite/local rules above.
+	if u.Port() != "" {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	return hostIsFrontend(strings.ToLower(u.Hostname()), strings.ToLower(baseDomain))
+}
+
 func originIsLocalDev(origin, baseDomain string) bool {
 	u, err := parseHTTPOrigin(origin)
 	if err != nil {
@@ -612,14 +637,21 @@ func originIsLocalDev(origin, baseDomain string) bool {
 	if host == "localhost" || host == "127.0.0.1" {
 		return true
 	}
-	base := strings.ToLower(baseDomain)
-	if host == "admin."+base || host == "api."+base {
+	return hostIsFrontend(host, strings.ToLower(baseDomain))
+}
+
+func hostIsFrontend(host, base string) bool {
+	if host == base || host == "admin."+base {
 		return true
+	}
+	if host == "api."+base || host == "www."+base {
+		return false
 	}
 	suffix := "." + base
 	if strings.HasSuffix(host, suffix) {
 		sub := strings.TrimSuffix(host, suffix)
-		return sub != "" && sub != "www"
+		// Single-label tenant slug only (reject nested hosts).
+		return sub != "" && sub != "www" && sub != "api" && !strings.Contains(sub, ".")
 	}
 	return false
 }
