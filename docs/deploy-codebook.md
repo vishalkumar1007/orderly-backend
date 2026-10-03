@@ -118,13 +118,15 @@ server — not in GitHub secrets.
 ### Migrate job steps (visible in Actions)
 
 1. Checkout and package `db/migrations`
-2. Detect whether migration files changed in the push (`yes` / `no`)
+2. Detect whether migration files changed in the push (`yes` / `no`, informational)
 3. Download goose `v3.24.1` and SCP migrations + binary to the host
 4. **Show migration status (before)** — full `goose status` in the job log
-5. **Apply migrations (`goose up`)** when files changed, any Pending exists, or
-   `workflow_dispatch` — otherwise skip with a clear log line
+5. **Apply migrations (`goose up`)** — **always** runs (idempotent; no skip)
 6. **Show migration status (after)** — full `goose status` again
 7. **Assert clean** — fail if any Pending remains; Deployment does not run
+
+Status output from goose goes to stderr; CI merges it with `2>&1 | tee` so Pending
+detection and the Actions log stay accurate.
 
 “Clean” means: goose commands succeeded and post-status shows **zero Pending**.
 Goose has no separate golang-migrate `dirty` flag; a failed `goose up` fails the
