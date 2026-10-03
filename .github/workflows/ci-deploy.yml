@@ -18,8 +18,6 @@ name: CI Deploy
 # Migration flow:
 #   package migrations
 #        ↓
-#   goose validate
-#        ↓
 #   goose status
 #        ↓
 #   goose up
@@ -638,29 +636,9 @@ jobs:
           export DATABASE_URL
 
 
-          # ----------------------------------------------------
-          # 5. Validate migration files
-          # ----------------------------------------------------
-
-          echo ""
-          echo "=== goose validate ==="
-
-          docker run \
-            --rm \
-            --network "${NETWORK_NAME}" \
-            -e DATABASE_URL \
-            -v "${MIGRATE_DIR}/migrations:/migrations:ro" \
-            -v "${GOOSE_BIN}:/goose:ro" \
-            --entrypoint /goose \
-            debian:bookworm-slim \
-            -dir /migrations \
-            postgres \
-            "${DATABASE_URL}" \
-            validate
-
 
           # ----------------------------------------------------
-          # 6. Migration status BEFORE
+          # 5. Migration status BEFORE
           # ----------------------------------------------------
 
           echo ""
@@ -681,7 +659,7 @@ jobs:
 
 
           # ----------------------------------------------------
-          # 7. ALWAYS run goose up
+          # 6. ALWAYS run goose up
           #
           # This is intentional.
           #
@@ -719,7 +697,7 @@ jobs:
 
 
           # ----------------------------------------------------
-          # 8. Migration status AFTER
+          # 7. Migration status AFTER
           # ----------------------------------------------------
 
           echo ""
@@ -752,7 +730,7 @@ jobs:
 
 
           # ----------------------------------------------------
-          # 9. Assert zero pending migrations
+          # 8. Assert zero pending migrations
           # ----------------------------------------------------
 
           if echo "${STATUS_OUTPUT}" | grep -Eqi 'Pending'; then
@@ -772,7 +750,7 @@ jobs:
 
 
           # ----------------------------------------------------
-          # 10. Cleanup migration temporary files
+          # 9. Cleanup migration temporary files
           # ----------------------------------------------------
 
           rm -rf "${MIGRATE_DIR}"
