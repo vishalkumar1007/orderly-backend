@@ -336,7 +336,7 @@ func consoleUserJSON(u sqlc.User) map[string]any {
 // to, and the tenant setup page resolves its tenant from the hostname, so the
 // link would be rejected there.
 func (h *Handler) consoleSetupURL(token string) string {
-	return "http://localhost:" + frontendPort() + "/superadmin/setup-password?token=" + token
+	return h.adminConsoleURL() + "/superadmin/setup-password?token=" + token
 }
 
 // deliverConsoleInvite sends the setup link, reporting rather than failing when

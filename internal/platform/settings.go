@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -112,11 +111,14 @@ func (h *Handler) settingsResponse(ctx context.Context) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
-	baseDomain := strings.TrimSpace(os.Getenv("BASE_DOMAIN"))
+	baseDomain := strings.TrimSpace(h.baseDomain)
 	if baseDomain == "" {
 		baseDomain = "localhost"
 	}
-	port := frontendPort()
+	port := strings.TrimSpace(h.frontendPort)
+	if port == "" {
+		port = "5173"
+	}
 	return map[string]any{
 		"general": map[string]any{
 			"platform_name":    cfg.PlatformName,
@@ -140,12 +142,12 @@ func (h *Handler) settingsResponse(ctx context.Context) (map[string]any, error) 
 		"platform": map[string]any{
 			"base_domain":        baseDomain,
 			"frontend_port":      port,
-			"admin_host":         "localhost:" + port,
+			"admin_host":         h.adminConsoleHost(),
 			"allow_self_serve":   cfg.AllowSelfServe,
 			"maintenance_mode":   cfg.MaintenanceMode,
 			"read_only_settings": false,
 		},
-		"app_env": strings.TrimSpace(os.Getenv("APP_ENV")),
+		"app_env": strings.TrimSpace(h.appEnv),
 	}, nil
 }
 

@@ -317,7 +317,7 @@ func (h *Handler) writeTheme(w http.ResponseWriter, r *http.Request, id pgtype.U
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load tenant")
 		return
 	}
-	response.JSON(w, http.StatusOK, tenantJSONFromRow(row))
+	response.JSON(w, http.StatusOK, h.tenantJSONFromRow(row))
 }
 
 func themeFromRow(row sqlc.GetTenantWithPlanByIDRow) map[string]any {
@@ -330,7 +330,6 @@ func themeFromRow(row sqlc.GetTenantWithPlanByIDRow) map[string]any {
 	)
 }
 
-func tenantJSONFromRow(row sqlc.GetTenantWithPlanByIDRow) map[string]any {
-	out := tenantJSONEnriched(row.Tenant, row.PlanName, row.PlanPrice, row.ThemeName, row.ThemeTokens)
-	return out
+func (h *Handler) tenantJSONFromRow(row sqlc.GetTenantWithPlanByIDRow) map[string]any {
+	return h.tenantJSONEnriched(row.Tenant, row.PlanName, row.PlanPrice, row.ThemeName, row.ThemeTokens)
 }

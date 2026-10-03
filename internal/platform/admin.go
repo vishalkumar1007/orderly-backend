@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -24,7 +23,9 @@ import (
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/brand"
+	"github.com/orderly/orderly-backend/internal/config"
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/publicurl"
 	"github.com/orderly/orderly-backend/internal/secretbox"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/identity"
@@ -38,6 +39,10 @@ type Handler struct {
 	pool *pgxpool.Pool
 	q    *sqlc.Queries
 
+	baseDomain   string
+	appEnv       string
+	frontendPort string
+
 	// configs is the provider-configuration stack. It is attached during
 	// construction by the HTTP server; a nil value only happens in unit tests
 	// that exercise unrelated handlers.
@@ -47,8 +52,30 @@ type Handler struct {
 	log           *slog.Logger
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool, q: sqlc.New(pool)}
+func NewHandler(pool *pgxpool.Pool, cfg config.Config) *Handler {
+	return &Handler{
+		pool:         pool,
+		q:            sqlc.New(pool),
+		baseDomain:   cfg.BaseDomain,
+		appEnv:       cfg.AppEnv,
+		frontendPort: cfg.FrontendPort,
+	}
+}
+
+func (h *Handler) tenantFrontendURL(slug string) string {
+	return publicurl.TenantFrontendURL(slug, h.baseDomain, h.appEnv, h.frontendPort)
+}
+
+func (h *Handler) tenantFrontendHost(slug string) string {
+	return publicurl.TenantHost(slug, h.baseDomain, h.appEnv, h.frontendPort)
+}
+
+func (h *Handler) adminConsoleURL() string {
+	return publicurl.AdminConsoleURL(h.baseDomain, h.appEnv, h.frontendPort)
+}
+
+func (h *Handler) adminConsoleHost() string {
+	return publicurl.AdminConsoleHost(h.baseDomain, h.appEnv, h.frontendPort)
 }
 
 type createTenantRequest struct {
@@ -284,7 +311,7 @@ func (h *Handler) ListTenants(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, tenantJSONEnriched(row.Tenant, row.PlanName, row.PlanPrice, row.ThemeName, row.ThemeTokens))
+		out = append(out, h.tenantJSONEnriched(row.Tenant, row.PlanName, row.PlanPrice, row.ThemeName, row.ThemeTokens))
 	}
 	response.JSON(w, http.StatusOK, map[string]any{"tenants": out})
 }
@@ -475,8 +502,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port := frontendPort()
-	base := "http://" + tenant.Slug + ".localhost:" + port
+	base := h.tenantFrontendURL(tenant.Slug)
 	setupPath := "/setup-password?token=" + inviteToken
 	emailSent, emailErr := h.deliverInvite(r.Context(), admin.Email, tenant.Name, base+setupPath)
 	enriched, err := h.q.GetTenantWithPlanByID(r.Context(), tenant.ID)
@@ -485,7 +511,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, http.StatusCreated, map[string]any{
-		"tenant":       tenantJSONFromRow(enriched),
+		"tenant":       h.tenantJSONFromRow(enriched),
 		"admin_email":  admin.Email,
 		"invite_token": inviteToken,
 		"setup_path":   setupPath,
@@ -508,7 +534,7 @@ func (h *Handler) GetTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub, _ := h.q.GetSubscriptionByTenant(r.Context(), row.Tenant.ID)
-	out := tenantJSONFromRow(row)
+	out := h.tenantJSONFromRow(row)
 	if sub.ID.Valid {
 		out["subscription"] = subscriptionJSON(sub, row.PlanName)
 	}
@@ -660,7 +686,7 @@ func (h *Handler) ChangeTenantPlan(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load tenant")
 		return
 	}
-	response.JSON(w, http.StatusOK, tenantJSONFromRow(row))
+	response.JSON(w, http.StatusOK, h.tenantJSONFromRow(row))
 }
 
 func (h *Handler) UpdateTenant(w http.ResponseWriter, r *http.Request) {
@@ -752,7 +778,7 @@ func (h *Handler) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusNotFound, "not_found", "tenant not found")
 		return
 	}
-	response.JSON(w, http.StatusOK, tenantJSONFromRow(row))
+	response.JSON(w, http.StatusOK, h.tenantJSONFromRow(row))
 }
 
 func (h *Handler) ActivateTenant(w http.ResponseWriter, r *http.Request) {
@@ -786,10 +812,10 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, status strin
 	_ = insertAudit(ctx, h.q, &tenantUUID, &actor.ID, action, "tenant", tenant.ID)
 	row, err := h.q.GetTenantWithPlanByID(ctx, tenant.ID)
 	if err != nil {
-		response.JSON(w, http.StatusOK, tenantJSON(tenant))
+		response.JSON(w, http.StatusOK, h.tenantJSON(tenant))
 		return
 	}
-	response.JSON(w, http.StatusOK, tenantJSONFromRow(row))
+	response.JSON(w, http.StatusOK, h.tenantJSONFromRow(row))
 }
 
 func (h *Handler) ListTenantAdmins(w http.ResponseWriter, r *http.Request) {
@@ -988,8 +1014,7 @@ func (h *Handler) ResendTenantInvite(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to update invite")
 		return
 	}
-	port := frontendPort()
-	base := "http://" + row.Tenant.Slug + ".localhost:" + port
+	base := h.tenantFrontendURL(row.Tenant.Slug)
 	setupPath := "/setup-password?token=" + inviteToken
 	setupURL := base + setupPath
 	emailSent, emailErr := h.deliverInvite(ctx, updated.Email, row.Tenant.Name, setupURL)
@@ -1005,18 +1030,11 @@ func (h *Handler) ResendTenantInvite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func frontendPort() string {
-	if p := strings.TrimSpace(os.Getenv("FRONTEND_PORT")); p != "" {
-		return p
-	}
-	return "5173"
+func (h *Handler) tenantJSON(t sqlc.Tenant) map[string]any {
+	return h.tenantJSONEnriched(t, pgtype.Text{}, pgtype.Numeric{}, pgtype.Text{}, nil)
 }
 
-func tenantJSON(t sqlc.Tenant) map[string]any {
-	return tenantJSONEnriched(t, pgtype.Text{}, pgtype.Numeric{}, pgtype.Text{}, nil)
-}
-
-func tenantJSONEnriched(t sqlc.Tenant, planName pgtype.Text, planPrice pgtype.Numeric, themeName pgtype.Text, themeTokens []byte) map[string]any {
+func (h *Handler) tenantJSONEnriched(t sqlc.Tenant, planName pgtype.Text, planPrice pgtype.Numeric, themeName pgtype.Text, themeTokens []byte) map[string]any {
 	out := map[string]any{
 		"id": pgutil.UUIDString(t.ID), "name": t.Name, "slug": t.Slug,
 		"business_type": t.BusinessType, "owner_name": t.OwnerName,
@@ -1025,7 +1043,7 @@ func tenantJSONEnriched(t sqlc.Tenant, planName pgtype.Text, planPrice pgtype.Nu
 		"plan_id":           pgutil.UUIDPtr(t.PlanID),
 		"created_at":        t.CreatedAt.Time.Format(time.RFC3339),
 		"updated_at":        t.UpdatedAt.Time.Format(time.RFC3339),
-		"public_host":       t.Slug + ".localhost:" + frontendPort(),
+		"public_host":       h.tenantFrontendHost(t.Slug),
 		"theme_preset_id":   t.ThemePresetID,
 		"theme_color_mode":  t.ThemeColorMode,
 		"theme":             brand.Payload(t.ThemePresetID, textOrEmpty(themeName), t.ThemeColorMode, themeTokens, t.ThemeOverrides),

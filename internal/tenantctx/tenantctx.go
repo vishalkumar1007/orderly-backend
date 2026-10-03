@@ -121,6 +121,20 @@ func ParseHost(hostHeader, baseDomain string) HostInfo {
 		return info
 	}
 
+	// Public tenant API hosts: {slug}.api.{base} (e.g. vm-food.api.orderly.qd.je).
+	// Checked before the generic {slug}.{base} rule so "vm-food.api" is not
+	// mistaken for a tenant slug.
+	apiSuffix := ".api." + base
+	if strings.HasSuffix(host, apiSuffix) {
+		slug := strings.TrimSuffix(host, apiSuffix)
+		if slug != "" && !strings.Contains(slug, ".") {
+			info.Kind = HostTenant
+			info.Slug = slug
+			return info
+		}
+		return info
+	}
+
 	suffix := "." + base
 	if strings.HasSuffix(host, suffix) {
 		sub := strings.TrimSuffix(host, suffix)
@@ -136,6 +150,10 @@ func ParseHost(hostHeader, baseDomain string) HostInfo {
 			info.Kind = HostAPI
 			return info
 		}
+		// Frontend-style shop hosts ({slug}.{base}) and legacy proxy Hosts.
+		if strings.Contains(sub, ".") {
+			return info
+		}
 		info.Kind = HostTenant
 		info.Slug = sub
 		return info
@@ -144,13 +162,42 @@ func ParseHost(hostHeader, baseDomain string) HostInfo {
 	return info
 }
 
+// firstForwardedHost returns the left-most X-Forwarded-Host value.
+func firstForwardedHost(header string) string {
+	v := strings.TrimSpace(header)
+	if v == "" {
+		return ""
+	}
+	if i := strings.Index(v, ","); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
+// EffectiveHost is the hostname used for tenant/admin routing.
+//
+// When the request already arrived on a tenant or admin host, that Host wins
+// (clients cannot override it with X-Forwarded-Host). Otherwise — API host,
+// internal Docker hostname, unknown — honor X-Forwarded-Host so the frontend
+// proxy / SSR can keep wildcard shop hosts while dialing the API container.
+func EffectiveHost(r *http.Request, baseDomain string) string {
+	direct := ParseHost(r.Host, baseDomain)
+	if direct.Kind == HostTenant || direct.Kind == HostAdmin {
+		return r.Host
+	}
+	if fwd := firstForwardedHost(r.Header.Get("X-Forwarded-Host")); fwd != "" {
+		return fwd
+	}
+	return r.Host
+}
+
 // Middleware resolves tenant from subdomain for tenant hosts.
 // Admin/API hosts pass through without a tenant context.
 func Middleware(pool *pgxpool.Pool, baseDomain string) func(http.Handler) http.Handler {
 	q := sqlc.New(pool)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			hostInfo := ParseHost(r.Host, baseDomain)
+			hostInfo := ParseHost(EffectiveHost(r, baseDomain), baseDomain)
 			ctx := WithHost(r.Context(), hostInfo)
 
 			if hostInfo.Kind != HostTenant {

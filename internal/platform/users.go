@@ -215,8 +215,7 @@ func (h *Handler) createUserFor(w http.ResponseWriter, r *http.Request, req crea
 	actor, _ := identity.UserFromContext(ctx)
 	_ = insertAudit(ctx, h.q, &tuid, &actor.ID, "Admin Created", "user", user.ID)
 
-	base := "http://" + tenant.Slug + ".localhost:" + frontendPort()
-	setupURL := base + "/setup-password?token=" + inviteToken
+	setupURL := h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
 	emailSent, emailErr := h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
 
 	response.JSON(w, http.StatusCreated, map[string]any{
@@ -375,7 +374,7 @@ func (h *Handler) ResetTenantUserAccess(w http.ResponseWriter, r *http.Request) 
 	setupURL := ""
 	emailSent, emailErr := false, ""
 	if terr == nil {
-		setupURL = "http://" + tenant.Slug + ".localhost:" + frontendPort() + "/setup-password?token=" + inviteToken
+		setupURL = h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
 		emailSent, emailErr = h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
 	}
 
@@ -421,7 +420,7 @@ func (h *Handler) ResendTenantUserInvite(w http.ResponseWriter, r *http.Request)
 	setupURL := ""
 	emailSent, emailErr := false, ""
 	if tenant, terr := h.q.GetTenantByID(ctx, tid); terr == nil {
-		setupURL = "http://" + tenant.Slug + ".localhost:" + frontendPort() + "/setup-password?token=" + inviteToken
+		setupURL = h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
 		emailSent, emailErr = h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
 	}
 	response.JSON(w, http.StatusOK, map[string]any{

@@ -12,19 +12,34 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/publicurl"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
+// BaseURLResolver builds the absolute browser origin for a tenant slug.
+type BaseURLResolver func(slug string) string
+
 type Handler struct {
 	pool *pgxpool.Pool
 	q    *sqlc.Queries
+	base BaseURLResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool, q: sqlc.New(pool)}
+func NewHandler(pool *pgxpool.Pool, base BaseURLResolver) *Handler {
+	if base == nil {
+		base = func(string) string { return "" }
+	}
+	return &Handler{pool: pool, q: sqlc.New(pool), base: base}
+}
+
+func (h *Handler) publicHost(slug string) string {
+	if host := publicurl.HostOf(h.base(slug)); host != "" {
+		return host
+	}
+	return slug
 }
 
 func tenantID(r *http.Request) uuid.UUID {
@@ -539,7 +554,7 @@ func (h *Handler) setPublished(w http.ResponseWriter, r *http.Request, published
 		"setup_status": t.SetupStatus,
 		"slug":         t.Slug,
 		"status":       t.Status,
-		"public_host":  t.Slug + ".localhost:5173",
+		"public_host":  h.publicHost(t.Slug),
 		"public_path":  "/",
 	})
 }
@@ -552,7 +567,7 @@ func (h *Handler) StoreLink(w http.ResponseWriter, r *http.Request) {
 	}
 	response.JSON(w, http.StatusOK, map[string]any{
 		"slug":         t.Slug,
-		"public_host":  t.Slug + ".localhost:5173",
+		"public_host":  h.publicHost(t.Slug),
 		"public_path":  "/",
 		"is_published": t.IsPublished,
 		"setup_status": t.SetupStatus,

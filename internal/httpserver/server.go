@@ -26,6 +26,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/orders"
 	"github.com/orderly/orderly-backend/internal/payments"
 	"github.com/orderly/orderly-backend/internal/platform"
+	"github.com/orderly/orderly-backend/internal/publicurl"
 	"github.com/orderly/orderly-backend/internal/secretbox"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tables"
@@ -54,7 +55,7 @@ type Server struct {
 }
 
 func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
-	admin := platform.NewHandler(pool)
+	admin := platform.NewHandler(pool, cfg)
 
 	// One configuration stack for the process: a single secretbox, store and
 	// resolver, so a secret is never sealed under one key and looked for under
@@ -79,7 +80,6 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 		log: log, pool: pool, cfg: cfg,
 		auth:         authSvc,
 		admin:        admin,
-		menu:         menu.NewHandler(pool),
 		upload:       uploadHandler,
 		orders:       orderHandler,
 		customers:    customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
@@ -89,8 +89,9 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 		hotel:        hotel.NewHandler(pool),
 		tables:       tables.NewHandler(pool),
 	}
-	// The admin storefront handler needs the server to build public store URLs,
-	// so it is attached after the server value exists.
+	// Menu + storefront admin need the server's public URL builder, so they are
+	// attached after the server value exists.
+	s.menu = menu.NewHandler(pool, s.publicStoreURL)
 	s.shop = storefront.NewAdminHandler(pool, s.publicStoreURL)
 	return s
 }
@@ -99,16 +100,7 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 // scheme follows the environment so a production build never advertises
 // http:// links in a printed QR code.
 func (s *Server) publicStoreURL(slug string) string {
-	scheme := "https"
-	if s.cfg.AppEnv == "development" || s.cfg.AppEnv == "dev" || s.cfg.AppEnv == "" {
-		scheme = "http"
-		port := s.cfg.FrontendPort
-		if port != "" && port != "80" {
-			scheme = "http"
-			return storefront.StorefrontURL(slug, s.cfg.BaseDomain, scheme) + ":" + port
-		}
-	}
-	return storefront.StorefrontURL(slug, s.cfg.BaseDomain, scheme)
+	return publicurl.TenantFrontendURL(slug, s.cfg.BaseDomain, s.cfg.AppEnv, s.cfg.FrontendPort)
 }
 
 // tenantIDOf returns the caller's tenant from the verified JWT. Handlers are
