@@ -78,3 +78,70 @@ func TestEffectiveHost_InternalDockerUpstream(t *testing.T) {
 		t.Fatalf("EffectiveHost = %q, want forwarded shop host", got)
 	}
 }
+
+func TestResolveTenantBinding_SlugHeaderOnAPIHost(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://api.orderly.qd.je/api/v1/public/theme", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "api.orderly.qd.je"
+	req.Header.Set(TenantSlugHeader, "vm-food")
+
+	info := ResolveTenantBinding(req, "orderly.qd.je")
+	if info.Kind != HostTenant || info.Slug != "vm-food" {
+		t.Fatalf("ResolveTenantBinding = %+v, want HostTenant vm-food", info)
+	}
+}
+
+func TestResolveTenantBinding_OriginFallback(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://api.orderly.qd.je/api/v1/public/theme", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "api.orderly.qd.je"
+	req.Header.Set("Origin", "https://vm-foods.orderly.qd.je")
+
+	info := ResolveTenantBinding(req, "orderly.qd.je")
+	if info.Kind != HostTenant || info.Slug != "vm-foods" {
+		t.Fatalf("ResolveTenantBinding = %+v, want HostTenant vm-foods", info)
+	}
+}
+
+func TestResolveTenantBinding_HostWinsOverForgedSlug(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://shop.orderly.qd.je/api/v1/public/theme", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "shop.orderly.qd.je"
+	req.Header.Set(TenantSlugHeader, "other")
+
+	info := ResolveTenantBinding(req, "orderly.qd.je")
+	if info.Kind != HostTenant || info.Slug != "shop" {
+		t.Fatalf("ResolveTenantBinding = %+v, want HostTenant shop", info)
+	}
+}
+
+func TestResolveTenantBinding_PlatformAPIWithoutSlug(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://api.orderly.qd.je/api/v1/admin/tenants", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "api.orderly.qd.je"
+
+	info := ResolveTenantBinding(req, "orderly.qd.je")
+	if info.Kind != HostAPI || info.Slug != "" {
+		t.Fatalf("ResolveTenantBinding = %+v, want HostAPI", info)
+	}
+}
+
+func TestNormalizeTenantSlug(t *testing.T) {
+	if got := NormalizeTenantSlug("VM-Food"); got != "vm-food" {
+		t.Fatalf("got %q", got)
+	}
+	if got := NormalizeTenantSlug("a.b"); got != "" {
+		t.Fatalf("nested slug should be rejected, got %q", got)
+	}
+	if got := NormalizeTenantSlug("Bad_Slug"); got != "" {
+		t.Fatalf("invalid slug should be rejected, got %q", got)
+	}
+}

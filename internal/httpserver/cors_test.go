@@ -22,8 +22,9 @@ func TestAllowOrigin_ProductionHTTPS(t *testing.T) {
 		{"https://orderly.qd.je", true},
 		{"https://admin.orderly.qd.je", true},
 		{"https://momo-magic.orderly.qd.je", true},
-		// Shop frontend Origin when calling https://{slug}.api.orderly.qd.je
+		// Shop frontend Origin when calling the shared https://api.orderly.qd.je
 		{"https://vm-food.orderly.qd.je", true},
+		{"https://vm-foods.orderly.qd.je", true},
 		// API hosts are not browser page Origins.
 		{"https://api.orderly.qd.je", false},
 		{"https://vm-food.api.orderly.qd.je", false},

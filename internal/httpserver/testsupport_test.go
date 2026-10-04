@@ -304,9 +304,8 @@ func (e *testEnv) do(method, path, token string, body any) (int, map[string]any)
 }
 
 // doAs issues a request against a tenant's subdomain. The tenant routes are
-// guarded by MatchHostTenant, so a tenant call must arrive on that tenant's
-// host or the middleware rejects it — which is exactly the isolation guarantee
-// being tested.
+// guarded by MatchHostTenant, so a tenant call must arrive with that tenant's
+// host (or X-Tenant-Slug on the shared API host) or the middleware rejects it.
 func (e *testEnv) doAs(method, path, token string, body any, tenantID uuid.UUID) (int, map[string]any) {
 	return e.doOn(method, path, token, body, e.hostFor(tenantID))
 }
@@ -330,6 +329,20 @@ func (e *testEnv) hostFor(tenantID uuid.UUID) string {
 // doOn issues a request against a specific Host header.
 func (e *testEnv) doOn(method, path, token string, body any, host string) (int, map[string]any) {
 	e.t.Helper()
+	return e.doOnHeaders(method, path, token, body, host, nil)
+}
+
+// doOnSharedAPI dials the shared api host with X-Tenant-Slug set.
+func (e *testEnv) doOnSharedAPI(method, path, token string, body any, slug string) (int, map[string]any) {
+	e.t.Helper()
+	return e.doOnHeaders(method, path, token, body, "api."+e.cfg.BaseDomain, map[string]string{
+		"X-Tenant-Slug": slug,
+	})
+}
+
+// doOnHeaders issues a request against a specific Host with extra headers.
+func (e *testEnv) doOnHeaders(method, path, token string, body any, host string, extra map[string]string) (int, map[string]any) {
+	e.t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -348,6 +361,9 @@ func (e *testEnv) doOn(method, path, token string, body any, host string) (int, 
 	req.Host = host
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range extra {
+		req.Header.Set(k, v)
 	}
 	resp, err := e.http.Client().Do(req)
 	if err != nil {

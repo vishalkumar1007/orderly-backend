@@ -136,7 +136,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Timeout(60 * time.Second))
 	r.Use(cors.Handler(cors.Options{
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", tenantctx.TenantSlugHeader},
 		AllowCredentials: true,
 		AllowOriginFunc:  s.allowOrigin,
 		MaxAge:           300,
@@ -271,7 +271,7 @@ func (s *Server) Router() http.Handler {
 			tr.Use(auth.Middleware(s.auth))
 			tr.Use(auth.RequireRoles(identity.RoleTenantAdmin, identity.RoleManager, identity.RoleStaff))
 			tr.Use(auth.RequireTenant)
-			tr.Use(auth.MatchHostTenant)
+			tr.Use(auth.MatchHostTenant(s.pool))
 
 			// Capability guards. Routes name what they need rather than who may
 			// call them, so adding a role is a change to one table
@@ -471,9 +471,8 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStorefront).Get("/storefront/preview", s.shop.PreviewMenu)
 			tr.With(canStorefront).Get("/storefront/qr", s.shop.QRCode)
 
-			// Route aliases for /customize. Admin clients must call these on the
-			// tenant Host ({slug}.{baseDomain}), never on the bare API host —
-			// MatchHostTenant rejects cross-host tokens.
+			// Route aliases for /customize. Shop clients dial the shared API host
+			// with X-Tenant-Slug; MatchHostTenant keeps JWT tenant_id aligned.
 			tr.With(canStorefront).Get("/customize", s.shop.GetStorefront)
 			tr.With(canStorefront).Put("/customize", s.shop.PutStorefront)
 			tr.With(canStorefront).Put("/customize/theme", s.shop.PutTheme)

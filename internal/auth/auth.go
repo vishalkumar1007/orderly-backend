@@ -558,25 +558,40 @@ func RequireTenant(next http.Handler) http.Handler {
 	})
 }
 
-// MatchHostTenant ensures JWT tenant_id equals host-resolved tenant.
-func MatchHostTenant(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := identity.UserFromContext(r.Context())
-		if !ok || user.TenantID == nil {
-			response.Error(w, http.StatusForbidden, "forbidden", "tenant context required")
-			return
-		}
-		hostTenant, ok := tenantctx.FromContext(r.Context())
-		if !ok {
-			response.Error(w, http.StatusForbidden, "forbidden", "tenant host required")
-			return
-		}
-		if *user.TenantID != hostTenant.ID {
-			response.Error(w, http.StatusForbidden, "forbidden", "tenant host mismatch")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// MatchHostTenant ensures JWT tenant_id equals the request tenant context.
+//
+// On the shared API host, the tenant usually comes from X-Tenant-Slug (or
+// Origin). When that signal is absent but the JWT carries a tenant_id, the
+// tenant is loaded from the claim so authenticated clients remain usable —
+// the JWT is still the authority and is re-checked against the DB user row
+// in AuthenticateRequest.
+func MatchHostTenant(pool *pgxpool.Pool) func(http.Handler) http.Handler {
+	q := sqlc.New(pool)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := identity.UserFromContext(r.Context())
+			if !ok || user.TenantID == nil {
+				response.Error(w, http.StatusForbidden, "forbidden", "tenant context required")
+				return
+			}
+			ctx := r.Context()
+			hostTenant, ok := tenantctx.FromContext(ctx)
+			if !ok {
+				info, err := tenantctx.LoadTenantByID(ctx, q, *user.TenantID)
+				if err != nil {
+					response.Error(w, http.StatusForbidden, "forbidden", "tenant host required")
+					return
+				}
+				hostTenant = *info
+				ctx = tenantctx.WithTenant(ctx, hostTenant)
+			}
+			if *user.TenantID != hostTenant.ID {
+				response.Error(w, http.StatusForbidden, "forbidden", "tenant host mismatch")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 func (s *Service) HandleAdminSetupStatus(w http.ResponseWriter, r *http.Request) {

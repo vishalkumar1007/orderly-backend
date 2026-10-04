@@ -33,8 +33,8 @@ See [`../run_app_guid.md`](../run_app_guid.md) for details.
 
 API:
 
-- Platform: `http://api.localhost:8080`
-- Shop: `http://{slug}.api.localhost:8080` (also accepts legacy `Host: {slug}.localhost:8080`)
+- Shared API: `http://api.localhost:8080` (platform and shop)
+- Shop requests send `X-Tenant-Slug: {slug}` (local Vite proxy may still use `Host: {slug}.localhost`)
 
 First run: open the Super Admin portal → **Create super admin** at `/superadmin/setup`, then sign in.
 
@@ -43,7 +43,7 @@ First run: open the Super Admin portal → **Create super admin** at `/superadmi
 - `GET /api/v1/auth/admin/setup-status` — `{ needs_setup }` (platform host)
 - `POST /api/v1/auth/admin/setup` — first Super Admin (email + password)
 - `POST /api/v1/auth/admin/login` — SUPER_ADMIN only
-- `POST /api/v1/auth/tenant/login` — requires `Host: {slug}.api.localhost:8080` (or `{slug}.localhost:8080`)
+- `POST /api/v1/auth/tenant/login` — requires tenant context (`X-Tenant-Slug` or tenant Host)
 - `POST /api/v1/auth/setup-password` — invite token → set password
 
-Tenant APIs require host subdomain to match JWT `tenant_id`.
+Authenticated tenant APIs require JWT `tenant_id` to match the resolved tenant (from `X-Tenant-Slug` / Host).
