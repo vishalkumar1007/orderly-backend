@@ -1,6 +1,6 @@
 # Orderly Backend
 
-Go API for multi-tenant food SaaS (subdomain tenancy).
+Go API for multi-tenant food SaaS (subdomain tenancy)
 
 ## Stack
 
