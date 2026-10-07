@@ -46,4 +46,4 @@ First run: open the Super Admin portal → **Create super admin** at `/superadmi
 - `POST /api/v1/auth/tenant/login` — requires tenant context (`X-Tenant-Slug` or tenant Host)
 - `POST /api/v1/auth/setup-password` — invite token → set password
 
-Authenticated tenant APIs require JWT `tenant_id` to match the resolved tenant (from `X-Tenant-Slug` / Host).
+Authenticated tenant APIs require JWT `tenant_id` to match the resolved tenant (from `X-Tenant-Slug` / Host)
