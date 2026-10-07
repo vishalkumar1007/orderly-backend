@@ -37,4 +37,4 @@ if mode != "light" && mode != "soft" && mode != "dark" && mode != "night" && mod
 - `internal/brand/theme.go` — Payload accepts soft/night
 - `internal/platform/settings.go` — platform branding accepts soft/night
 
-Until the two files above are patched, the UI still paints Soft/Night live and keeps the choice in `localStorage`, mapping Soft→light and Night→dark for the API.
+Until the two files above are patched, the UI still paints Soft/Night live and keeps the choice in `localStorage`, mapping Soft→light and Night→dark for the API
