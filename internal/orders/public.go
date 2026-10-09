@@ -93,6 +93,8 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"customer_login_mode": sf.CustomerLoginMode,
 			"payment_requirement": sf.Workflow.PaymentRequirement,
 			"auto_accept":         sf.Workflow.AutoAccept(),
+			"ready_notification":  sf.Workflow.ReadyNotification,
+			"order_ready_sound":   sf.Workflow.OrderReadySound,
 			"store_status":             sf.StoreStatus,
 			"store_status_label":       storefront.StoreStatusLabel(sf.StoreStatus),
 			"status_message":           sf.StatusMessage,

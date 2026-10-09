@@ -50,6 +50,23 @@ func SendTestMessage(ctx context.Context, provider EmailProvider, to, label stri
 	return TestOutcome{OK: true, Message: "Test message sent to " + to}
 }
 
+// SendTestSMS delivers a test text message over a built provider. It is
+// exported so the HTTP layer can test a configuration it has not yet saved,
+// mirroring SendTestMessage.
+func SendTestSMS(ctx context.Context, provider SMSProvider, to string) TestOutcome {
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return TestOutcome{OK: false, Message: "A recipient number is required"}
+	}
+	if provider == nil {
+		return TestOutcome{OK: false, Message: "No SMS provider is configured"}
+	}
+	if _, err := provider.Send(ctx, to, "This is a test message from Orderly. If you received it, SMS is configured correctly."); err != nil {
+		return TestOutcome{OK: false, Message: "The test message could not be sent", Detail: SafeErrorMessage(err)}
+	}
+	return TestOutcome{OK: true, Message: "Test message sent to " + to}
+}
+
 // UploadProbe writes and removes a small object, proving write access rather
 // than only read access.
 func UploadProbe(ctx context.Context, provider StorageProvider) TestOutcome {

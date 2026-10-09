@@ -147,10 +147,14 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 			"methods":                sf.Payments.Methods(),
 		},
 		"workflow": map[string]any{
-			"acceptance_mode":     sf.Workflow.AcceptanceMode,
-			"payment_requirement": sf.Workflow.PaymentRequirement,
-			"ready_notification":  sf.Workflow.ReadyNotification,
-			"auto_complete":       sf.Workflow.AutoComplete,
+			"acceptance_mode":            sf.Workflow.AcceptanceMode,
+			"payment_requirement":        sf.Workflow.PaymentRequirement,
+			"ready_notification":         sf.Workflow.ReadyNotification,
+			"auto_complete":              sf.Workflow.AutoComplete,
+			"new_order_sound":            sf.Workflow.NewOrderSound,
+			"order_ready_sound":          sf.Workflow.OrderReadySound,
+			"in_app_new_order_enabled":   sf.Workflow.InAppNewOrder,
+			"in_app_order_ready_enabled": sf.Workflow.InAppOrderReady,
 		},
 		"hours": map[string]any{
 			"always_open":  sf.OpeningHours.AlwaysOpen,
@@ -608,6 +612,10 @@ func (a *AdminHandler) PutOrderWorkflow(w http.ResponseWriter, r *http.Request) 
 		PaymentRequirement *string `json:"payment_requirement"`
 		ReadyNotification  *bool   `json:"ready_notification"`
 		AutoComplete       *bool   `json:"auto_complete"`
+		NewOrderSound      *string `json:"new_order_sound"`
+		OrderReadySound    *string `json:"order_ready_sound"`
+		InAppNewOrder      *bool   `json:"in_app_new_order_enabled"`
+		InAppOrderReady    *bool   `json:"in_app_order_ready_enabled"`
 	}
 	if err := decodeAdmin(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "Could not read those settings")
@@ -636,6 +644,28 @@ func (a *AdminHandler) PutOrderWorkflow(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.AutoComplete != nil {
 		next.AutoComplete = *req.AutoComplete
+	}
+	if req.NewOrderSound != nil {
+		sound := strings.ToUpper(strings.TrimSpace(*req.NewOrderSound))
+		if !contains(validSounds, sound) {
+			writeAdminError(w, "invalid_sound", "Unknown sound choice")
+			return
+		}
+		next.NewOrderSound = sound
+	}
+	if req.OrderReadySound != nil {
+		sound := strings.ToUpper(strings.TrimSpace(*req.OrderReadySound))
+		if !contains(validSounds, sound) {
+			writeAdminError(w, "invalid_sound", "Unknown sound choice")
+			return
+		}
+		next.OrderReadySound = sound
+	}
+	if req.InAppNewOrder != nil {
+		next.InAppNewOrder = *req.InAppNewOrder
+	}
+	if req.InAppOrderReady != nil {
+		next.InAppOrderReady = *req.InAppOrderReady
 	}
 	if _, err := a.q.UpdateStorefrontWorkflow(r.Context(), sqlc.UpdateStorefrontWorkflowParams{
 		Workflow: next.Marshal(),

@@ -36,12 +36,21 @@ type storedPlatformConfig struct {
 	BrandColorMode string `json:"brand_color_mode"`
 
 	SessionTimeoutMinutes int    `json:"session_timeout_minutes"`
-	RequireMFAForAdmins   bool   `json:"require_mfa_for_admins"`
 	PasswordMinLength     int    `json:"password_min_length"`
 	InviteExpiryHours     int    `json:"invite_expiry_hours"`
 	AllowSelfServe        bool   `json:"allow_self_serve"`
 	DefaultPlan           string `json:"default_plan"`
 	MaintenanceMode       bool   `json:"maintenance_mode"`
+
+	// MFA policy for console accounts (SuperAdmin/PlatformAdmin/Support) —
+	// never a tenant's. Read by internal/auth.GetPlatformMFAPolicy, which
+	// unmarshals just these fields out of this same JSON blob rather than
+	// importing this package (this package already imports internal/auth).
+	MFAMode            string   `json:"mfa_mode"`
+	MFAAllowedMethods  []string `json:"mfa_allowed_methods"`
+	MFAEnforceScope    string   `json:"mfa_enforce_scope"`
+	MFAEnforceRoles    []string `json:"mfa_enforce_roles"`
+	MFAGracePeriodDays int      `json:"mfa_grace_period_days"`
 }
 
 func defaultStoredConfig() storedPlatformConfig {
@@ -52,7 +61,6 @@ func defaultStoredConfig() storedPlatformConfig {
 		DefaultLocale:         "en-IN",
 		DefaultCurrency:       "INR",
 		SessionTimeoutMinutes: 15,
-		RequireMFAForAdmins:   false,
 		PasswordMinLength:     8,
 		InviteExpiryHours:     168,
 		AllowSelfServe:        false,
@@ -60,6 +68,10 @@ func defaultStoredConfig() storedPlatformConfig {
 		MaintenanceMode:       false,
 		BrandPresetID:         "indigo-violet",
 		BrandColorMode:        "system",
+		MFAMode:               "DISABLED",
+		MFAAllowedMethods:     []string{"TOTP"},
+		MFAEnforceScope:       "ALL_ADMINS",
+		MFAGracePeriodDays:    7,
 	}
 }
 
@@ -135,9 +147,13 @@ func (h *Handler) settingsResponse(ctx context.Context) (map[string]any, error) 
 		},
 		"security": map[string]any{
 			"session_timeout_minutes": cfg.SessionTimeoutMinutes,
-			"require_mfa_for_admins":  cfg.RequireMFAForAdmins,
 			"password_min_length":     cfg.PasswordMinLength,
 			"invite_expiry_hours":     cfg.InviteExpiryHours,
+			"mfa_mode":                cfg.MFAMode,
+			"mfa_allowed_methods":     cfg.MFAAllowedMethods,
+			"mfa_enforce_scope":       cfg.MFAEnforceScope,
+			"mfa_enforce_roles":       cfg.MFAEnforceRoles,
+			"mfa_grace_period_days":   cfg.MFAGracePeriodDays,
 		},
 		"platform": map[string]any{
 			"base_domain":        baseDomain,
@@ -182,10 +198,14 @@ type patchSettingsRequest struct {
 		Reset *bool `json:"reset"`
 	} `json:"branding"`
 	Security *struct {
-		SessionTimeoutMinutes *int  `json:"session_timeout_minutes"`
-		RequireMFAForAdmins   *bool `json:"require_mfa_for_admins"`
-		PasswordMinLength     *int  `json:"password_min_length"`
-		InviteExpiryHours     *int  `json:"invite_expiry_hours"`
+		SessionTimeoutMinutes *int      `json:"session_timeout_minutes"`
+		PasswordMinLength     *int      `json:"password_min_length"`
+		InviteExpiryHours     *int      `json:"invite_expiry_hours"`
+		MFAMode               *string   `json:"mfa_mode"`
+		MFAAllowedMethods     *[]string `json:"mfa_allowed_methods"`
+		MFAEnforceScope       *string   `json:"mfa_enforce_scope"`
+		MFAEnforceRoles       *[]string `json:"mfa_enforce_roles"`
+		MFAGracePeriodDays    *int      `json:"mfa_grace_period_days"`
 	} `json:"security"`
 	Platform *struct {
 		AllowSelfServe  *bool `json:"allow_self_serve"`
@@ -247,14 +267,51 @@ func (h *Handler) PatchSettings(w http.ResponseWriter, r *http.Request) {
 		if req.Security.SessionTimeoutMinutes != nil && *req.Security.SessionTimeoutMinutes >= 5 {
 			cfg.SessionTimeoutMinutes = *req.Security.SessionTimeoutMinutes
 		}
-		if req.Security.RequireMFAForAdmins != nil {
-			cfg.RequireMFAForAdmins = *req.Security.RequireMFAForAdmins
-		}
 		if req.Security.PasswordMinLength != nil && *req.Security.PasswordMinLength >= 6 {
 			cfg.PasswordMinLength = *req.Security.PasswordMinLength
 		}
 		if req.Security.InviteExpiryHours != nil && *req.Security.InviteExpiryHours >= 1 {
 			cfg.InviteExpiryHours = *req.Security.InviteExpiryHours
+		}
+		if req.Security.MFAMode != nil {
+			mode := strings.ToUpper(strings.TrimSpace(*req.Security.MFAMode))
+			switch mode {
+			case "DISABLED", "OPTIONAL", "REQUIRED":
+				cfg.MFAMode = mode
+			default:
+				response.Error(w, http.StatusBadRequest, "invalid_request", "mfa_mode must be DISABLED, OPTIONAL, or REQUIRED")
+				return
+			}
+		}
+		if req.Security.MFAAllowedMethods != nil {
+			methods := *req.Security.MFAAllowedMethods
+			for i, m := range methods {
+				methods[i] = strings.ToUpper(strings.TrimSpace(m))
+				if methods[i] != "TOTP" && methods[i] != "EMAIL_OTP" {
+					response.Error(w, http.StatusBadRequest, "invalid_request", "mfa_allowed_methods may only contain TOTP or EMAIL_OTP")
+					return
+				}
+			}
+			if len(methods) == 0 {
+				methods = []string{"TOTP"}
+			}
+			cfg.MFAAllowedMethods = methods
+		}
+		if req.Security.MFAEnforceScope != nil {
+			scope := strings.ToUpper(strings.TrimSpace(*req.Security.MFAEnforceScope))
+			switch scope {
+			case "ALL_ADMINS", "SELECTED_ROLES":
+				cfg.MFAEnforceScope = scope
+			default:
+				response.Error(w, http.StatusBadRequest, "invalid_request", "mfa_enforce_scope must be ALL_ADMINS or SELECTED_ROLES")
+				return
+			}
+		}
+		if req.Security.MFAEnforceRoles != nil {
+			cfg.MFAEnforceRoles = *req.Security.MFAEnforceRoles
+		}
+		if req.Security.MFAGracePeriodDays != nil && *req.Security.MFAGracePeriodDays >= 0 {
+			cfg.MFAGracePeriodDays = *req.Security.MFAGracePeriodDays
 		}
 	}
 	if req.Platform != nil {

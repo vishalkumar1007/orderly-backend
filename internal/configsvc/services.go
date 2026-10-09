@@ -115,6 +115,55 @@ func (s *Service) emailProvider(ctx context.Context, tenantID *uuid.UUID, probe 
 	return s.factory.Email(resolved)
 }
 
+/* ------------------------------------------------------------------ *
+ * SMS
+ * ------------------------------------------------------------------ */
+
+// SMS is the tenant-or-platform-scoped SMS facade.
+type SMS struct {
+	svc *Service
+}
+
+// SMSService returns the SMS facade.
+func (s *Service) SMSService() *SMS { return &SMS{svc: s} }
+
+// Send delivers one SMS using the effective configuration for tenantID (nil
+// resolves the platform configuration). This is the one entry point the
+// notification worker (internal/notify) uses — it never reads configuration
+// tables or builds a provider itself.
+func (sm *SMS) Send(ctx context.Context, tenantID *uuid.UUID, to, body string) (messageID string, err error) {
+	resolved, err := sm.svc.resolver.Resolve(ctx, scopeFor(tenantID), tenantID, ServiceSMS)
+	if err != nil {
+		return "", err
+	}
+	provider, err := sm.svc.factory.SMS(resolved)
+	if err != nil {
+		return "", err
+	}
+	return provider.Send(ctx, to, body)
+}
+
+// SendTest delivers a test message and reports whether it went out, mirroring
+// Notifications.SendTest's probe-a-disabled-config allowance.
+func (sm *SMS) SendTest(ctx context.Context, tenantID *uuid.UUID, to string) (TestOutcome, error) {
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return TestOutcome{}, fmt.Errorf("%w: a recipient number is required", ErrInvalidRequest)
+	}
+	resolved, err := sm.svc.resolveForProbe(ctx, tenantID, ServiceSMS, true)
+	if err != nil {
+		return TestOutcome{}, err
+	}
+	provider, err := sm.svc.factory.SMS(resolved)
+	if err != nil {
+		return TestOutcome{}, err
+	}
+	if _, err := provider.Send(ctx, to, "This is a test message from Orderly. If you received it, SMS is configured correctly."); err != nil {
+		return TestOutcome{OK: false, Message: "The test message could not be sent", Detail: SafeErrorMessage(err)}, nil
+	}
+	return TestOutcome{OK: true, Message: "Test message sent to " + to}, nil
+}
+
 // scopeFor maps an optional tenant onto the matching resolution scope.
 func scopeFor(tenantID *uuid.UUID) Scope {
 	if tenantID == nil {

@@ -1,8 +1,10 @@
 package hotel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -21,10 +24,42 @@ import (
 type Handler struct {
 	pool *pgxpool.Pool
 	q    *sqlc.Queries
+	log  *slog.Logger
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool, q: sqlc.New(pool)}
+func NewHandler(pool *pgxpool.Pool, log *slog.Logger) *Handler {
+	return &Handler{pool: pool, q: sqlc.New(pool), log: log}
+}
+
+// customerContact looks up a guest's name and phone for the notification
+// payload. Best-effort: a lookup problem never blocks the reservation.
+func (h *Handler) customerContact(ctx context.Context, tenantID uuid.UUID, customerID pgtype.UUID) (name string, contact notify.Contact) {
+	if !customerID.Valid {
+		return "", notify.Contact{}
+	}
+	c, err := h.q.GetCustomerByID(ctx, sqlc.GetCustomerByIDParams{ID: customerID, TenantID: pgutil.UUID(tenantID)})
+	if err != nil {
+		return "", notify.Contact{}
+	}
+	phone := ""
+	if c.Phone.Valid {
+		phone = c.Phone.String
+	}
+	return c.Name, notify.Contact{Phone: phone}
+}
+
+// notifyReservation dispatches a hotel reservation event through the shared
+// rules engine.
+func (h *Handler) notifyReservation(ctx context.Context, tid uuid.UUID, res sqlc.Reservation, eventType, title string) {
+	name, contact := h.customerContact(ctx, tid, res.CustomerID)
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tid, eventType, title, "",
+		map[string]any{
+			"reservation_id": pgutil.UUIDString(res.ID),
+			"customer_name":  name,
+			"check_in":       res.CheckInDate.Time,
+			"check_out":      res.CheckOutDate.Time,
+		},
+		contact)
 }
 
 func tenantID(r *http.Request) uuid.UUID {
@@ -300,6 +335,7 @@ func (h *Handler) CreateReservation(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not create reservation")
 		return
 	}
+	h.notifyReservation(r.Context(), tenantID(r), res, notify.TypeReservationCreated, "Reservation booked")
 	response.JSON(w, http.StatusCreated, reservationJSON(res))
 }
 
@@ -359,6 +395,14 @@ func (h *Handler) Transition(action string) http.HandlerFunc {
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not update reservation")
 			return
+		}
+		switch target {
+		case ReservationConfirmed:
+			h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationConfirmed, "Reservation confirmed")
+		case ReservationCancelled:
+			h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationCancelled, "Reservation cancelled")
+		case ReservationNoShow:
+			h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationNoShow, "Reservation no-show")
 		}
 		response.JSON(w, http.StatusOK, reservationJSON(updated))
 	}
@@ -426,6 +470,7 @@ func (h *Handler) CheckIn(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "checked in but could not open the folio")
 		return
 	}
+	h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationCheckedIn, "Guest checked in")
 	response.JSON(w, http.StatusOK, map[string]any{
 		"reservation": reservationJSON(updated), "folio": folioJSON(folio),
 	})
@@ -472,6 +517,7 @@ func (h *Handler) CheckOut(w http.ResponseWriter, r *http.Request) {
 	}); err == nil {
 		_, _ = h.q.SetFolioStatus(r.Context(), sqlc.SetFolioStatusParams{ID: folio.ID, TenantID: pgutil.UUID(tid), Status: "SETTLED"})
 	}
+	h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationCheckedOut, "Guest checked out")
 	response.JSON(w, http.StatusOK, reservationJSON(updated))
 }
 

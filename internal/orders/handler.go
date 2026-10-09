@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 )
@@ -337,6 +339,17 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		return CreateResult{}, err
 	}
 
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, notify.TypeOrderPlaced,
+		fmt.Sprintf("New order #%d", number),
+		fmt.Sprintf("%s — ₹%.2f", name, totals.Total),
+		map[string]any{
+			"order_id":      pgutil.UUIDString(order.ID),
+			"order_number":  number,
+			"customer_name": name,
+			"total":         totals.Total,
+		},
+		notify.Contact{Email: email, Phone: phone})
+
 	view, err := h.hydrateWithStore(ctx, order, sf)
 	if err != nil {
 		return CreateResult{}, err
@@ -527,7 +540,36 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 	if err := tx.Commit(ctx); err != nil {
 		return OrderView{}, err
 	}
+
+	h.publishTransition(ctx, tenantID, order, to, sf)
+
 	return h.hydrateWithStore(ctx, updated, sf)
+}
+
+// publishTransition dispatches the notification for a status change — in
+// app always, plus email to the customer where a rule enables it. Which
+// channels actually fire is the rules engine's call, not this handler's; see
+// notify.Dispatch.
+func (h *Handler) publishTransition(ctx context.Context, tenantID uuid.UUID, order sqlc.Order, to string, sf *storefront.Storefront) {
+	var (
+		eventType string
+		title     string
+	)
+	switch to {
+	case StatusReady:
+		eventType, title = notify.TypeOrderReady, fmt.Sprintf("Order #%d is ready", order.OrderNumber)
+	case StatusCancelled:
+		eventType, title = notify.TypeOrderCancelled, fmt.Sprintf("Order #%d was cancelled", order.OrderNumber)
+	default:
+		return
+	}
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, eventType, title, "",
+		map[string]any{
+			"order_id":      pgutil.UUIDString(order.ID),
+			"order_number":  order.OrderNumber,
+			"customer_name": order.CustomerName,
+		},
+		notify.Contact{Email: order.CustomerEmail, Phone: order.CustomerPhone})
 }
 
 // checkGate enforces the tenant's workflow rules. A shop that requires payment

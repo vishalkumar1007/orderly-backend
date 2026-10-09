@@ -340,6 +340,26 @@ func (h *Handler) TestConfigurationAction(w http.ResponseWriter, r *http.Request
 		h.recordTestResult(r, service, nil, outcome)
 		response.JSON(w, http.StatusOK, outcome)
 
+	case service == configsvc.ServiceSMS && (action == "" || action == "send_sms"):
+		if strings.TrimSpace(body.To) == "" {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "a recipient number is required")
+			return
+		}
+		resolved, err := h.probeFor(w, r, service, nil, true)
+		if err != nil {
+			return
+		}
+		provider, perr := h.svc.Factory().SMS(resolved)
+		if perr != nil {
+			writeFailure(w, perr)
+			return
+		}
+		ctx, cancel := contextWithTimeout(r, testTimeout)
+		defer cancel()
+		outcome := configsvc.SendTestSMS(ctx, provider, body.To)
+		h.recordTestResult(r, service, nil, outcome)
+		response.JSON(w, http.StatusOK, outcome)
+
 	default:
 		response.Error(w, http.StatusBadRequest, "invalid_request", "unsupported test action for this service")
 	}

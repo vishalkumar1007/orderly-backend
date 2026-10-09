@@ -84,6 +84,15 @@ func (h *Handler) ShopResendUserInvite(w http.ResponseWriter, r *http.Request) {
 	h.ResendTenantUserInvite(w, r)
 }
 
+// ShopResetUserMFA turns off two-factor authentication for a locked-out user
+// on the caller's tenant.
+func (h *Handler) ShopResetUserMFA(w http.ResponseWriter, r *http.Request) {
+	if !h.rewriteShopUserRoute(w, r) {
+		return
+	}
+	h.ResetUserMFA(w, r)
+}
+
 // rewriteShopUserRoute sets chi URL params so the existing admin user handlers
 // can reuse parseUserRoute (expects :id = tenant, :userId = user).
 func (h *Handler) rewriteShopUserRoute(w http.ResponseWriter, r *http.Request) bool {

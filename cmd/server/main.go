@@ -57,6 +57,8 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	go api.StartNotificationWorker(ctx)
+
 	go func() {
 		log.Info("server listening", "addr", cfg.HTTPAddr, "env", cfg.AppEnv)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

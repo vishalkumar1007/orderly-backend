@@ -3,6 +3,7 @@ package platform
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -57,6 +59,7 @@ type userView struct {
 	Role            string
 	Status          string
 	MustSetPassword bool
+	MfaEnabled      bool
 	CreatedAt       pgtype.Timestamptz
 	LastActivity    pgtype.Timestamptz
 }
@@ -64,14 +67,16 @@ type userView struct {
 func viewOf(u sqlc.User) userView {
 	return userView{
 		ID: u.ID, TenantID: u.TenantID, Name: u.Name, Email: u.Email, Phone: u.Phone,
-		Role: u.Role, Status: u.Status, MustSetPassword: u.MustSetPassword, CreatedAt: u.CreatedAt,
+		Role: u.Role, Status: u.Status, MustSetPassword: u.MustSetPassword, MfaEnabled: u.MfaEnabled,
+		CreatedAt: u.CreatedAt,
 	}
 }
 
 func viewOfRow(u sqlc.ListTenantUsersRow) userView {
 	v := viewOf(sqlc.User{
 		ID: u.ID, TenantID: u.TenantID, Name: u.Name, Email: u.Email, Phone: u.Phone,
-		Role: u.Role, Status: u.Status, MustSetPassword: u.MustSetPassword, CreatedAt: u.CreatedAt,
+		Role: u.Role, Status: u.Status, MustSetPassword: u.MustSetPassword, MfaEnabled: u.MfaEnabled,
+		CreatedAt: u.CreatedAt,
 	})
 	if t, ok := u.LastActivity.(time.Time); ok {
 		v.LastActivity = pgtype.Timestamptz{Time: t, Valid: true}
@@ -88,6 +93,7 @@ func userJSON(u userView) map[string]any {
 		"role":              u.Role,
 		"status":            u.Status,
 		"must_set_password": u.MustSetPassword,
+		"mfa_enabled":       u.MfaEnabled,
 		"created_at":        u.CreatedAt.Time.Format(time.RFC3339),
 		"last_activity":     nil,
 	}
@@ -214,6 +220,10 @@ func (h *Handler) createUserFor(w http.ResponseWriter, r *http.Request, req crea
 
 	actor, _ := identity.UserFromContext(ctx)
 	_ = insertAudit(ctx, h.q, &tuid, &actor.ID, "Admin Created", "user", user.ID)
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantUUID, notify.TypeStaffInvited,
+		fmt.Sprintf("%s was invited", user.Name), "",
+		map[string]any{"user_id": pgutil.UUIDString(user.ID), "user_name": user.Name},
+		notify.Contact{})
 
 	setupURL := h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
 	emailSent, emailErr := h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
@@ -313,13 +323,21 @@ func (h *Handler) UpdateTenantUser(w http.ResponseWriter, r *http.Request) {
 	entity := pgutil.UUID(uid)
 	statusChanged := req.Status != nil && nextStatus != current.Status
 	roleChanged := req.Role != nil && nextRole != current.Role
+	notifyData := map[string]any{"user_id": uid.String(), "user_name": current.Name}
 	switch {
 	case statusChanged && nextStatus == "DISABLED":
 		_ = insertAudit(ctx, h.q, &tid, &actor.ID, "Admin Disabled", "user", entity)
+		notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantUUID, notify.TypeStaffDisabled,
+			fmt.Sprintf("%s was disabled", current.Name), "", notifyData, notify.Contact{})
 	case statusChanged:
 		_ = insertAudit(ctx, h.q, &tid, &actor.ID, "Admin Enabled", "user", entity)
+		notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantUUID, notify.TypeStaffEnabled,
+			fmt.Sprintf("%s was enabled", current.Name), "", notifyData, notify.Contact{})
 	case roleChanged:
 		_ = insertAudit(ctx, h.q, &tid, &actor.ID, "Admin Role Changed to "+nextRole, "user", entity)
+		notifyData["new_role"] = nextRole
+		notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantUUID, notify.TypeStaffRoleChanged,
+			fmt.Sprintf("%s's role changed to %s", current.Name, identity.RoleLabel(nextRole)), "", notifyData, notify.Contact{})
 	default:
 		_ = insertAudit(ctx, h.q, &tid, &actor.ID, "Admin Updated", "user", entity)
 	}
@@ -429,6 +447,38 @@ func (h *Handler) ResendTenantUserInvite(w http.ResponseWriter, r *http.Request)
 		"email_sent":  emailSent,
 		"email_error": emailErr,
 	})
+}
+
+// ResetUserMFA turns off a locked-out user's two-factor authentication —
+// support or a tenant admin unblocking someone who lost their device, never a
+// way to see or choose their secret. Mirrors ResetTenantUserAccess's shape:
+// same route pairing, same audit trail, no invite/email involved since the
+// person keeps their password and simply re-enrolls MFA from scratch.
+func (h *Handler) ResetUserMFA(w http.ResponseWriter, r *http.Request) {
+	userUUID, tenantUUID, ok := h.parseUserRoute(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	if err := h.q.DeleteAllUserMfaMethods(ctx, pgutil.UUID(userUUID)); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to reset two-factor authentication")
+		return
+	}
+	_ = h.q.SyncUserMfaEnabledCache(ctx, pgutil.UUID(userUUID))
+	_ = h.q.DeleteRecoveryCodesForUser(ctx, pgutil.UUID(userUUID))
+
+	actor, _ := identity.UserFromContext(ctx)
+	tid := pgutil.UUID(tenantUUID)
+	entity := pgutil.UUID(userUUID)
+	_ = insertAudit(ctx, h.q, &tid, &actor.ID, "Admin Reset MFA", "user", entity)
+
+	if resetUser, err := h.q.GetUserByID(ctx, pgutil.UUID(userUUID)); err == nil {
+		notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantUUID, notify.TypeSecurityMFAAdminReset,
+			fmt.Sprintf("%s's two-factor authentication was reset by an admin", resetUser.Name), "",
+			map[string]any{"user_id": userUUID.String(), "user_name": resetUser.Name}, notify.Contact{})
+	}
+
+	response.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 /* ---------- shared helpers ---------- */

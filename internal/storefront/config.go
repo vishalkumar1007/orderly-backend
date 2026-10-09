@@ -86,6 +86,13 @@ const (
 	StoreBusy   = "BUSY"
 	StoreAway   = "AWAY"
 	StoreClosed = "CLOSED"
+
+	// Notification sound choices. Played client-side (Web Audio tones, no
+	// audio files) — this only picks which one, never a file to host.
+	SoundNone  = "NONE"
+	SoundChime = "CHIME"
+	SoundBell  = "BELL"
+	SoundPing  = "PING"
 )
 
 // validStoreStatuses lists every accepted store_status value.
@@ -152,6 +159,7 @@ var (
 	validLoginModes = []string{LoginOff, LoginOptional, LoginRequired}
 	validAccept    = []string{AcceptManual, AcceptAuto}
 	validPayTiming = []string{PayBeforePrep, PayAtPickup}
+	validSounds    = []string{SoundNone, SoundChime, SoundBell, SoundPing}
 )
 
 // ErrNotFound is returned when a tenant has no storefront configuration yet.
@@ -245,6 +253,16 @@ type Workflow struct {
 	PaymentRequirement string `json:"payment_requirement"`
 	ReadyNotification  bool   `json:"ready_notification"`
 	AutoComplete       bool   `json:"auto_complete"`
+	// NewOrderSound plays in the shop console when an order arrives.
+	NewOrderSound string `json:"new_order_sound"`
+	// OrderReadySound plays on the customer's tracking page when their order
+	// becomes ready, gated by ReadyNotification.
+	OrderReadySound string `json:"order_ready_sound"`
+	// InAppNewOrder/InAppOrderReady gate the in-app notification feed
+	// (internal/notify), independent of the sounds above — a tenant can mute
+	// the sound and still want the bell, or the reverse.
+	InAppNewOrder   bool `json:"in_app_new_order_enabled"`
+	InAppOrderReady bool `json:"in_app_order_ready_enabled"`
 }
 
 // ---------------------------------------------------------------------------

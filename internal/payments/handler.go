@@ -18,6 +18,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/orders"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
@@ -242,6 +243,16 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not record the payment failure")
 			return
 		}
+		tenantID := uuid.UUID(order.TenantID.Bytes)
+		notify.Dispatch(r.Context(), notify.Deps{Q: h.q, Log: h.log}, &tenantID, notify.TypePaymentFailed,
+			fmt.Sprintf("Payment failed for order #%d", order.OrderNumber),
+			reason,
+			map[string]any{
+				"order_id":       pgutil.UUIDString(order.ID),
+				"order_number":   order.OrderNumber,
+				"failure_reason": reason,
+			},
+			notify.Contact{Email: order.CustomerEmail, Phone: order.CustomerPhone})
 		updated, _ := h.reload(r, order)
 		payload := h.sessionPayload(updated, order, sf, pay.Method, pay.ProviderReference)
 		payload["outcome"] = "FAILURE"

@@ -22,6 +22,18 @@ const (
 	ProviderSMTP = "smtp"
 )
 
+// SMS provider identifiers.
+const (
+	ProviderTwilio = "twilio"
+)
+
+// SMSProviders is the catalogue the Super Admin UI renders. Twilio is the
+// only transport today; the list exists so adding another later is a data
+// change rather than a code change, matching EmailProviders.
+var SMSProviders = []ProviderInfo{
+	{Value: ProviderTwilio, Label: "Twilio", NeedsEndpoint: false},
+}
+
 // StorageProviders is the catalogue the Super Admin UI renders.
 var StorageProviders = []ProviderInfo{
 	{Value: ProviderS3, Label: "Amazon S3", NeedsEndpoint: false, DefaultRegion: "us-east-1"},
@@ -73,6 +85,8 @@ func ProvidersFor(service ServiceType) []ProviderInfo {
 		return StorageProviders
 	case ServiceAI:
 		return AIProviders
+	case ServiceSMS:
+		return SMSProviders
 	}
 	return nil
 }

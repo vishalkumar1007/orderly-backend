@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -24,10 +26,11 @@ import (
 type Handler struct {
 	pool *pgxpool.Pool
 	q    *sqlc.Queries
+	log  *slog.Logger
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool, q: sqlc.New(pool)}
+func NewHandler(pool *pgxpool.Pool, log *slog.Logger) *Handler {
+	return &Handler{pool: pool, q: sqlc.New(pool), log: log}
 }
 
 // tenantID comes from the verified staff token, never from the request, so a
@@ -316,7 +319,42 @@ func (h *Handler) CreateAppointment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not create appointment")
 		return
 	}
+	tid := tenantID(r)
+	h.notifyAppointment(r.Context(), tid, appt, notify.TypeAppointmentCreated, "Appointment booked")
 	response.JSON(w, http.StatusCreated, appointmentJSON(appt))
+}
+
+// customerContact looks up a customer's name and phone for the notification
+// payload. A missing or unset customer id resolves to an empty Contact —
+// best-effort, so a lookup problem never blocks the appointment itself.
+func (h *Handler) customerContact(ctx context.Context, tenantID uuid.UUID, customerID pgtype.UUID) (name string, contact notify.Contact) {
+	if !customerID.Valid {
+		return "", notify.Contact{}
+	}
+	c, err := h.q.GetCustomerByID(ctx, sqlc.GetCustomerByIDParams{ID: customerID, TenantID: pgutil.UUID(tenantID)})
+	if err != nil {
+		return "", notify.Contact{}
+	}
+	phone := ""
+	if c.Phone.Valid {
+		phone = c.Phone.String
+	}
+	return c.Name, notify.Contact{Phone: phone}
+}
+
+// notifyAppointment dispatches an appointment event — SMS to the customer
+// stays off until a tenant explicitly enables it (no SMS provider is proven
+// yet in this build), but is wired here so turning it on is a rules change,
+// not a code change.
+func (h *Handler) notifyAppointment(ctx context.Context, tid uuid.UUID, appt sqlc.Appointment, eventType, title string) {
+	name, contact := h.customerContact(ctx, tid, appt.CustomerID)
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tid, eventType, title, "",
+		map[string]any{
+			"appointment_id": pgutil.UUIDString(appt.ID),
+			"customer_name":  name,
+			"starts_at":      appt.ScheduledAt.Time,
+		},
+		contact)
 }
 
 func (h *Handler) GetAppointment(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +416,14 @@ func (h *Handler) Transition(action string) http.HandlerFunc {
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not update appointment")
 			return
+		}
+		switch target {
+		case StatusConfirmed:
+			h.notifyAppointment(r.Context(), tid, updated, notify.TypeAppointmentConfirmed, "Appointment confirmed")
+		case StatusCancelled:
+			h.notifyAppointment(r.Context(), tid, updated, notify.TypeAppointmentCancelled, "Appointment cancelled")
+		case StatusNoShow:
+			h.notifyAppointment(r.Context(), tid, updated, notify.TypeAppointmentNoShow, "Appointment no-show")
 		}
 		if target == StatusCheckedIn {
 			entry, err := h.joinQueue(r.Context(), tid, pgutil.NullUUID(&id), updated.CustomerID)

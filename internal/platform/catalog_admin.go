@@ -94,6 +94,22 @@ func parsePlanTerms(raw []byte, planName string, price float64) planTerms {
 	return terms
 }
 
+// planOffersBusinessType mirrors the console's offeredTo(): a plan with no
+// business types listed is offered to every business type, so the
+// server-side check matches what the picker already filtered to.
+func planOffersBusinessType(plan sqlc.Plan, businessType string) bool {
+	terms := parsePlanTerms(plan.Features, plan.Name, pgutil.NumericToFloat(plan.Price))
+	if businessType == "" || len(terms.BusinessTypes) == 0 {
+		return true
+	}
+	for _, bt := range terms.BusinessTypes {
+		if strings.EqualFold(bt, businessType) {
+			return true
+		}
+	}
+	return false
+}
+
 // defaultTrialDays matches the window CreateTenant writes onto a new
 // subscription when the plan does not state its own.
 const defaultTrialDays = 14
