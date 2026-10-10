@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/config"
+	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/notify"
+	"github.com/orderly/orderly-backend/internal/secretbox"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
@@ -34,14 +38,47 @@ var (
 	ErrSetupNotNeeded     = errors.New("super admin already exists")
 )
 
-type Service struct {
-	q   *sqlc.Queries
-	cfg config.Config
+// MFARequiredError is returned in place of a token pair when a password check
+// succeeds but the account already has a second factor enrolled. It carries
+// the challenge token the client must send back to /auth/mfa/verify, and the
+// methods enrolled (so the client can offer the right picker) — there is no
+// sentinel-only form of this error, since the caller cannot proceed without
+// that token.
+type MFARequiredError struct {
+	ChallengeToken string
+	Methods        []string
 }
 
-func NewService(pool *pgxpool.Pool, cfg config.Config) *Service {
-	return &Service{q: sqlc.New(pool), cfg: cfg}
+func (e *MFARequiredError) Error() string { return "mfa required" }
+
+// MFAEnrollRequiredError is returned instead of a token pair when policy
+// requires MFA, the account has zero enrolled methods, and its grace period
+// has elapsed. It carries a short-lived enrollment token for the
+// unauthenticated /auth/mfa/enroll/* endpoints, and the methods the policy
+// permits enrolling in.
+type MFAEnrollRequiredError struct {
+	EnrollmentToken string
+	Methods         []string
 }
+
+func (e *MFAEnrollRequiredError) Error() string { return "mfa enrollment required" }
+
+type Service struct {
+	q             *sqlc.Queries
+	cfg           config.Config
+	secretBox     *secretbox.Box
+	log           *slog.Logger
+	notifications *configsvc.Notifications
+}
+
+func NewService(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *Service {
+	return &Service{q: sqlc.New(pool), cfg: cfg, secretBox: secretbox.New(cfg.ConfigEncryptionKey), log: log}
+}
+
+// AttachNotifications wires in the shared email-delivery stack so Email OTP
+// can be sent — the same *configsvc.Notifications internal/platform's
+// mailer already uses for invite mail, just handed to this package too.
+func (s *Service) AttachNotifications(n *configsvc.Notifications) { s.notifications = n }
 
 type TokenPair struct {
 	AccessToken  string `json:"access_token"`
@@ -58,6 +95,24 @@ type Claims struct {
 	// CustomerID is set only on storefront customer tokens. Staff and admin
 	// tokens identify a `users` row through Subject instead.
 	CustomerID *string `json:"customer_id,omitempty"`
+	// Purpose marks a token minted for one narrow use outside the normal
+	// access/refresh pair — "mfa_setup" or "mfa_challenge" — so it can never
+	// be mistaken for (or replayed as) a real session token: ordinary
+	// protected routes carry no Role/TenantID on these and parseMFAToken is
+	// the only code that accepts them, and only for the matching purpose.
+	Purpose string `json:"purpose,omitempty"`
+	// MFASecret rides along on an "mfa_setup" token only: the secret a user is
+	// enrolling is never written to the database until they prove they can
+	// generate a matching code, so it has nowhere to live between the two
+	// requests except this short-lived signed token.
+	MFASecret string `json:"mfa_secret,omitempty"`
+	// MFAVerified means "the MFA requirement in force at mint time was
+	// satisfied" — either a real challenge was just cleared, or none was
+	// required at all. It is NOT proof the user currently has an enrolled
+	// method: Refresh must re-derive that fresh from user_mfa_methods on
+	// every call rather than trust this bit, since a vacuously-true value
+	// minted before a policy change must not grant an indefinite free pass.
+	MFAVerified bool `json:"mfa_verified,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -203,8 +258,18 @@ func (s *Service) AdminLogin(ctx context.Context, email, password string) (Token
 		s.auditLogin(ctx, email, "admin.login", auditDenied)
 		return TokenPair{}, UserResponse{}, ErrInvalidCredentials
 	}
-	pair, err := s.issueTokens(ctx, user)
+	if user.MustSetPassword {
+		// authenticateUser lets this through without checking password at all
+		// (there is none usable yet) — this account cannot log in until the
+		// invite link sets one, the same gate TenantLogin already enforces.
+		s.auditLogin(ctx, email, "admin.login", auditDenied)
+		return TokenPair{}, toUserResponse(user), ErrMustSetPassword
+	}
+	pair, err := s.completeLoginMFA(ctx, user)
 	if err != nil {
+		if isMFAFlowError(err) {
+			return TokenPair{}, UserResponse{}, err
+		}
 		s.auditLogin(ctx, email, "admin.login", auditFailure)
 		return TokenPair{}, UserResponse{}, err
 	}
@@ -216,28 +281,102 @@ func (s *Service) TenantLogin(ctx context.Context, email, password string, hostT
 	user, err := s.authenticateUser(ctx, email, password)
 	if err != nil {
 		s.auditLogin(ctx, email, "tenant.login", auditFailure)
+		s.notifyLoginFailed(ctx, hostTenantID, email)
 		return TokenPair{}, UserResponse{}, err
 	}
 	if user.Role != identity.RoleTenantAdmin && user.Role != identity.RoleStaff {
 		s.auditLogin(ctx, email, "tenant.login", auditDenied)
+		s.notifyLoginFailed(ctx, hostTenantID, email)
 		return TokenPair{}, UserResponse{}, ErrInvalidCredentials
 	}
 	if !user.TenantID.Valid || uuid.UUID(user.TenantID.Bytes) != hostTenantID {
 		// Cross-tenant attempt: a valid account on the wrong subdomain.
 		s.auditLogin(ctx, email, "tenant.login", auditDenied)
+		s.notifyLoginFailed(ctx, hostTenantID, email)
 		return TokenPair{}, UserResponse{}, ErrInvalidCredentials
 	}
 	if user.MustSetPassword {
 		s.auditLogin(ctx, email, "tenant.login", auditDenied)
 		return TokenPair{}, toUserResponse(user), ErrMustSetPassword
 	}
-	pair, err := s.issueTokens(ctx, user)
+	pair, err := s.completeLoginMFA(ctx, user)
 	if err != nil {
+		if isMFAFlowError(err) {
+			return TokenPair{}, UserResponse{}, err
+		}
 		s.auditLogin(ctx, email, "tenant.login", auditFailure)
 		return TokenPair{}, UserResponse{}, err
 	}
 	s.auditLogin(ctx, email, "tenant.login", auditSuccess)
 	return pair, toUserResponse(user), nil
+}
+
+// completeLoginMFA decides what happens once a password check has already
+// succeeded: a real second-factor challenge when the account already has an
+// enrolled method, a forced-enrollment token when policy requires MFA and
+// the grace period has elapsed, or a normal token pair otherwise. Shared by
+// every login path (AdminLogin, TenantLogin, SetupPassword) so none of them
+// can drift out of sync with the others the way SetupPassword previously did
+// by skipping this check entirely.
+func (s *Service) completeLoginMFA(ctx context.Context, user sqlc.User) (TokenPair, error) {
+	userID := uuid.UUID(user.ID.Bytes)
+	count, err := s.countEnrolledMethods(ctx, userID)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	if count > 0 {
+		// The login is not "successful" until the second factor clears too —
+		// that audit entry is written in VerifyMFALogin instead, on whichever
+		// outcome actually happens.
+		methods, merr := s.enrolledMethods(ctx, userID)
+		if merr != nil {
+			return TokenPair{}, merr
+		}
+		names := make([]string, 0, len(methods))
+		for _, m := range methods {
+			names = append(names, m.Method)
+		}
+		token, terr := s.signMFAToken(mfaPurposeChallenge, userID.String(), "", mfaTokenTTL)
+		if terr != nil {
+			return TokenPair{}, terr
+		}
+		return TokenPair{}, &MFARequiredError{ChallengeToken: token, Methods: names}
+	}
+	must, merr := s.mustEnrollNow(ctx, user)
+	if merr != nil {
+		return TokenPair{}, merr
+	}
+	if must {
+		policy, _, perr := s.policyForUser(ctx, user)
+		if perr != nil {
+			return TokenPair{}, perr
+		}
+		token, terr := s.signMFAToken(mfaPurposeEnrollRequired, userID.String(), "", mfaEnrollTokenTTL)
+		if terr != nil {
+			return TokenPair{}, terr
+		}
+		return TokenPair{}, &MFAEnrollRequiredError{EnrollmentToken: token, Methods: policy.AllowedMethods}
+	}
+	// Nothing was required, so there was nothing to verify — vacuously true.
+	// checkMFAForRefresh never trusts this bit alone for a zero-method
+	// account; it re-derives the requirement fresh on every refresh instead.
+	return s.issueTokens(ctx, user, true)
+}
+
+func isMFAFlowError(err error) bool {
+	var mfaErr *MFARequiredError
+	var enrollErr *MFAEnrollRequiredError
+	return errors.As(err, &mfaErr) || errors.As(err, &enrollErr)
+}
+
+// notifyLoginFailed alerts the tenant's access-control holders. This is a
+// locked (mandatory) rule — it cannot be silenced by a tenant override — so
+// the function is unconditional; the engine itself decides whether it is
+// actually enabled.
+func (s *Service) notifyLoginFailed(ctx context.Context, tenantID uuid.UUID, email string) {
+	notify.Dispatch(ctx, notify.Deps{Q: s.q, Log: s.log}, &tenantID, notify.TypeSecurityLoginFailed,
+		"Failed sign-in attempt", "A sign-in attempt for "+strings.ToLower(strings.TrimSpace(email))+" failed.",
+		map[string]any{"user_email": email}, notify.Contact{})
 }
 
 func (s *Service) authenticateUser(ctx context.Context, email, password string) (sqlc.User, error) {
@@ -283,7 +422,20 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentP
 		ID:           user.ID,
 		PasswordHash: string(hash),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = s.q.InsertAuditLog(ctx, sqlc.InsertAuditLogParams{
+		TenantID: user.TenantID, UserID: user.ID, Action: "password.changed",
+		EntityType: "user", EntityID: user.ID, Result: auditSuccess,
+	})
+	if user.TenantID.Valid {
+		tid := uuid.UUID(user.TenantID.Bytes)
+		notify.Dispatch(ctx, notify.Deps{Q: s.q, Log: s.log}, &tid, notify.TypeSecurityPasswordChanged,
+			fmt.Sprintf("%s changed their password", user.Name), "",
+			map[string]any{"user_id": pgutil.UUIDString(user.ID), "user_name": user.Name}, notify.Contact{})
+	}
+	return nil
 }
 
 func (s *Service) SetupPassword(ctx context.Context, token, password string) (TokenPair, UserResponse, error) {
@@ -306,9 +458,24 @@ func (s *Service) SetupPassword(ctx context.Context, token, password string) (To
 	if err != nil {
 		return TokenPair{}, UserResponse{}, err
 	}
-	pair, err := s.issueTokens(ctx, updated)
+	_, _ = s.q.InsertAuditLog(ctx, sqlc.InsertAuditLogParams{
+		TenantID: updated.TenantID, UserID: updated.ID, Action: "password.set_via_invite",
+		EntityType: "user", EntityID: updated.ID, Result: auditSuccess,
+	})
+	if updated.TenantID.Valid {
+		tid := uuid.UUID(updated.TenantID.Bytes)
+		notify.Dispatch(ctx, notify.Deps{Q: s.q, Log: s.log}, &tid, notify.TypeSecurityPasswordReset,
+			fmt.Sprintf("%s set their password", updated.Name), "",
+			map[string]any{"user_id": pgutil.UUIDString(updated.ID), "user_name": updated.Name}, notify.Contact{})
+	}
+	// A brand-new account structurally has zero enrolled methods — this is
+	// always completeLoginMFA's "count == 0" branch, never the challenge one.
+	// Previously this called issueTokens directly with no MFA check at all,
+	// which meant a business that requires MFA could be bypassed entirely by
+	// signing up through an invite link instead of a normal login.
+	pair, err := s.completeLoginMFA(ctx, updated)
 	if err != nil {
-		return TokenPair{}, UserResponse{}, err
+		return TokenPair{}, toUserResponse(updated), err
 	}
 	return pair, toUserResponse(updated), nil
 }
@@ -335,8 +502,43 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 	if err != nil || user.Status != "ACTIVE" || user.MustSetPassword {
 		return TokenPair{}, ErrUnauthorized
 	}
+	if err := s.checkMFAForRefresh(ctx, user, claims.MFAVerified); err != nil {
+		return TokenPair{}, err
+	}
 	_ = s.q.DeleteRefreshTokenByHash(ctx, hash)
-	return s.issueTokens(ctx, user)
+	return s.issueTokens(ctx, user, claims.MFAVerified)
+}
+
+// checkMFAForRefresh is the backstop that closes the historical refresh
+// bypass: a refresh token minted before MFA was required/enabled must not
+// keep silently rotating valid access tokens forever once policy changes.
+// It re-derives the requirement fresh from user_mfa_methods on every call —
+// never trusting the claim for "has zero methods", since a vacuously-true
+// MFAVerified minted before a policy flip must not grant an indefinite free
+// pass. For an account that already has an enrolled method, every token for
+// it was always minted either by VerifyMFALogin (a real challenge) or by
+// completeLoginMFA's zero-method branch (which can't apply once a method
+// exists) — so requiring the claim here is a defense-in-depth backstop, not
+// the only thing standing between an attacker and a bypass.
+func (s *Service) checkMFAForRefresh(ctx context.Context, user sqlc.User, mfaVerifiedClaim bool) error {
+	count, err := s.countEnrolledMethods(ctx, uuid.UUID(user.ID.Bytes))
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		if !mfaVerifiedClaim {
+			return ErrUnauthorized
+		}
+		return nil
+	}
+	must, err := s.mustEnrollNow(ctx, user)
+	if err != nil {
+		return err
+	}
+	if must {
+		return ErrUnauthorized
+	}
+	return nil
 }
 
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
@@ -354,7 +556,7 @@ func (s *Service) Me(ctx context.Context, userID uuid.UUID) (UserResponse, error
 	return toUserResponse(user), nil
 }
 
-func (s *Service) issueTokens(ctx context.Context, user sqlc.User) (TokenPair, error) {
+func (s *Service) issueTokens(ctx context.Context, user sqlc.User, mfaVerified bool) (TokenPair, error) {
 	uid := uuid.UUID(user.ID.Bytes)
 	var tenantID *string
 	if user.TenantID.Valid {
@@ -363,7 +565,7 @@ func (s *Service) issueTokens(ctx context.Context, user sqlc.User) (TokenPair, e
 	}
 	now := time.Now()
 	accessClaims := Claims{
-		Role: user.Role, TenantID: tenantID, Email: user.Email, Name: user.Name,
+		Role: user.Role, TenantID: tenantID, Email: user.Email, Name: user.Name, MFAVerified: mfaVerified,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject: uid.String(), ID: uuid.NewString(), IssuedAt: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.AccessTokenTTL)),
@@ -374,7 +576,7 @@ func (s *Service) issueTokens(ctx context.Context, user sqlc.User) (TokenPair, e
 		return TokenPair{}, err
 	}
 	refreshClaims := Claims{
-		Role: user.Role, TenantID: tenantID, Email: user.Email, Name: user.Name,
+		Role: user.Role, TenantID: tenantID, Email: user.Email, Name: user.Name, MFAVerified: mfaVerified,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject: uid.String(), ID: uuid.NewString(), IssuedAt: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.RefreshTokenTTL)),
@@ -648,6 +850,13 @@ func (s *Service) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	pair, user, err := s.AdminLogin(r.Context(), req.Email, req.Password)
 	if err != nil {
+		if handled := writeLoginMFABranch(w, err); handled {
+			return
+		}
+		if errors.Is(err, ErrMustSetPassword) {
+			response.Error(w, http.StatusForbidden, "must_set_password", "complete account setup via invite link first")
+			return
+		}
 		if errors.Is(err, ErrInvalidCredentials) {
 			response.Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 			return
@@ -656,6 +865,28 @@ func (s *Service) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, http.StatusOK, map[string]any{"tokens": pair, "user": user})
+}
+
+// writeLoginMFABranch writes the response for either MFA sentinel and
+// reports whether it did — shared by every login handler so the three
+// response shapes (challenge, enrollment-required, must-set-password) never
+// drift apart between admin, tenant, and setup-password login.
+func writeLoginMFABranch(w http.ResponseWriter, err error) bool {
+	var mfaErr *MFARequiredError
+	if errors.As(err, &mfaErr) {
+		response.JSON(w, http.StatusOK, map[string]any{
+			"mfa_required": true, "challenge_token": mfaErr.ChallengeToken, "methods": mfaErr.Methods,
+		})
+		return true
+	}
+	var enrollErr *MFAEnrollRequiredError
+	if errors.As(err, &enrollErr) {
+		response.JSON(w, http.StatusOK, map[string]any{
+			"mfa_enroll_required": true, "enrollment_token": enrollErr.EnrollmentToken, "methods": enrollErr.Methods,
+		})
+		return true
+	}
+	return false
 }
 
 func (s *Service) HandleTenantLogin(w http.ResponseWriter, r *http.Request) {
@@ -671,6 +902,9 @@ func (s *Service) HandleTenantLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	pair, user, err := s.TenantLogin(r.Context(), req.Email, req.Password, hostTenant.ID)
 	if err != nil {
+		if handled := writeLoginMFABranch(w, err); handled {
+			return
+		}
 		if errors.Is(err, ErrMustSetPassword) {
 			response.Error(w, http.StatusForbidden, "must_set_password", "complete password setup via invite link first")
 			return
@@ -693,6 +927,9 @@ func (s *Service) HandleSetupPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	pair, user, err := s.SetupPassword(r.Context(), req.Token, req.Password)
 	if err != nil {
+		if handled := writeLoginMFABranch(w, err); handled {
+			return
+		}
 		if errors.Is(err, ErrUnauthorized) {
 			response.Error(w, http.StatusUnauthorized, "unauthorized", "invalid or expired invite")
 			return

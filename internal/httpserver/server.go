@@ -23,6 +23,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/customers"
 	"github.com/orderly/orderly-backend/internal/hotel"
 	"github.com/orderly/orderly-backend/internal/menu"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/orders"
 	"github.com/orderly/orderly-backend/internal/payments"
 	"github.com/orderly/orderly-backend/internal/platform"
@@ -36,22 +37,23 @@ import (
 )
 
 type Server struct {
-	log          *slog.Logger
-	pool         *pgxpool.Pool
-	cfg          config.Config
-	auth         *auth.Service
-	admin        *platform.Handler
-	menu         *menu.Handler
-	upload       *menu.UploadHandler
-	orders       *orders.Handler
-	shop         *storefront.AdminHandler
-	loader       *storefront.Loader
-	customers    *customers.Handler
-	payments     *payments.Handler
-	configs      *confighttp.Handler
-	appointments *appointments.Handler
-	hotel        *hotel.Handler
-	tables       *tables.Handler
+	log           *slog.Logger
+	pool          *pgxpool.Pool
+	cfg           config.Config
+	auth          *auth.Service
+	admin         *platform.Handler
+	menu          *menu.Handler
+	upload        *menu.UploadHandler
+	orders        *orders.Handler
+	shop          *storefront.AdminHandler
+	loader        *storefront.Loader
+	customers     *customers.Handler
+	payments      *payments.Handler
+	configs       *confighttp.Handler
+	appointments  *appointments.Handler
+	hotel         *hotel.Handler
+	tables        *tables.Handler
+	configService *configsvc.Service
 }
 
 func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
@@ -73,7 +75,8 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 			"Set it and restart before configuring SMTP, storage or AI credentials.")
 	}
 
-	authSvc := auth.NewService(pool, cfg)
+	authSvc := auth.NewService(pool, cfg, log)
+	authSvc.AttachNotifications(configService.Notifications())
 	orderHandler := orders.NewHandler(pool, log)
 	loader := storefront.NewLoader(pool)
 	s := &Server{
@@ -85,9 +88,10 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 		customers:    customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
 		payments:     payments.NewHandler(pool, orderHandler, log),
 		configs:      confighttp.NewHandler(configService, box, admin, log),
-		appointments: appointments.NewHandler(pool),
-		hotel:        hotel.NewHandler(pool),
-		tables:       tables.NewHandler(pool),
+		appointments:  appointments.NewHandler(pool, log),
+		hotel:         hotel.NewHandler(pool, log),
+		tables:        tables.NewHandler(pool),
+		configService: configService,
 	}
 	// Menu + storefront admin need the server's public URL builder, so they are
 	// attached after the server value exists.
@@ -127,6 +131,12 @@ func (s *Server) MigrateLegacyConfig(ctx context.Context) error {
 	return err
 }
 
+// StartNotificationWorker runs the EMAIL/SMS delivery loop until ctx is
+// cancelled. Call it in a goroutine — it blocks for the life of ctx.
+func (s *Server) StartNotificationWorker(ctx context.Context) {
+	notify.StartWorker(ctx, sqlc.New(s.pool), s.log, s.configService, 15*time.Second)
+}
+
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -155,11 +165,30 @@ func (s *Server) Router() http.Handler {
 			ar.Post("/setup-password", s.auth.HandleSetupPassword)
 			ar.Post("/refresh", s.auth.HandleRefresh)
 			ar.Post("/logout", s.auth.HandleLogout)
+			// The challenge token itself is the credential here — the caller
+			// has not finished logging in yet, so this sits outside auth.Middleware.
+			ar.Post("/mfa/verify", s.auth.HandleMFAVerify)
+			ar.Post("/mfa/challenge/email/send", s.auth.HandleMFAChallengeEmailSend)
 			ar.Group(func(pr chi.Router) {
 				pr.Use(auth.Middleware(s.auth))
 				pr.Get("/me", s.auth.HandleMe)
 				pr.Put("/me/password", s.auth.HandleChangePassword)
+				pr.Get("/me/mfa/status", s.auth.HandleMFAStatus)
+				pr.Post("/me/mfa/setup", s.auth.HandleMFASetup)
+				pr.Post("/me/mfa/confirm", s.auth.HandleMFAConfirm)
+				pr.Post("/me/mfa/disable", s.auth.HandleMFADisable)
+				pr.Post("/me/mfa/remove-method", s.auth.HandleMFARemoveMethod)
+				pr.Post("/me/mfa/email/send", s.auth.HandleMFAEmailSend)
+				pr.Post("/me/mfa/email/confirm", s.auth.HandleMFAEmailConfirm)
+				pr.Post("/me/mfa/recovery-codes/regenerate", s.auth.HandleMFARecoveryCodesRegenerate)
 			})
+			// Forced enrollment: a user with zero methods under REQUIRED policy
+			// past its grace period. The enrollment token itself is the
+			// credential — like /mfa/verify, this sits outside auth.Middleware.
+			ar.Post("/mfa/enroll/start", s.auth.HandleMFAEnrollStart)
+			ar.Post("/mfa/enroll/confirm", s.auth.HandleMFAEnrollConfirm)
+			ar.Post("/mfa/enroll/email/send", s.auth.HandleMFAEnrollEmailSend)
+			ar.Post("/mfa/enroll/email/confirm", s.auth.HandleMFAEnrollEmailConfirm)
 		})
 
 		api.Route("/admin", func(ar chi.Router) {
@@ -187,6 +216,27 @@ func (s *Server) Router() http.Handler {
 			// reports the configuration stack's own recorded state for the
 			// providers — it never dials a provider.
 			ar.With(canMonitoring).Get("/system-health", s.admin.SystemHealth)
+
+			// Notifications: every signed-in console user sees their own — no
+			// extra capability, the router's RequireRoles above is the gate.
+			ar.Get("/notifications", s.admin.ListNotifications)
+			ar.Post("/notifications/{id}/read", s.admin.MarkNotificationRead)
+			ar.Post("/notifications/{id}/unread", s.admin.MarkNotificationUnread)
+			ar.Post("/notifications/read-all", s.admin.MarkAllNotificationsRead)
+			ar.Get("/me/notification-preferences", s.admin.GetMyNotificationPreferences)
+			ar.Put("/me/notification-preferences", s.admin.PutMyNotificationPreferences)
+
+			// Platform notification settings: catalog, platform-default rules
+			// and templates, and the full delivery log. Monitoring, not
+			// Providers — this is "what the platform sends," not credentials.
+			ar.With(canMonitoring).Get("/notification-events", s.admin.ListNotificationEvents)
+			ar.With(canMonitoring).Get("/notification-rules", s.admin.ListPlatformNotificationRules)
+			ar.With(canMonitoring).Put("/notification-rules", s.admin.PutPlatformNotificationRule)
+			ar.With(canMonitoring).Get("/notification-templates", s.admin.ListPlatformNotificationTemplates)
+			ar.With(canMonitoring).Put("/notification-templates", s.admin.PutPlatformNotificationTemplate)
+			ar.With(canMonitoring).Post("/notification-templates/test-send", s.admin.TestSendPlatformNotificationTemplate)
+			ar.With(canMonitoring).Get("/notification-deliveries", s.admin.ListAllNotificationDeliveries)
+			ar.With(canMonitoring).Post("/notification-deliveries/{id}/retry", s.admin.AdminRetryNotificationDelivery)
 
 			/* ---------- Platform settings and catalogues ---------- */
 			ar.With(canSettings).Get("/settings", s.admin.Settings)
@@ -232,6 +282,7 @@ func (s *Server) Router() http.Handler {
 			ar.With(canBusinesses).Post("/tenants", s.admin.CreateTenant)
 			ar.With(canBusinesses).Get("/tenants/{id}", s.admin.GetTenant)
 			ar.With(canBusinesses).Get("/tenants/{id}/metrics", s.admin.TenantMetrics)
+			ar.With(canBusinesses).Get("/tenants/{id}/notification-config", s.admin.GetTenantNotificationConfig)
 			ar.With(canBusinesses).Patch("/tenants/{id}", s.admin.UpdateTenant)
 			ar.With(canBusinesses).Post("/tenants/{id}/activate", s.admin.ActivateTenant)
 			ar.With(canBusinesses).Post("/tenants/{id}/suspend", s.admin.SuspendTenant)
@@ -241,11 +292,29 @@ func (s *Server) Router() http.Handler {
 			ar.With(canBusinesses).Post("/tenants/{id}/resend-invite", s.admin.ResendTenantInvite)
 			ar.With(canBusinesses).Post("/upload", s.admin.UploadAsset)
 
+			// Read-only: the Super Admin seeds a business's initial MFA policy at
+			// creation and can see what it currently is, but day-to-day edits
+			// belong to that business's own Tenant Admin (PUT /tenant/mfa-policy)
+			// — the same split already used for the storefront template.
+			ar.With(canBusinesses).Get("/tenants/{id}/mfa-policy", s.admin.GetTenantMFAPolicy)
+
+			// A business's own staff are invited and managed day-to-day inside
+			// that business, by someone who works there. These three routes are
+			// support's read/recover path, not a second place to run a tenant's
+			// team from: Support can see who has access and unblock someone who
+			// is locked out, exactly as it can resend the owner's own invite
+			// above — there is deliberately no route here to create a user or
+			// change a name, role or status, the way routine staff management
+			// would.
+			ar.With(canBusinesses).Get("/tenants/{id}/users", s.admin.ListTenantUsers)
+			ar.With(canBusinesses).Post("/tenants/{id}/users/{userId}/reset-access", s.admin.ResetTenantUserAccess)
+			ar.With(canBusinesses).Post("/tenants/{id}/users/{userId}/resend-invite", s.admin.ResendTenantUserInvite)
+			ar.With(canBusinesses).Post("/tenants/{id}/users/{userId}/reset-mfa", s.admin.ResetUserMFA)
+
 			/* ---------- Console access ----------
 			 *
-			 * Who can reach this console. A business's own staff are invited
-			 * and managed inside that business, by someone who works there —
-			 * there is no route here that creates or edits a tenant user.
+			 * Who can reach this console — the platform/support team, not a
+			 * tenant's own staff (that's the block above).
 			 */
 			ar.With(canConsoleIAM).Get("/users", s.admin.ListConsoleUsers)
 			ar.With(canConsoleIAM).Post("/users", s.admin.CreateConsoleUser)
@@ -351,6 +420,33 @@ func (s *Server) Router() http.Handler {
 			// Access control.
 			tr.With(canIAM).Get("/iam", s.admin.ShopIAM)
 
+			// Notifications: every signed-in tenant user sees their own — no
+			// extra capability, the router's RequireRoles above is the gate.
+			tr.Get("/notifications", s.admin.ListNotifications)
+			tr.Post("/notifications/{id}/read", s.admin.MarkNotificationRead)
+			tr.Post("/notifications/{id}/unread", s.admin.MarkNotificationUnread)
+			tr.Post("/notifications/read-all", s.admin.MarkAllNotificationsRead)
+			tr.Get("/me/notification-preferences", s.admin.GetMyNotificationPreferences)
+			tr.Put("/me/notification-preferences", s.admin.PutMyNotificationPreferences)
+
+			// Notification settings: this business's own events, rules,
+			// templates and delivery history. canOrg: the same permission that
+			// already covers "business profile, opening hours, payments and
+			// order workflow" — notifications are one more facet of how the
+			// business is configured.
+			tr.With(canOrg).Get("/mfa-policy", s.auth.HandleGetTenantMFAPolicy)
+			tr.With(canOrg).Put("/mfa-policy", s.auth.HandlePutTenantMFAPolicy)
+
+			tr.With(canOrg).Get("/notification-events", s.admin.ListTenantNotificationEvents)
+			tr.With(canOrg).Get("/notification-rules", s.admin.ListTenantNotificationRules)
+			tr.With(canOrg).Put("/notification-rules", s.admin.PutTenantNotificationRule)
+			tr.With(canOrg).Delete("/notification-rules", s.admin.DeleteTenantNotificationRule)
+			tr.With(canOrg).Get("/notification-templates", s.admin.ListTenantNotificationTemplates)
+			tr.With(canOrg).Put("/notification-templates", s.admin.PutTenantNotificationTemplate)
+			tr.With(canOrg).Post("/notification-templates/test-send", s.admin.TestSendTenantNotificationTemplate)
+			tr.With(canOrg).Get("/notification-deliveries", s.admin.ListTenantNotificationDeliveries)
+			tr.With(canOrg).Post("/notification-deliveries/{id}/retry", s.admin.RetryTenantNotificationDelivery)
+
 			tr.With(canMenu, reqCatalog).Get("/categories", s.menu.ListCategories)
 			tr.With(canMenu, reqCatalog).Post("/categories", s.menu.CreateCategory)
 			tr.With(canMenu, reqCatalog).Post("/categories/reorder", s.menu.ReorderCategories)
@@ -391,6 +487,7 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStaff, reqStaff).Patch("/users/{userId}", s.admin.ShopUpdateUser)
 			tr.With(canStaff, reqStaff).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
 			tr.With(canStaff, reqStaff).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
+			tr.With(canStaff, reqStaff).Post("/users/{userId}/reset-mfa", s.admin.ShopResetUserMFA)
 
 			tr.With(canCustomers, reqCustomers).Get("/customers", s.customers.ShopListCustomers)
 			tr.With(canCustomers, reqCustomers).Get("/customers/guest", s.customers.ShopGetGuestCustomer)

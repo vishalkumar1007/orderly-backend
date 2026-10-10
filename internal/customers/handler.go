@@ -48,7 +48,7 @@ func NewHandler(pool *pgxpool.Pool, viewer *orders.Viewer, loader *storefront.Lo
 		q:       sqlc.New(pool),
 		orders:  viewer,
 		store:   loader,
-		auth:    auth.NewService(pool, cfg),
+		auth:    auth.NewService(pool, cfg, log),
 		log:     log,
 		devMode: cfg.AppEnv != "production" && cfg.AppEnv != "prod",
 	}

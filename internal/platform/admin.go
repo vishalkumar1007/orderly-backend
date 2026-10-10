@@ -25,6 +25,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/brand"
 	"github.com/orderly/orderly-backend/internal/config"
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/publicurl"
 	"github.com/orderly/orderly-backend/internal/secretbox"
 	"github.com/orderly/orderly-backend/internal/storefront"
@@ -101,6 +102,17 @@ type createTenantRequest struct {
 	Language         string          `json:"language"`
 	StoreStatus      string          `json:"store_status"`
 	StatusMessage    string          `json:"status_message"`
+	// MFAAllowed grants this one business the right to use two-factor
+	// authentication, set now or later from its own Configuration tab — not a
+	// platform-wide switch. See internal/auth.SetupMFA.
+	MFAAllowed bool `json:"mfa_allowed"`
+	// MFAPolicyMode/MFAAllowedMethods seed the business's initial MFA policy
+	// (OPTIONAL or REQUIRED) at creation time, only when MFAAllowed is also
+	// true. The business's own Tenant Admin owns and edits this policy from
+	// here on via PUT /api/v1/tenant/mfa-policy — omitted or empty leaves it
+	// DISABLED, exactly as if the Super Admin had set nothing.
+	MFAPolicyMode     string   `json:"mfa_policy_mode"`
+	MFAAllowedMethods []string `json:"mfa_allowed_methods"`
 
 	// Configuration is the business-type template the Super Admin confirmed
 	// during onboarding. It seeds the tenant's storefront row inside the same
@@ -187,6 +199,7 @@ type updateTenantRequest struct {
 	Language         *string `json:"language"`
 	StoreStatus      *string `json:"store_status"`
 	StatusMessage    *string `json:"status_message"`
+	MFAAllowed       *bool   `json:"mfa_allowed"`
 }
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
@@ -369,6 +382,10 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown plan")
 		return
 	}
+	if !planOffersBusinessType(plan, req.BusinessType) {
+		response.Error(w, http.StatusBadRequest, "plan_not_offered", "plan is not offered for this business type")
+		return
+	}
 
 	// Storefront defaults — normalise with safe fallbacks.
 	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
@@ -420,7 +437,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		LogoUrl: req.LogoURL, FaviconUrl: req.FaviconURL,
 		ShortDescription: req.ShortDescription, Currency: currency,
 		Timezone: req.Timezone, Language: req.Language, StoreStatus: storeStatus,
-		StatusMessage: "",
+		StatusMessage: "", MfaAllowed: req.MFAAllowed,
 	})
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") || strings.Contains(err.Error(), "tenants_slug") {
@@ -469,6 +486,23 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.MFAAllowed {
+		mode := strings.ToUpper(strings.TrimSpace(req.MFAPolicyMode))
+		if mode == "OPTIONAL" || mode == "REQUIRED" {
+			methods := req.MFAAllowedMethods
+			if len(methods) == 0 {
+				methods = []string{"TOTP"}
+			}
+			if _, err := qtx.UpsertTenantMfaPolicy(ctx, sqlc.UpsertTenantMfaPolicyParams{
+				TenantID: tenant.ID, Mode: mode, AllowedMethods: methods,
+				EnforceScope: "ALL_ADMINS", GracePeriodDays: 7,
+			}); err != nil {
+				response.Error(w, http.StatusInternalServerError, "internal_error", "failed to seed mfa policy")
+				return
+			}
+		}
+	}
+
 	// Seed the storefront from the chosen business type. This runs inside the
 	// transaction: a business that cannot be configured is not created, rather
 	// than created and left half-set-up.
@@ -501,6 +535,12 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "commit failed")
 		return
 	}
+
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, nil, notify.TypeBusinessOnboarded,
+		fmt.Sprintf("%s onboarded", tenant.Name),
+		fmt.Sprintf("New %s business, slug %s", strings.ToLower(tenant.BusinessType), tenant.Slug),
+		map[string]any{"tenant_id": pgutil.UUIDString(tenant.ID), "tenant_name": tenant.Name},
+		notify.Contact{})
 
 	base := h.tenantFrontendURL(tenant.Slug)
 	setupPath := "/setup-password?token=" + inviteToken
@@ -549,21 +589,6 @@ func (h *Handler) TenantMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantUUID := pgutil.UUID(id)
 	ctx := r.Context()
-	metrics, err := h.q.TenantAdminMetrics(ctx, tenantUUID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load metrics")
-		return
-	}
-	ordersByDay, err := h.q.TenantOrdersByDay(ctx, tenantUUID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load order series")
-		return
-	}
-	statusRows, err := h.q.TenantOrderStatusBreakdown(ctx, tenantUUID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load status breakdown")
-		return
-	}
 	security, err := h.q.TenantSecuritySummary(ctx, tenantUUID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load security summary")
@@ -575,35 +600,13 @@ func (h *Handler) TenantMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub, _ := h.q.GetSubscriptionByTenant(ctx, tenantUUID)
-	series := make([]any, 0, len(ordersByDay))
-	for _, s := range ordersByDay {
-		series = append(series, map[string]any{
-			"day":         pgDateString(s.Day),
-			"order_count": s.OrderCount,
-			"revenue":     s.Revenue,
-		})
-	}
-	breakdown := make([]any, 0, len(statusRows))
-	for _, r := range statusRows {
-		breakdown = append(breakdown, map[string]any{
-			"status": r.Status,
-			"count":  r.Count,
-		})
-	}
 	planName := textOrEmpty(row.PlanName)
 	out := map[string]any{
-		"orders":           metrics.TotalOrders,
-		"revenue":          metrics.TotalRevenue,
-		"active_users":     metrics.ActiveUsers,
-		"current_plan":     planName,
-		"orders_today":     metrics.OrdersToday,
-		"revenue_today":    metrics.RevenueToday,
-		"cancelled_orders": metrics.CancelledOrders,
-		"avg_order_value":  metrics.AvgOrderValue,
-		"first_order_at":   timestampOrEmpty(metrics.FirstOrderAt),
-		"last_order_at":    timestampOrEmpty(metrics.LastOrderAt),
-		"status_breakdown": breakdown,
-		"orders_by_day":    series,
+		// Revenue and order figures are business-private data and are
+		// intentionally not exposed to platform superadmins. Only
+		// operational/monitoring data (staff, security, plan) is returned.
+		"active_users": security.UsersActive,
+		"current_plan": planName,
 		"security": map[string]any{
 			"users_total":            security.UsersTotal,
 			"users_active":           security.UsersActive,
@@ -646,6 +649,15 @@ func (h *Handler) ChangeTenantPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantUUID := pgutil.UUID(id)
+	tenant, err := h.q.GetTenantByID(r.Context(), tenantUUID)
+	if err != nil {
+		response.Error(w, http.StatusNotFound, "not_found", "tenant not found")
+		return
+	}
+	if !planOffersBusinessType(plan, tenant.BusinessType) {
+		response.Error(w, http.StatusBadRequest, "plan_not_offered", "plan is not offered for this business type")
+		return
+	}
 	sub, err := h.q.GetSubscriptionByTenant(r.Context(), tenantUUID)
 	if err != nil || !sub.ID.Valid {
 		response.Error(w, http.StatusNotFound, "not_found", "subscription not found")
@@ -681,6 +693,11 @@ func (h *Handler) ChangeTenantPlan(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "commit failed")
 		return
 	}
+	tid := uuid.UUID(tenantUUID.Bytes)
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tid, notify.TypeSubscriptionChanged,
+		fmt.Sprintf("%s changed to %s", tenant.Name, plan.Name), "",
+		map[string]any{"tenant_id": tid.String(), "tenant_name": tenant.Name, "plan_name": plan.Name},
+		notify.Contact{})
 	row, err := h.q.GetTenantWithPlanByID(ctx, tenantUUID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load tenant")
@@ -765,6 +782,9 @@ func (h *Handler) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 			msg = string([]rune(msg)[:200])
 		}
 		params.StatusMessage = pgtype.Text{String: msg, Valid: true}
+	}
+	if req.MFAAllowed != nil {
+		params.MfaAllowed = pgtype.Bool{Bool: *req.MFAAllowed, Valid: true}
 	}
 	if _, err := h.q.UpdateTenant(r.Context(), params); err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "tenant not found")
@@ -980,6 +1000,36 @@ func (h *Handler) ListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, map[string]any{"subscriptions": out})
 }
 
+// GetTenantMFAPolicy is the Super Admin's read-only view of a business's own
+// MFA policy — day-to-day edits belong to that business's Tenant Admin
+// (PUT /api/v1/tenant/mfa-policy), the same split already used for the
+// storefront template.
+func (h *Handler) GetTenantMFAPolicy(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid tenant id")
+		return
+	}
+	tenant, err := h.q.GetTenantByID(r.Context(), pgutil.UUID(id))
+	if err != nil {
+		response.Error(w, http.StatusNotFound, "not_found", "tenant not found")
+		return
+	}
+	out := map[string]any{
+		"allowed": tenant.MfaAllowed,
+		"mode": "DISABLED", "allowed_methods": []string{"TOTP"},
+		"enforce_scope": "ALL_ADMINS", "enforce_roles": []string(nil), "grace_period_days": 7,
+	}
+	if row, perr := h.q.GetTenantMfaPolicy(r.Context(), pgutil.UUID(id)); perr == nil {
+		out["mode"] = row.Mode
+		out["allowed_methods"] = row.AllowedMethods
+		out["enforce_scope"] = row.EnforceScope
+		out["enforce_roles"] = row.EnforceRoles
+		out["grace_period_days"] = row.GracePeriodDays
+	}
+	response.JSON(w, http.StatusOK, out)
+}
+
 func (h *Handler) ResendTenantInvite(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -1055,6 +1105,7 @@ func (h *Handler) tenantJSONEnriched(t sqlc.Tenant, planName pgtype.Text, planPr
 		"language":          t.Language,
 		"store_status":      t.StoreStatus,
 		"status_message":    t.StatusMessage,
+		"mfa_allowed":       t.MfaAllowed,
 	}
 	if planName.Valid {
 		out["plan"] = planName.String

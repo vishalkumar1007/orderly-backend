@@ -43,6 +43,18 @@ func (f *Factory) Storage(r *Resolved) (StorageProvider, error) {
 	return nil, fmt.Errorf("unsupported storage provider %q", r.Provider)
 }
 
+// SMS builds an SMSProvider.
+func (f *Factory) SMS(r *Resolved) (SMSProvider, error) {
+	if r == nil {
+		return nil, ErrUnavailable
+	}
+	switch r.Provider {
+	case ProviderTwilio, "":
+		return newTwilioProvider(r), nil
+	}
+	return nil, fmt.Errorf("unsupported sms provider %q", r.Provider)
+}
+
 // AI builds an AIProvider.
 func (f *Factory) AI(r *Resolved) (AIProvider, error) {
 	if r == nil {
@@ -121,6 +133,17 @@ func normalizeWriteRequest(service ServiceType, provider string, config map[stri
 		}
 		_ = mergeBack(cfg, ai)
 
+	case ServiceSMS:
+		resolvedProvider = ProviderTwilio
+		cfg["provider"] = ProviderTwilio
+		sms := smsFrom(cfg)
+		sms.applyDefaults()
+		sms.Provider = ProviderTwilio
+		if err := sms.Validate(); err != nil {
+			return WriteRequest{}, err
+		}
+		_ = mergeBack(cfg, sms)
+
 	default:
 		return WriteRequest{}, fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, service)
 	}
@@ -155,6 +178,14 @@ func smtpFrom(cfg map[string]any) SMTPConfig {
 		FromName:   asString(cfg["from_name"]),
 		FromEmail:  asString(cfg["from_email"]),
 		ReplyTo:    asString(cfg["reply_to"]),
+	}
+}
+
+func smsFrom(cfg map[string]any) SMSConfig {
+	return SMSConfig{
+		Provider:   asString(cfg["provider"]),
+		AccountSID: asString(cfg["account_sid"]),
+		FromNumber: asString(cfg["from_number"]),
 	}
 }
 
@@ -272,6 +303,16 @@ func (f *Factory) runConnectionTest(ctx context.Context, r *Resolved) (TestOutco
 			return TestOutcome{OK: false, Message: "Could not reach the AI endpoint", Detail: SafeErrorMessage(err)}, nil
 		}
 		return TestOutcome{OK: true, Message: "AI endpoint responded"}, nil
+
+	case ServiceSMS:
+		p, err := f.SMS(r)
+		if err != nil {
+			return TestOutcome{}, err
+		}
+		if err := p.TestConnection(ctx); err != nil {
+			return TestOutcome{OK: false, Message: "Could not verify Twilio credentials", Detail: SafeErrorMessage(err)}, nil
+		}
+		return TestOutcome{OK: true, Message: "Twilio credentials verified"}, nil
 	}
 	return TestOutcome{}, fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, r.Service)
 }

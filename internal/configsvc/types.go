@@ -30,10 +30,11 @@ const (
 	ServiceSMTP    ServiceType = "SMTP"
 	ServiceStorage ServiceType = "STORAGE"
 	ServiceAI      ServiceType = "AI"
+	ServiceSMS     ServiceType = "SMS"
 )
 
 // AllServices is the canonical ordering used by every listing endpoint.
-var AllServices = []ServiceType{ServiceSMTP, ServiceStorage, ServiceAI}
+var AllServices = []ServiceType{ServiceSMTP, ServiceStorage, ServiceAI, ServiceSMS}
 
 // ParseServiceType validates a service segment from a URL.
 func ParseServiceType(v string) (ServiceType, error) {
@@ -44,6 +45,8 @@ func ParseServiceType(v string) (ServiceType, error) {
 		return ServiceStorage, nil
 	case ServiceAI:
 		return ServiceAI, nil
+	case ServiceSMS:
+		return ServiceSMS, nil
 	}
 	return "", fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, v)
 }
@@ -57,6 +60,8 @@ func (s ServiceType) Label() string {
 		return "Storage"
 	case ServiceAI:
 		return "AI"
+	case ServiceSMS:
+		return "SMS"
 	}
 	return string(s)
 }
@@ -163,6 +168,18 @@ type EmailProvider interface {
 	FromAddress() string
 }
 
+// SMSProvider sends text messages over a concrete transport.
+type SMSProvider interface {
+	// Provider is the provider identifier this instance was built from.
+	Provider() string
+	// TestConnection verifies credentials without sending a message.
+	TestConnection(ctx context.Context) error
+	// Send delivers one message and returns the provider's message id.
+	Send(ctx context.Context, to, body string) (messageID string, err error)
+	// FromNumber is the default sender, for display in the UI.
+	FromNumber() string
+}
+
 // StoredObject describes an object written to storage.
 type StoredObject struct {
 	Key         string
@@ -246,7 +263,7 @@ type AIProvider interface {
 // SortServices orders service types canonically, tolerating unknown values by
 // placing them last so a typo cannot scramble the UI ordering.
 func SortServices(in []ServiceType) {
-	rank := map[ServiceType]int{ServiceSMTP: 0, ServiceStorage: 1, ServiceAI: 2}
+	rank := map[ServiceType]int{ServiceSMTP: 0, ServiceStorage: 1, ServiceAI: 2, ServiceSMS: 3}
 	sort.SliceStable(in, func(i, j int) bool {
 		ri, oki := rank[in[i]]
 		rj, okj := rank[in[j]]

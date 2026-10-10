@@ -212,7 +212,7 @@ func TestValidationRejectsBadInput(t *testing.T) {
 func TestUnknownServiceRejected(t *testing.T) {
 	env := newTestEnv(t)
 	token := env.superAdmin()
-	for _, svc := range []string{"email", "sms", "whatsapp", "SMTPP", ""} {
+	for _, svc := range []string{"email", "whatsapp", "SMTPP", ""} {
 		status, _ := env.do(http.MethodGet, "/api/v1/admin/configurations/"+svc, token, nil)
 		if status == http.StatusOK {
 			t.Errorf("service %q was accepted, want rejected", svc)

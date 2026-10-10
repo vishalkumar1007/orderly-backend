@@ -284,6 +284,16 @@ func (h *Handler) TestTenantServiceAction(w http.ResponseWriter, r *http.Request
 		defer cancel()
 		outcome = configsvc.TestModel(ctx, provider)
 
+	case service == configsvc.ServiceSMS && (action == "" || action == "send_sms"):
+		provider, perr := h.svc.Factory().SMS(resolved)
+		if perr != nil {
+			writeFailure(w, perr)
+			return
+		}
+		ctx, cancel := contextWithTimeout(r, testTimeout)
+		defer cancel()
+		outcome = configsvc.SendTestSMS(ctx, provider, body.To)
+
 	default:
 		response.Error(w, http.StatusBadRequest, "invalid_request", "unsupported test action for this service")
 		return

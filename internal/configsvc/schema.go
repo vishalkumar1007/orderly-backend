@@ -18,6 +18,7 @@ var secretFields = map[ServiceType][]string{
 	ServiceSMTP:    {"password"},
 	ServiceStorage: {"secret_key"},
 	ServiceAI:      {"api_key"},
+	ServiceSMS:     {"auth_token"},
 }
 
 // SecretKeys returns the secret field names for a service.
@@ -164,6 +165,42 @@ func (c StorageConfig) Validate() error {
 	// A bucket name must be DNS-safe; catching it here beats a 400 from the API.
 	if strings.ContainsAny(c.Bucket, " /\\") {
 		return fmt.Errorf("%w: bucket name contains invalid characters", ErrInvalidRequest)
+	}
+	return nil
+}
+
+/* ------------------------------------------------------------------ *
+ * SMS
+ * ------------------------------------------------------------------ */
+
+// SMSConfig is the non-secret half of an SMS configuration. account_sid and
+// from_number are not secret — Twilio treats the account SID as a public
+// identifier — only auth_token is sealed.
+type SMSConfig struct {
+	Provider   string `json:"provider"`
+	AccountSID string `json:"account_sid"`
+	FromNumber string `json:"from_number"`
+}
+
+func (c *SMSConfig) applyDefaults() {
+	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
+	c.AccountSID = strings.TrimSpace(c.AccountSID)
+	c.FromNumber = strings.TrimSpace(c.FromNumber)
+	if c.Provider == "" {
+		c.Provider = ProviderTwilio
+	}
+}
+
+// Validate checks an SMS configuration is usable.
+func (c SMSConfig) Validate() error {
+	if strings.TrimSpace(c.AccountSID) == "" {
+		return fmt.Errorf("%w: account_sid is required", ErrInvalidRequest)
+	}
+	if strings.TrimSpace(c.FromNumber) == "" {
+		return fmt.Errorf("%w: from_number is required", ErrInvalidRequest)
+	}
+	if !strings.HasPrefix(c.FromNumber, "+") {
+		return fmt.Errorf("%w: from_number must be in E.164 format, e.g. +14155551234", ErrInvalidRequest)
 	}
 	return nil
 }

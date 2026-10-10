@@ -440,6 +440,11 @@ func (e *testEnv) removeTestTenants() {
 	ctx := context.Background()
 	for _, id := range e.createdTenants {
 		for _, stmt := range []string{
+			// Tenant-scoped notifications cascade with the tenant row below, but
+			// a platform notification (e.g. BUSINESS_ONBOARDED) has tenant_id
+			// NULL and only names this tenant inside `data` — the real super
+			// admin's account must not keep accumulating test noise.
+			`DELETE FROM notifications WHERE (data->>'tenant_id') = $1::text`,
 			`DELETE FROM audit_logs WHERE tenant_id = $1`,
 			`DELETE FROM licenses WHERE tenant_id = $1`,
 			`DELETE FROM terms_acceptances WHERE tenant_id = $1`,

@@ -28,12 +28,13 @@ func TestAdminRouteRegistration(t *testing.T) {
 	// Routes the console must NOT expose. The platform administers the business
 	// account, never the shop: a console that could rewrite a tenant's theme or
 	// hire its staff would blur the line the product draws between the two.
+	// Support may still see who has access (GET) and recover someone locked
+	// out (reset-access, resend-invite) — those are registered below and
+	// checked in `want`, not here — but it cannot create a user or edit a
+	// name, role or status, the way routine staff management would.
 	forbidden := []string{
-		"GET /api/v1/admin/tenants/{id}/users",
 		"POST /api/v1/admin/tenants/{id}/users",
 		"PATCH /api/v1/admin/tenants/{id}/users/{userId}",
-		"POST /api/v1/admin/tenants/{id}/users/{userId}/reset-access",
-		"POST /api/v1/admin/tenants/{id}/users/{userId}/resend-invite",
 		"GET /api/v1/admin/tenants/{id}/admins",
 		"PATCH /api/v1/admin/tenants/{id}/theme",
 	}
@@ -52,6 +53,12 @@ func TestAdminRouteRegistration(t *testing.T) {
 		"POST /api/v1/admin/users/{id}/resend-invite",
 		// Recovering a business owner's access is support, not staff management.
 		"POST /api/v1/admin/tenants/{id}/resend-invite",
+		// Same for any of a business's staff, not only its owner: see who they
+		// are and unblock someone locked out, nothing more.
+		"GET /api/v1/admin/tenants/{id}/users",
+		"POST /api/v1/admin/tenants/{id}/users/{userId}/reset-access",
+		"POST /api/v1/admin/tenants/{id}/users/{userId}/resend-invite",
+		"POST /api/v1/admin/tenants/{id}/users/{userId}/reset-mfa",
 		// Plan catalog CRUD
 		"GET /api/v1/admin/plans",
 		"POST /api/v1/admin/plans",

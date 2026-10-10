@@ -80,6 +80,10 @@ func parseWorkflow(raw []byte) Workflow {
 		PaymentRequirement: PayBeforePrep,
 		ReadyNotification:  true,
 		AutoComplete:       false,
+		NewOrderSound:      SoundChime,
+		OrderReadySound:    SoundChime,
+		InAppNewOrder:      true,
+		InAppOrderReady:    true,
 	}
 	if len(raw) == 0 {
 		return out
@@ -89,6 +93,10 @@ func parseWorkflow(raw []byte) Workflow {
 		PaymentRequirement *string `json:"payment_requirement"`
 		ReadyNotification  *bool   `json:"ready_notification"`
 		AutoComplete       *bool   `json:"auto_complete"`
+		NewOrderSound      *string `json:"new_order_sound"`
+		OrderReadySound    *string `json:"order_ready_sound"`
+		InAppNewOrder      *bool   `json:"in_app_new_order_enabled"`
+		InAppOrderReady    *bool   `json:"in_app_order_ready_enabled"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return out
@@ -105,16 +113,32 @@ func parseWorkflow(raw []byte) Workflow {
 	if doc.AutoComplete != nil {
 		out.AutoComplete = *doc.AutoComplete
 	}
+	if doc.NewOrderSound != nil {
+		out.NewOrderSound = upperOneOf(*doc.NewOrderSound, SoundChime, validSounds)
+	}
+	if doc.OrderReadySound != nil {
+		out.OrderReadySound = upperOneOf(*doc.OrderReadySound, SoundChime, validSounds)
+	}
+	if doc.InAppNewOrder != nil {
+		out.InAppNewOrder = *doc.InAppNewOrder
+	}
+	if doc.InAppOrderReady != nil {
+		out.InAppOrderReady = *doc.InAppOrderReady
+	}
 	return out
 }
 
 // Marshal writes the workflow document back out.
 func (w Workflow) Marshal() []byte {
 	b, _ := json.Marshal(map[string]any{
-		"acceptance_mode":     w.AcceptanceMode,
-		"payment_requirement": w.PaymentRequirement,
-		"ready_notification":  w.ReadyNotification,
-		"auto_complete":       w.AutoComplete,
+		"acceptance_mode":            w.AcceptanceMode,
+		"payment_requirement":        w.PaymentRequirement,
+		"ready_notification":         w.ReadyNotification,
+		"auto_complete":              w.AutoComplete,
+		"new_order_sound":            w.NewOrderSound,
+		"order_ready_sound":          w.OrderReadySound,
+		"in_app_new_order_enabled":   w.InAppNewOrder,
+		"in_app_order_ready_enabled": w.InAppOrderReady,
 	})
 	return b
 }

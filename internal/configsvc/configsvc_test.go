@@ -209,7 +209,7 @@ func TestParseServiceAndSource(t *testing.T) {
 			t.Errorf("ParseServiceType(%q) = %q, %v", in, got, err)
 		}
 	}
-	for _, in := range []string{"sms", "email", "", "smtps"} {
+	for _, in := range []string{"whatsapp", "email", "", "smtps"} {
 		if _, err := ParseServiceType(in); err == nil {
 			t.Errorf("ParseServiceType(%q) should fail", in)
 		}
