@@ -33,7 +33,7 @@ WHERE id IN (
     LIMIT $1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at
+RETURNING id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at, subject, body, data
 `
 
 // The worker's claim: due rows get their lease (next_attempt_at) pushed
@@ -66,6 +66,9 @@ func (q *Queries) ClaimDueDeliveries(ctx context.Context, limit int32) ([]Notifi
 			&i.NextAttemptAt,
 			&i.DeliveredAt,
 			&i.CreatedAt,
+			&i.Subject,
+			&i.Body,
+			&i.Data,
 		); err != nil {
 			return nil, err
 		}
@@ -79,12 +82,13 @@ func (q *Queries) ClaimDueDeliveries(ctx context.Context, limit int32) ([]Notifi
 
 const enqueueNotificationDelivery = `-- name: EnqueueNotificationDelivery :one
 INSERT INTO notification_deliveries (
-    notification_id, tenant_id, event_code, channel, recipient, idempotency_key
+    notification_id, tenant_id, event_code, channel, recipient, idempotency_key,
+    subject, body, data
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at
+RETURNING id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at, subject, body, data
 `
 
 type EnqueueNotificationDeliveryParams struct {
@@ -94,6 +98,9 @@ type EnqueueNotificationDeliveryParams struct {
 	Channel        string      `json:"channel"`
 	Recipient      string      `json:"recipient"`
 	IdempotencyKey string      `json:"idempotency_key"`
+	Subject        string      `json:"subject"`
+	Body           string      `json:"body"`
+	Data           []byte      `json:"data"`
 }
 
 // Fire-and-forget enqueue. A duplicate idempotency_key (a retried or
@@ -107,6 +114,9 @@ func (q *Queries) EnqueueNotificationDelivery(ctx context.Context, arg EnqueueNo
 		arg.Channel,
 		arg.Recipient,
 		arg.IdempotencyKey,
+		arg.Subject,
+		arg.Body,
+		arg.Data,
 	)
 	var i NotificationDelivery
 	err := row.Scan(
@@ -125,12 +135,15 @@ func (q *Queries) EnqueueNotificationDelivery(ctx context.Context, arg EnqueueNo
 		&i.NextAttemptAt,
 		&i.DeliveredAt,
 		&i.CreatedAt,
+		&i.Subject,
+		&i.Body,
+		&i.Data,
 	)
 	return i, err
 }
 
 const listAllDeliveries = `-- name: ListAllDeliveries :many
-SELECT id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at FROM notification_deliveries
+SELECT id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at, subject, body, data FROM notification_deliveries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -165,6 +178,9 @@ func (q *Queries) ListAllDeliveries(ctx context.Context, arg ListAllDeliveriesPa
 			&i.NextAttemptAt,
 			&i.DeliveredAt,
 			&i.CreatedAt,
+			&i.Subject,
+			&i.Body,
+			&i.Data,
 		); err != nil {
 			return nil, err
 		}
@@ -177,7 +193,7 @@ func (q *Queries) ListAllDeliveries(ctx context.Context, arg ListAllDeliveriesPa
 }
 
 const listDeliveriesForTenant = `-- name: ListDeliveriesForTenant :many
-SELECT id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at FROM notification_deliveries
+SELECT id, notification_id, tenant_id, event_code, channel, recipient, status, attempt_count, max_attempts, last_error, provider_message_id, idempotency_key, next_attempt_at, delivered_at, created_at, subject, body, data FROM notification_deliveries
 WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -214,6 +230,9 @@ func (q *Queries) ListDeliveriesForTenant(ctx context.Context, arg ListDeliverie
 			&i.NextAttemptAt,
 			&i.DeliveredAt,
 			&i.CreatedAt,
+			&i.Subject,
+			&i.Body,
+			&i.Data,
 		); err != nil {
 			return nil, err
 		}

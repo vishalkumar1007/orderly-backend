@@ -8,7 +8,7 @@
 SELECT
     date_trunc('day', created_at)::date AS day,
     COUNT(*)::bigint AS order_count,
-    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' THEN total ELSE 0 END), 0)::text AS revenue
+    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
 FROM orders
 WHERE tenant_id = sqlc.arg(tenant_id)
     AND created_at >= now() - sqlc.arg(days)::interval
@@ -29,6 +29,23 @@ WHERE o.tenant_id = sqlc.arg(tenant_id)
     AND o.created_at >= now() - sqlc.arg(days)::interval
 GROUP BY p.id, p.name
 ORDER BY units DESC, revenue DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: TenantTopProductsByRevenue :many
+-- The same best-seller list ranked by the money it made rather than by how many
+-- were sold: a ₹400 dish sold twice outranks a ₹10 snack sold ten times.
+SELECT
+    p.name AS name,
+    COALESCE(SUM(oi.quantity), 0)::bigint AS units,
+    COALESCE(SUM(oi.quantity * oi.unit_price), 0)::text AS revenue
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id
+JOIN products p ON p.id = oi.product_id
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+    AND o.status <> 'CANCELLED'
+    AND o.created_at >= now() - sqlc.arg(days)::interval
+GROUP BY p.id, p.name
+ORDER BY SUM(oi.quantity * oi.unit_price) DESC, SUM(oi.quantity) DESC, p.name ASC
 LIMIT sqlc.arg(row_limit);
 
 -- name: TenantOrdersByHour :many
@@ -52,6 +69,7 @@ SELECT
         AND o.created_at >= date_trunc('day', now())) AS orders_today,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = sqlc.arg(tenant_id)
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status = 'COMPLETED'
         AND o.created_at >= date_trunc('day', now()))::text AS revenue_today,
     (SELECT COUNT(*)::bigint FROM orders o
@@ -60,6 +78,7 @@ SELECT
         AND o.created_at >= now() - interval '7 days') AS orders_7d,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = sqlc.arg(tenant_id)
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status <> 'CANCELLED'
         AND o.created_at >= now() - interval '7 days')::text AS revenue_7d,
     (SELECT COUNT(*)::bigint FROM orders o
@@ -68,6 +87,7 @@ SELECT
         AND o.created_at >= now() - interval '30 days') AS orders_30d,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = sqlc.arg(tenant_id)
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status <> 'CANCELLED'
         AND o.created_at >= now() - interval '30 days')::text AS revenue_30d,
     -- The 30 days before that, for the trend arrow.
@@ -78,6 +98,7 @@ SELECT
         AND o.created_at < now() - interval '30 days') AS orders_prev_30d,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = sqlc.arg(tenant_id)
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status <> 'CANCELLED'
         AND o.created_at >= now() - interval '60 days'
         AND o.created_at < now() - interval '30 days')::text AS revenue_prev_30d,
@@ -139,13 +160,16 @@ WHERE tenant_id = sqlc.arg(tenant_id)
 -- dropped, because a missing payment is itself worth seeing.
 -- name: TenantPaymentBreakdown :many
 SELECT
-    COALESCE(NULLIF(p.method, ''), 'UNRECORDED')::text AS method,
+    CASE WHEN p.is_test THEN 'ONLINE_TEST'
+         ELSE COALESCE(NULLIF(p.method, ''), 'UNRECORDED') END::text AS method,
     COALESCE(NULLIF(p.status, ''), 'NONE')::text AS status,
     COUNT(*)::bigint AS order_count,
     COALESCE(SUM(o.total), 0)::text AS revenue
 FROM orders o
 LEFT JOIN LATERAL (
-    SELECT method, status FROM payments
+    SELECT method, status,
+           (method = 'ONLINE' AND mode = 'SANDBOX' AND provider_order_id <> '') AS is_test
+    FROM payments
     WHERE payments.order_id = o.id
     ORDER BY created_at DESC LIMIT 1
 ) p ON TRUE

@@ -14,18 +14,24 @@ import (
 const checkInReservation = `-- name: CheckInReservation :one
 UPDATE reservations
 SET status = 'CHECKED_IN', room_id = $3, checked_in_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
 `
 
 type CheckInReservationParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-	RoomID   pgtype.UUID `json:"room_id"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	RoomID         pgtype.UUID `json:"room_id"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) CheckInReservation(ctx context.Context, arg CheckInReservationParams) (Reservation, error) {
-	row := q.db.QueryRow(ctx, checkInReservation, arg.ID, arg.TenantID, arg.RoomID)
+	row := q.db.QueryRow(ctx, checkInReservation,
+		arg.ID,
+		arg.TenantID,
+		arg.RoomID,
+		arg.ExpectedStatus,
+	)
 	var i Reservation
 	err := row.Scan(
 		&i.ID,
@@ -48,17 +54,18 @@ func (q *Queries) CheckInReservation(ctx context.Context, arg CheckInReservation
 const checkOutReservation = `-- name: CheckOutReservation :one
 UPDATE reservations
 SET status = 'CHECKED_OUT', checked_out_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $3
 RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
 `
 
 type CheckOutReservationParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) CheckOutReservation(ctx context.Context, arg CheckOutReservationParams) (Reservation, error) {
-	row := q.db.QueryRow(ctx, checkOutReservation, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, checkOutReservation, arg.ID, arg.TenantID, arg.ExpectedStatus)
 	var i Reservation
 	err := row.Scan(
 		&i.ID,
@@ -378,6 +385,29 @@ func (q *Queries) GetRoomByID(ctx context.Context, arg GetRoomByIDParams) (Room,
 	return i, err
 }
 
+const getRoomTypeByID = `-- name: GetRoomTypeByID :one
+SELECT id, tenant_id, name, base_price, max_guests, created_at FROM room_types WHERE id = $1 AND tenant_id = $2 LIMIT 1
+`
+
+type GetRoomTypeByIDParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) GetRoomTypeByID(ctx context.Context, arg GetRoomTypeByIDParams) (RoomType, error) {
+	row := q.db.QueryRow(ctx, getRoomTypeByID, arg.ID, arg.TenantID)
+	var i RoomType
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.BasePrice,
+		&i.MaxGuests,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listChargesByFolio = `-- name: ListChargesByFolio :many
 SELECT id, tenant_id, folio_id, description, amount, created_at FROM charges WHERE folio_id = $1 AND tenant_id = $2 ORDER BY created_at ASC
 `
@@ -648,18 +678,24 @@ func (q *Queries) UpdateHousekeepingTaskStatus(ctx context.Context, arg UpdateHo
 
 const updateReservationStatus = `-- name: UpdateReservationStatus :one
 UPDATE reservations SET status = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
 `
 
 type UpdateReservationStatusParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-	Status   string      `json:"status"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	Status         string      `json:"status"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) UpdateReservationStatus(ctx context.Context, arg UpdateReservationStatusParams) (Reservation, error) {
-	row := q.db.QueryRow(ctx, updateReservationStatus, arg.ID, arg.TenantID, arg.Status)
+	row := q.db.QueryRow(ctx, updateReservationStatus,
+		arg.ID,
+		arg.TenantID,
+		arg.Status,
+		arg.ExpectedStatus,
+	)
 	var i Reservation
 	err := row.Scan(
 		&i.ID,
@@ -681,18 +717,24 @@ func (q *Queries) UpdateReservationStatus(ctx context.Context, arg UpdateReserva
 
 const updateRoomStatus = `-- name: UpdateRoomStatus :one
 UPDATE rooms SET status = $3
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, room_type_id, number, status, created_at
 `
 
 type UpdateRoomStatusParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-	Status   string      `json:"status"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	Status         string      `json:"status"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) UpdateRoomStatus(ctx context.Context, arg UpdateRoomStatusParams) (Room, error) {
-	row := q.db.QueryRow(ctx, updateRoomStatus, arg.ID, arg.TenantID, arg.Status)
+	row := q.db.QueryRow(ctx, updateRoomStatus,
+		arg.ID,
+		arg.TenantID,
+		arg.Status,
+		arg.ExpectedStatus,
+	)
 	var i Room
 	err := row.Scan(
 		&i.ID,

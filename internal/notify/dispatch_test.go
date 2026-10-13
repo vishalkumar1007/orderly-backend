@@ -176,6 +176,7 @@ func TestEnqueueIdempotent(t *testing.T) {
 			Channel:        "EMAIL",
 			Recipient:      "customer@example.com",
 			IdempotencyKey: key,
+			Data:           []byte("{}"),
 		})
 		// The second call hits ON CONFLICT DO NOTHING and returns no row —
 		// that is success (an already-enqueued delivery), not an error.

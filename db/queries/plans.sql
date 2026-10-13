@@ -36,8 +36,8 @@ WHERE name = sqlc.arg(name)
 LIMIT 1;
 
 -- name: CreatePlan :one
-INSERT INTO plans (name, description, price, max_staff, max_products, features, is_active)
-VALUES (sqlc.arg(name), sqlc.arg(description), sqlc.arg(price), sqlc.arg(max_staff), sqlc.arg(max_products), sqlc.arg(features), sqlc.arg(is_active))
+INSERT INTO plans (name, description, price, max_staff, max_products, features, is_active, entitlements)
+VALUES (sqlc.arg(name), sqlc.arg(description), sqlc.arg(price), sqlc.arg(max_staff), sqlc.arg(max_products), sqlc.arg(features), sqlc.arg(is_active), sqlc.arg(entitlements)::text[])
 RETURNING *;
 
 -- name: UpdatePlan :one
@@ -53,6 +53,8 @@ SET
     -- the plan is offered to. NULL leaves the stored document untouched.
     features = COALESCE(sqlc.narg(features)::jsonb, features),
     is_active = COALESCE(sqlc.narg(is_active), is_active),
+    -- entitlements are the feature codes the API enforces; NULL leaves them.
+    entitlements = COALESCE(sqlc.narg(entitlements)::text[], entitlements),
     updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
@@ -75,3 +77,38 @@ SELECT
     (SELECT COUNT(*) FROM subscriptions s WHERE s.plan_id = p.id AND s.status IN ('TRIAL', 'ACTIVE'))::bigint AS active_subscriptions
 FROM plans p
 ORDER BY p.price ASC, p.name ASC;
+
+-- name: GetTenantPlanLimits :one
+-- What the tenant's plan allows: limits and enforced feature codes. One row per
+-- tenant; loaded with the rest of the request's tenant context.
+SELECT p.name, p.max_staff, p.max_products, p.entitlements
+FROM tenants t
+-- A tenant with no plan_id yet is treated as TRIAL, the same default the
+-- tenet_architecture migration backfilled with.
+JOIN plans p ON p.id = COALESCE(t.plan_id, (SELECT id FROM plans WHERE name = 'TRIAL' LIMIT 1))
+WHERE t.id = sqlc.arg(tenant_id);
+
+-- name: CheapestPlanWithEntitlement :one
+-- The plan to point an upgrade prompt at: the cheapest active plan that carries
+-- the feature AND costs more than the plan the business is on. A prompt that
+-- said "upgrade" to a cheaper plan would be wrong; no row means "nothing to
+-- upgrade to", and the caller drops the suggestion.
+SELECT name FROM plans
+WHERE is_active = TRUE
+  AND sqlc.arg(code)::text = ANY (entitlements)
+  AND price > COALESCE((SELECT p.price FROM plans p WHERE p.name = sqlc.arg(current_plan)::text), -1)
+ORDER BY price ASC, name ASC
+LIMIT 1;
+
+-- name: CheapestPlanWithCapacity :one
+-- Cheapest active plan that allows more than `needed` of the resource and costs
+-- more than the current plan (same rule as above).
+SELECT name FROM plans
+WHERE is_active = TRUE
+  AND CASE sqlc.arg(resource)::text
+        WHEN 'staff' THEN max_staff
+        ELSE max_products
+      END > sqlc.arg(needed)::int
+  AND price > COALESCE((SELECT p.price FROM plans p WHERE p.name = sqlc.arg(current_plan)::text), -1)
+ORDER BY price ASC, name ASC
+LIMIT 1;

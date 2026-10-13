@@ -3,12 +3,14 @@ package tables
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -36,7 +38,7 @@ var transitions = map[string][]string{
 	StatusCleaning:  {StatusAvailable},
 }
 
-func canTransition(from, to string) bool {
+func CanTransition(from, to string) bool {
 	for _, allowed := range transitions[from] {
 		if allowed == to {
 			return true
@@ -142,14 +144,19 @@ func (h *Handler) SetStatus(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusNotFound, "not_found", "table not found")
 		return
 	}
-	if !canTransition(current.Status, req.Status) {
+	if !CanTransition(current.Status, req.Status) {
 		response.Error(w, http.StatusConflict, "invalid_transition",
 			fmt.Sprintf("cannot move a table from %s to %s", current.Status, req.Status))
 		return
 	}
+	// Compare-and-swap on the status validated above (see orders.Move).
 	t, err := h.q.UpdateTableStatus(r.Context(), sqlc.UpdateTableStatusParams{
-		ID: current.ID, TenantID: pgutil.UUID(tid), Status: req.Status,
+		ID: current.ID, TenantID: pgutil.UUID(tid), Status: req.Status, ExpectedStatus: current.Status,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
+		return
+	}
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not update table")
 		return

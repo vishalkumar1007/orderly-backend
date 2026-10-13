@@ -50,7 +50,7 @@ const confirmPayment = `-- name: ConfirmPayment :one
 UPDATE payments
 SET status = 'PAID', paid_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
 `
 
 type ConfirmPaymentParams struct {
@@ -78,6 +78,11 @@ func (q *Queries) ConfirmPayment(ctx context.Context, arg ConfirmPaymentParams) 
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -223,7 +228,7 @@ INSERT INTO payments (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
 `
 
 type CreatePaymentParams struct {
@@ -264,6 +269,11 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -280,6 +290,45 @@ ON CONFLICT (tenant_id) DO NOTHING
 func (q *Queries) EnsureOrderCounter(ctx context.Context, tenantID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, ensureOrderCounter, tenantID)
 	return err
+}
+
+const finishPaymentEvent = `-- name: FinishPaymentEvent :exec
+UPDATE payment_events
+SET processed_at = now(), error = $2
+WHERE id = $1
+`
+
+type FinishPaymentEventParams struct {
+	ID    pgtype.UUID `json:"id"`
+	Error string      `json:"error"`
+}
+
+func (q *Queries) FinishPaymentEvent(ctx context.Context, arg FinishPaymentEventParams) error {
+	_, err := q.db.Exec(ctx, finishPaymentEvent, arg.ID, arg.Error)
+	return err
+}
+
+const getLatestPaymentRefund = `-- name: GetLatestPaymentRefund :one
+SELECT id, tenant_id, payment_id, amount, reason, status, gateway_refund_id, error, created_at, updated_at, provider_payment_id FROM payment_refunds WHERE payment_id = $1 ORDER BY created_at DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestPaymentRefund(ctx context.Context, paymentID pgtype.UUID) (PaymentRefund, error) {
+	row := q.db.QueryRow(ctx, getLatestPaymentRefund, paymentID)
+	var i PaymentRefund
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.PaymentID,
+		&i.Amount,
+		&i.Reason,
+		&i.Status,
+		&i.GatewayRefundID,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProviderPaymentID,
+	)
+	return i, err
 }
 
 const getOrderByClientToken = `-- name: GetOrderByClientToken :one
@@ -472,7 +521,7 @@ func (q *Queries) GetOrderByTenantNumberAndPhone(ctx context.Context, arg GetOrd
 }
 
 const getPaymentByID = `-- name: GetPaymentByID :one
-SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose FROM payments
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -502,12 +551,17 @@ func (q *Queries) GetPaymentByID(ctx context.Context, arg GetPaymentByIDParams) 
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
 const getPaymentByOrderID = `-- name: GetPaymentByOrderID :one
-SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose FROM payments
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
 WHERE order_id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -537,8 +591,328 @@ func (q *Queries) GetPaymentByOrderID(ctx context.Context, arg GetPaymentByOrder
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
+}
+
+const getPaymentByProviderOrder = `-- name: GetPaymentByProviderOrder :one
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
+WHERE (payments.provider = $1 AND payments.provider_order_id = $2 AND payments.provider_order_id <> '')
+   OR payments.id IN (
+       SELECT a.payment_id FROM payment_attempts a WHERE a.provider = $1 AND a.provider_order_id = $2)
+LIMIT 1
+`
+
+type GetPaymentByProviderOrderParams struct {
+	Provider        string `json:"provider"`
+	ProviderOrderID string `json:"provider_order_id"`
+}
+
+// A payment is found by any gateway order it ever had, so a late capture of an
+// earlier attempt still reaches the right payment.
+func (q *Queries) GetPaymentByProviderOrder(ctx context.Context, arg GetPaymentByProviderOrderParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, getPaymentByProviderOrder, arg.Provider, arg.ProviderOrderID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const getPaymentByProviderPayment = `-- name: GetPaymentByProviderPayment :one
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
+WHERE provider = $1 AND provider_payment_id = $2 AND provider_payment_id <> ''
+LIMIT 1
+`
+
+type GetPaymentByProviderPaymentParams struct {
+	Provider          string `json:"provider"`
+	ProviderPaymentID string `json:"provider_payment_id"`
+}
+
+func (q *Queries) GetPaymentByProviderPayment(ctx context.Context, arg GetPaymentByProviderPaymentParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, getPaymentByProviderPayment, arg.Provider, arg.ProviderPaymentID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const getPaymentRefund = `-- name: GetPaymentRefund :one
+SELECT id, tenant_id, payment_id, amount, reason, status, gateway_refund_id, error, created_at, updated_at, provider_payment_id FROM payment_refunds WHERE id = $1
+`
+
+func (q *Queries) GetPaymentRefund(ctx context.Context, id pgtype.UUID) (PaymentRefund, error) {
+	row := q.db.QueryRow(ctx, getPaymentRefund, id)
+	var i PaymentRefund
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.PaymentID,
+		&i.Amount,
+		&i.Reason,
+		&i.Status,
+		&i.GatewayRefundID,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProviderPaymentID,
+	)
+	return i, err
+}
+
+const getPaymentRefundByGatewayID = `-- name: GetPaymentRefundByGatewayID :one
+SELECT id, tenant_id, payment_id, amount, reason, status, gateway_refund_id, error, created_at, updated_at, provider_payment_id FROM payment_refunds WHERE gateway_refund_id = $1 AND gateway_refund_id <> '' LIMIT 1
+`
+
+func (q *Queries) GetPaymentRefundByGatewayID(ctx context.Context, gatewayRefundID string) (PaymentRefund, error) {
+	row := q.db.QueryRow(ctx, getPaymentRefundByGatewayID, gatewayRefundID)
+	var i PaymentRefund
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.PaymentID,
+		&i.Amount,
+		&i.Reason,
+		&i.Status,
+		&i.GatewayRefundID,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProviderPaymentID,
+	)
+	return i, err
+}
+
+const insertPaymentAttempt = `-- name: InsertPaymentAttempt :exec
+INSERT INTO payment_attempts (tenant_id, payment_id, provider, provider_order_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (provider, provider_order_id) DO NOTHING
+`
+
+type InsertPaymentAttemptParams struct {
+	TenantID        pgtype.UUID `json:"tenant_id"`
+	PaymentID       pgtype.UUID `json:"payment_id"`
+	Provider        string      `json:"provider"`
+	ProviderOrderID string      `json:"provider_order_id"`
+}
+
+func (q *Queries) InsertPaymentAttempt(ctx context.Context, arg InsertPaymentAttemptParams) error {
+	_, err := q.db.Exec(ctx, insertPaymentAttempt,
+		arg.TenantID,
+		arg.PaymentID,
+		arg.Provider,
+		arg.ProviderOrderID,
+	)
+	return err
+}
+
+const insertPaymentAudit = `-- name: InsertPaymentAudit :exec
+INSERT INTO payment_audit_log (tenant_id, payment_id, event_type, old_status, new_status, actor_type, actor_id, reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertPaymentAuditParams struct {
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	PaymentID pgtype.UUID `json:"payment_id"`
+	EventType string      `json:"event_type"`
+	OldStatus string      `json:"old_status"`
+	NewStatus string      `json:"new_status"`
+	ActorType string      `json:"actor_type"`
+	ActorID   string      `json:"actor_id"`
+	Reason    string      `json:"reason"`
+}
+
+func (q *Queries) InsertPaymentAudit(ctx context.Context, arg InsertPaymentAuditParams) error {
+	_, err := q.db.Exec(ctx, insertPaymentAudit,
+		arg.TenantID,
+		arg.PaymentID,
+		arg.EventType,
+		arg.OldStatus,
+		arg.NewStatus,
+		arg.ActorType,
+		arg.ActorID,
+		arg.Reason,
+	)
+	return err
+}
+
+const insertPaymentEvent = `-- name: InsertPaymentEvent :one
+INSERT INTO payment_events (tenant_id, payment_id, provider, event_id, type, payload)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (provider, event_id) DO NOTHING
+RETURNING id, tenant_id, payment_id, provider, event_id, type, payload, received_at, processed_at, error
+`
+
+type InsertPaymentEventParams struct {
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	PaymentID pgtype.UUID `json:"payment_id"`
+	Provider  string      `json:"provider"`
+	EventID   string      `json:"event_id"`
+	Type      string      `json:"type"`
+	Payload   []byte      `json:"payload"`
+}
+
+// Webhook replay guard: no row returned means this event was already seen.
+func (q *Queries) InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) (PaymentEvent, error) {
+	row := q.db.QueryRow(ctx, insertPaymentEvent,
+		arg.TenantID,
+		arg.PaymentID,
+		arg.Provider,
+		arg.EventID,
+		arg.Type,
+		arg.Payload,
+	)
+	var i PaymentEvent
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.PaymentID,
+		&i.Provider,
+		&i.EventID,
+		&i.Type,
+		&i.Payload,
+		&i.ReceivedAt,
+		&i.ProcessedAt,
+		&i.Error,
+	)
+	return i, err
+}
+
+const insertPaymentRefund = `-- name: InsertPaymentRefund :one
+INSERT INTO payment_refunds (tenant_id, payment_id, provider_payment_id, amount, reason)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (payment_id, provider_payment_id) WHERE status IN ('PENDING', 'COMPLETED') DO NOTHING
+RETURNING id, tenant_id, payment_id, amount, reason, status, gateway_refund_id, error, created_at, updated_at, provider_payment_id
+`
+
+type InsertPaymentRefundParams struct {
+	TenantID          pgtype.UUID    `json:"tenant_id"`
+	PaymentID         pgtype.UUID    `json:"payment_id"`
+	ProviderPaymentID string         `json:"provider_payment_id"`
+	Amount            pgtype.Numeric `json:"amount"`
+	Reason            string         `json:"reason"`
+}
+
+// No row back means a live refund for this gateway payment already exists.
+func (q *Queries) InsertPaymentRefund(ctx context.Context, arg InsertPaymentRefundParams) (PaymentRefund, error) {
+	row := q.db.QueryRow(ctx, insertPaymentRefund,
+		arg.TenantID,
+		arg.PaymentID,
+		arg.ProviderPaymentID,
+		arg.Amount,
+		arg.Reason,
+	)
+	var i PaymentRefund
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.PaymentID,
+		&i.Amount,
+		&i.Reason,
+		&i.Status,
+		&i.GatewayRefundID,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProviderPaymentID,
+	)
+	return i, err
+}
+
+const listExpiredPendingPayments = `-- name: ListExpiredPendingPayments :many
+SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
+WHERE status = 'PENDING' AND expires_at IS NOT NULL AND expires_at < now()
+ORDER BY expires_at
+LIMIT $1
+`
+
+func (q *Queries) ListExpiredPendingPayments(ctx context.Context, limit int32) ([]Payment, error) {
+	rows, err := q.db.Query(ctx, listExpiredPendingPayments, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Payment{}
+	for rows.Next() {
+		var i Payment
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.Amount,
+			&i.Method,
+			&i.Status,
+			&i.Provider,
+			&i.ProviderReference,
+			&i.PaidAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FailureReason,
+			&i.AttemptCount,
+			&i.PayableType,
+			&i.PayableID,
+			&i.Purpose,
+			&i.ProviderOrderID,
+			&i.ProviderPaymentID,
+			&i.Mode,
+			&i.Currency,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listOrderHistory = `-- name: ListOrderHistory :many
@@ -913,6 +1287,48 @@ func (q *Queries) ListOrdersByTenantAndPhone(ctx context.Context, arg ListOrders
 	return items, nil
 }
 
+const listStaleUnsentRefunds = `-- name: ListStaleUnsentRefunds :many
+SELECT id, tenant_id, payment_id, amount, reason, status, gateway_refund_id, error, created_at, updated_at, provider_payment_id FROM payment_refunds
+WHERE status = 'PENDING' AND gateway_refund_id = '' AND updated_at < now() - interval '2 minutes'
+ORDER BY updated_at
+LIMIT $1
+`
+
+// Refunds that were started but never reached the gateway (a crash or an
+// outage between recording and calling). Safe to repeat: the refund id is the
+// gateway idempotency key.
+func (q *Queries) ListStaleUnsentRefunds(ctx context.Context, limit int32) ([]PaymentRefund, error) {
+	rows, err := q.db.Query(ctx, listStaleUnsentRefunds, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PaymentRefund{}
+	for rows.Next() {
+		var i PaymentRefund
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.PaymentID,
+			&i.Amount,
+			&i.Reason,
+			&i.Status,
+			&i.GatewayRefundID,
+			&i.Error,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ProviderPaymentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTenantActivity = `-- name: ListTenantActivity :many
 SELECT
     h.id,
@@ -991,6 +1407,47 @@ func (q *Queries) ListTenantActivity(ctx context.Context, arg ListTenantActivity
 	return items, nil
 }
 
+const markPaymentExpired = `-- name: MarkPaymentExpired :one
+UPDATE payments
+SET status = 'EXPIRED', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'PENDING'
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
+`
+
+type MarkPaymentExpiredParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) MarkPaymentExpired(ctx context.Context, arg MarkPaymentExpiredParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, markPaymentExpired, arg.ID, arg.TenantID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const markPaymentFailed = `-- name: MarkPaymentFailed :one
 UPDATE payments
 SET status = 'FAILED',
@@ -998,7 +1455,7 @@ SET status = 'FAILED',
     attempt_count = attempt_count + 1,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status <> 'PAID'
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
 `
 
 type MarkPaymentFailedParams struct {
@@ -1027,6 +1484,11 @@ func (q *Queries) MarkPaymentFailed(ctx context.Context, arg MarkPaymentFailedPa
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -1038,7 +1500,7 @@ SET status = 'PAID',
     paid_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status <> 'PAID'
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
 `
 
 type MarkPaymentPaidParams struct {
@@ -1067,6 +1529,95 @@ func (q *Queries) MarkPaymentPaid(ctx context.Context, arg MarkPaymentPaidParams
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const markPaymentRefunded = `-- name: MarkPaymentRefunded :one
+UPDATE payments SET status = 'REFUNDED', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'REFUNDING'
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
+`
+
+type MarkPaymentRefundedParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) MarkPaymentRefunded(ctx context.Context, arg MarkPaymentRefundedParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, markPaymentRefunded, arg.ID, arg.TenantID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const markPaymentRefunding = `-- name: MarkPaymentRefunding :one
+
+UPDATE payments SET status = 'REFUNDING', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'PAID'
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
+`
+
+type MarkPaymentRefundingParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+// ---------------------------------------------------------------------------
+// Refunds (PAYMENTS-PLAN.md P-D)
+// ---------------------------------------------------------------------------
+func (q *Queries) MarkPaymentRefunding(ctx context.Context, arg MarkPaymentRefundingParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, markPaymentRefunding, arg.ID, arg.TenantID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -1086,6 +1637,107 @@ func (q *Queries) NextOrderNumber(ctx context.Context, tenantID pgtype.UUID) (in
 	return last_number, err
 }
 
+const revertPaymentRefunding = `-- name: RevertPaymentRefunding :one
+UPDATE payments SET status = 'PAID', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'REFUNDING'
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
+`
+
+type RevertPaymentRefundingParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+// A refund that did not happen puts the money back where it was: still paid.
+func (q *Queries) RevertPaymentRefunding(ctx context.Context, arg RevertPaymentRefundingParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, revertPaymentRefunding, arg.ID, arg.TenantID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const setPaymentIntentDetails = `-- name: SetPaymentIntentDetails :one
+
+UPDATE payments
+SET provider = $3,
+    provider_order_id = $4,
+    mode = $5,
+    expires_at = $6,
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
+`
+
+type SetPaymentIntentDetailsParams struct {
+	ID              pgtype.UUID        `json:"id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+	Provider        string             `json:"provider"`
+	ProviderOrderID string             `json:"provider_order_id"`
+	Mode            string             `json:"mode"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+}
+
+// ---------------------------------------------------------------------------
+// Payments framework (PAYMENTS-PLAN.md P-A)
+// ---------------------------------------------------------------------------
+func (q *Queries) SetPaymentIntentDetails(ctx context.Context, arg SetPaymentIntentDetailsParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, setPaymentIntentDetails,
+		arg.ID,
+		arg.TenantID,
+		arg.Provider,
+		arg.ProviderOrderID,
+		arg.Mode,
+		arg.ExpiresAt,
+	)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Method,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderReference,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.PayableType,
+		&i.PayableID,
+		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const setPaymentPending = `-- name: SetPaymentPending :one
 UPDATE payments
 SET status = 'PENDING',
@@ -1097,7 +1749,7 @@ SET status = 'PENDING',
     paid_at = NULL,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status <> 'PAID'
-RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose
+RETURNING id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at
 `
 
 type SetPaymentPendingParams struct {
@@ -1134,6 +1786,66 @@ func (q *Queries) SetPaymentPending(ctx context.Context, arg SetPaymentPendingPa
 		&i.PayableType,
 		&i.PayableID,
 		&i.Purpose,
+		&i.ProviderOrderID,
+		&i.ProviderPaymentID,
+		&i.Mode,
+		&i.Currency,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const setPaymentProviderPaymentID = `-- name: SetPaymentProviderPaymentID :exec
+UPDATE payments
+SET provider_payment_id = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND provider_payment_id = ''
+`
+
+type SetPaymentProviderPaymentIDParams struct {
+	ID                pgtype.UUID `json:"id"`
+	TenantID          pgtype.UUID `json:"tenant_id"`
+	ProviderPaymentID string      `json:"provider_payment_id"`
+}
+
+func (q *Queries) SetPaymentProviderPaymentID(ctx context.Context, arg SetPaymentProviderPaymentIDParams) error {
+	_, err := q.db.Exec(ctx, setPaymentProviderPaymentID, arg.ID, arg.TenantID, arg.ProviderPaymentID)
+	return err
+}
+
+const setPaymentRefundResult = `-- name: SetPaymentRefundResult :one
+UPDATE payment_refunds
+SET status = $2, gateway_refund_id = $3, error = $4, updated_at = now()
+WHERE id = $1
+RETURNING id, tenant_id, payment_id, amount, reason, status, gateway_refund_id, error, created_at, updated_at, provider_payment_id
+`
+
+type SetPaymentRefundResultParams struct {
+	ID              pgtype.UUID `json:"id"`
+	Status          string      `json:"status"`
+	GatewayRefundID string      `json:"gateway_refund_id"`
+	Error           string      `json:"error"`
+}
+
+func (q *Queries) SetPaymentRefundResult(ctx context.Context, arg SetPaymentRefundResultParams) (PaymentRefund, error) {
+	row := q.db.QueryRow(ctx, setPaymentRefundResult,
+		arg.ID,
+		arg.Status,
+		arg.GatewayRefundID,
+		arg.Error,
+	)
+	var i PaymentRefund
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.PaymentID,
+		&i.Amount,
+		&i.Reason,
+		&i.Status,
+		&i.GatewayRefundID,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProviderPaymentID,
 	)
 	return i, err
 }
@@ -1141,19 +1853,26 @@ func (q *Queries) SetPaymentPending(ctx context.Context, arg SetPaymentPendingPa
 const stampOrderAccepted = `-- name: StampOrderAccepted :one
 UPDATE orders
 SET status = 'ACCEPTED', accepted_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $3
 RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderAcceptedParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 // Lifecycle timestamps. Each transition stamps only the column it owns, so the
 // tracking timeline can show when the order actually reached each stage.
+//
+// Every Stamp* is a compare-and-swap on expected_status: the caller validated
+// the move against the status it read, so the write only lands if the order is
+// still in that status. Zero rows (pgx.ErrNoRows) means somebody else moved it
+// first — see orders.Move. Without this, two staff taps racing (Cancel vs
+// Prepare) could both pass validation and leave an illegal state.
 func (q *Queries) StampOrderAccepted(ctx context.Context, arg StampOrderAcceptedParams) (Order, error) {
-	row := q.db.QueryRow(ctx, stampOrderAccepted, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, stampOrderAccepted, arg.ID, arg.TenantID, arg.ExpectedStatus)
 	var i Order
 	err := row.Scan(
 		&i.ID,
@@ -1190,18 +1909,24 @@ func (q *Queries) StampOrderAccepted(ctx context.Context, arg StampOrderAccepted
 const stampOrderCancelled = `-- name: StampOrderCancelled :one
 UPDATE orders
 SET status = 'CANCELLED', cancelled_at = now(), cancel_reason = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderCancelledParams struct {
-	ID           pgtype.UUID `json:"id"`
-	TenantID     pgtype.UUID `json:"tenant_id"`
-	CancelReason string      `json:"cancel_reason"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	CancelReason   string      `json:"cancel_reason"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) StampOrderCancelled(ctx context.Context, arg StampOrderCancelledParams) (Order, error) {
-	row := q.db.QueryRow(ctx, stampOrderCancelled, arg.ID, arg.TenantID, arg.CancelReason)
+	row := q.db.QueryRow(ctx, stampOrderCancelled,
+		arg.ID,
+		arg.TenantID,
+		arg.CancelReason,
+		arg.ExpectedStatus,
+	)
 	var i Order
 	err := row.Scan(
 		&i.ID,
@@ -1238,17 +1963,18 @@ func (q *Queries) StampOrderCancelled(ctx context.Context, arg StampOrderCancell
 const stampOrderCompleted = `-- name: StampOrderCompleted :one
 UPDATE orders
 SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $3
 RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderCompletedParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) StampOrderCompleted(ctx context.Context, arg StampOrderCompletedParams) (Order, error) {
-	row := q.db.QueryRow(ctx, stampOrderCompleted, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, stampOrderCompleted, arg.ID, arg.TenantID, arg.ExpectedStatus)
 	var i Order
 	err := row.Scan(
 		&i.ID,
@@ -1285,17 +2011,18 @@ func (q *Queries) StampOrderCompleted(ctx context.Context, arg StampOrderComplet
 const stampOrderPreparing = `-- name: StampOrderPreparing :one
 UPDATE orders
 SET status = 'PREPARING', preparing_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $3
 RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderPreparingParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) StampOrderPreparing(ctx context.Context, arg StampOrderPreparingParams) (Order, error) {
-	row := q.db.QueryRow(ctx, stampOrderPreparing, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, stampOrderPreparing, arg.ID, arg.TenantID, arg.ExpectedStatus)
 	var i Order
 	err := row.Scan(
 		&i.ID,
@@ -1332,17 +2059,18 @@ func (q *Queries) StampOrderPreparing(ctx context.Context, arg StampOrderPrepari
 const stampOrderReady = `-- name: StampOrderReady :one
 UPDATE orders
 SET status = 'READY', ready_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $3
 RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
 `
 
 type StampOrderReadyParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) StampOrderReady(ctx context.Context, arg StampOrderReadyParams) (Order, error) {
-	row := q.db.QueryRow(ctx, stampOrderReady, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, stampOrderReady, arg.ID, arg.TenantID, arg.ExpectedStatus)
 	var i Order
 	err := row.Scan(
 		&i.ID,
@@ -1379,7 +2107,7 @@ func (q *Queries) StampOrderReady(ctx context.Context, arg StampOrderReadyParams
 const summarizeOrderHistory = `-- name: SummarizeOrderHistory :one
 SELECT
     COUNT(*)::bigint AS total_orders,
-    COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' THEN o.total ELSE 0 END), 0)::text AS total_revenue,
+    COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' AND NOT order_excluded_from_revenue(o.id) THEN o.total ELSE 0 END), 0)::text AS total_revenue,
     COUNT(*) FILTER (WHERE o.status = 'COMPLETED')::bigint AS completed,
     COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint AS cancelled
 FROM orders o
@@ -1437,7 +2165,7 @@ func (q *Queries) SummarizeOrderHistory(ctx context.Context, arg SummarizeOrderH
 const tenantDashboardStats = `-- name: TenantDashboardStats :one
 SELECT
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = $1 AND o.created_at >= date_trunc('day', now())) AS orders_today,
-    COALESCE((SELECT SUM(o.total) FROM orders o WHERE o.tenant_id = $1 AND o.created_at >= date_trunc('day', now()) AND o.status = 'COMPLETED'), 0)::text AS revenue_today,
+    COALESCE((SELECT SUM(o.total) FROM orders o WHERE o.tenant_id = $1 AND o.created_at >= date_trunc('day', now()) AND o.status = 'COMPLETED' AND NOT order_excluded_from_revenue(o.id)), 0)::text AS revenue_today,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = $1 AND o.status = 'PENDING') AS pending_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = $1 AND o.status = 'PREPARING') AS preparing_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = $1 AND o.status = 'READY') AS ready_orders,

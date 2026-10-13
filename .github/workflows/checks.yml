@@ -1,0 +1,66 @@
+name: Checks
+
+# Runs the whole backend test suite, including the database-backed tests, on a
+# fresh PostgreSQL built from the migrations — the same thing a new developer or a
+# new environment gets. Before this existed, nothing ran the tests before a push
+# to main deployed (see ci-deploy.yml).
+#
+# To make it a gate rather than a report: in the repository settings, require the
+# "Backend checks" status on main, so a failing run blocks the merge and the
+# deploy that follows it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orderly
+          POSTGRES_PASSWORD: orderly
+          POSTGRES_DB: orderly
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U orderly -d orderly"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://orderly:orderly@localhost:5432/orderly?sslmode=disable
+      # A throwaway key for a throwaway database; not a secret.
+      CONFIG_ENCRYPTION_KEY: ci-test-key-0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Apply migrations to a fresh database
+        run: go run github.com/pressly/goose/v3/cmd/goose@v3.24.1 -dir db/migrations postgres "$DATABASE_URL" up
+      - name: Test (database-backed tests included)
+        # -p 1: the integration tests share one database and snapshot/restore
+        # shared configuration tables, so packages must not run at the same time.
+        run: go test -p 1 -count=1 ./...
+      - name: Build
+        run: go build -o /dev/null ./cmd/server
+      - name: Backup tooling self-test
+        # Proves backups restore and that damaged backups are refused. Runs the
+        # tools inside the Postgres service container, as production does.
+        run: |
+          docker ps --filter "ancestor=postgres:16-alpine" --format '{{.Names}}' | head -1 | tee /tmp/pgname
+          PG_CONTAINER="$(cat /tmp/pgname)" scripts/backup-selftest.sh

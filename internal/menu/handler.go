@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/internal/publicurl"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/identity"
@@ -335,6 +336,9 @@ func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid price")
 		return
 	}
+	if !entitlement.Allow(w, r, h.q, pgutil.UUID(tenantID(r)), entitlement.Products) {
+		return
+	}
 	sortOrder := int32(0)
 	if req.SortOrder != nil {
 		sortOrder = *req.SortOrder
@@ -472,6 +476,13 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusNotFound, "not_found", "product not found")
 		return
 	}
+	if req.IsAvailable != nil {
+		// A hand-set availability overrides inventory's auto-hide, so a later
+		// restock must not flip it back.
+		_ = h.q.ClearInventoryAutoDisabled(r.Context(), sqlc.ClearInventoryAutoDisabledParams{
+			TenantID: p.TenantID, ProductID: p.ID,
+		})
+	}
 	response.JSON(w, http.StatusOK, productJSON(p))
 }
 
@@ -486,6 +497,9 @@ func (h *Handler) DuplicateProduct(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "product not found")
+		return
+	}
+	if !entitlement.Allow(w, r, h.q, pgutil.UUID(tenantID(r)), entitlement.Products) {
 		return
 	}
 	name := "Copy of " + src.Name

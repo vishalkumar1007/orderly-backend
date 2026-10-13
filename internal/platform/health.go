@@ -58,14 +58,18 @@ func (h *Handler) SystemHealth(w http.ResponseWriter, r *http.Request) {
 		h.databaseComponent(ctx),
 	}
 	components = append(components, h.providerComponents(ctx)...)
-	components = append(components,
-		healthComponent{
+	// Payments is a real provider now (listed above); only fall back to the
+	// "none deployed" note when it is not, so the id is never listed twice.
+	if !hasComponent(components, "payments") {
+		components = append(components, healthComponent{
 			ID:     "payments",
 			Name:   "Payments",
 			Group:  "Providers",
 			Status: healthUnavailable,
 			Detail: "No platform payment gateway. Each business chooses cash or online at pickup in its own storefront settings.",
-		},
+		})
+	}
+	components = append(components,
 		healthComponent{
 			ID:     "background",
 			Name:   "Background processing",
@@ -141,9 +145,11 @@ func (h *Handler) databaseComponent(ctx context.Context) healthComponent {
 // configuration stack is the source of truth; this never reads a secret.
 func (h *Handler) providerComponents(ctx context.Context) []healthComponent {
 	meta := map[configsvc.ServiceType]struct{ name, detailNoun string }{
-		configsvc.ServiceSMTP:    {"Email", "Outbound email"},
-		configsvc.ServiceStorage: {"Storage", "Object storage"},
-		configsvc.ServiceAI:      {"AI", "The AI provider"},
+		configsvc.ServiceSMTP:     {"Email", "Outbound email"},
+		configsvc.ServiceStorage:  {"Storage", "Object storage"},
+		configsvc.ServiceAI:       {"AI", "The AI provider"},
+		configsvc.ServiceSMS:      {"SMS", "Outbound SMS"},
+		configsvc.ServicePayments: {"Payments", "The payment gateway"},
 	}
 
 	out := make([]healthComponent, 0, len(configsvc.AllServices))
@@ -278,4 +284,13 @@ func lower(s string) string {
 		}
 	}
 	return string(out)
+}
+
+func hasComponent(cs []healthComponent, id string) bool {
+	for _, c := range cs {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
 }

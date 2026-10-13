@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -52,6 +53,20 @@ type Info struct {
 	IsPublished   bool
 	BusinessType  string
 	LicenseStatus string
+	// LicenseState is ACTIVE, or GRACE once expires_at has passed but the
+	// template's grace period has not. Anything else never reaches a handler.
+	LicenseState string
+	// LicenseExpiresAt / LicenseGraceEndsAt are nil for a license that never
+	// expires (it renews with the subscription).
+	LicenseExpiresAt   *time.Time
+	LicenseGraceEndsAt *time.Time
+	// Plan is the tenant's plan: its name, hard limits and the feature codes
+	// the API enforces (plans.entitlements). Loaded with the tenant so
+	// RequireFeature is a context check, like RequireCapability.
+	Plan         string
+	MaxStaff     int
+	MaxProducts  int
+	Entitlements map[string]bool
 	// Capabilities is the tenant's enabled capability set, loaded once per
 	// request from tenant_capabilities. RequireCapability reads it; nothing
 	// else should query tenant_capabilities per-request.
@@ -62,6 +77,11 @@ type Info struct {
 // call on a zero-value Info (e.g. a host with no resolved tenant).
 func (i Info) HasCapability(code string) bool {
 	return i.Capabilities[code]
+}
+
+// HasEntitlement reports whether the tenant's plan carries a feature code.
+func (i Info) HasEntitlement(code string) bool {
+	return i.Entitlements[code]
 }
 
 // Capability codes. This is the exact set seeded in business_type_capabilities
@@ -291,12 +311,17 @@ func loadTenantGates(ctx context.Context, q *sqlc.Queries, row sqlc.Tenant) (*In
 	if row.Status == "SUSPENDED" {
 		return nil, errTenantSuspended
 	}
-	licenseStatus, err := q.GetTenantLicenseStatus(ctx, row.ID)
+	terms, err := q.GetTenantLicenseTerms(ctx, row.ID)
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}
-	if licenseStatus != "ACTIVE" {
-		return nil, errLicenseInactive
+	var expires *time.Time
+	if terms.ExpiresAt.Valid {
+		expires = &terms.ExpiresAt.Time
+	}
+	state, graceEnds, blocked := EvaluateLicense(terms.Status, expires, int(terms.GracePeriodDays), time.Now())
+	if blocked != "" {
+		return nil, &LicenseBlockedError{State: blocked}
 	}
 	capRows, err := q.ListEnabledCapabilities(ctx, row.ID)
 	if err != nil {
@@ -306,14 +331,80 @@ func loadTenantGates(ctx context.Context, q *sqlc.Queries, row sqlc.Tenant) (*In
 	for _, c := range capRows {
 		caps[c] = true
 	}
-	info := infoFromTenantRow(row, licenseStatus, caps)
+	plan, err := q.GetTenantPlanLimits(ctx, row.ID)
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+	ents := make(map[string]bool, len(plan.Entitlements))
+	for _, e := range plan.Entitlements {
+		ents[e] = true
+	}
+	info := infoFromTenantRow(row, terms.Status, caps)
+	info.LicenseState = state
+	info.LicenseExpiresAt = expires
+	info.LicenseGraceEndsAt = graceEnds
+	info.Plan = plan.Name
+	info.MaxStaff = int(plan.MaxStaff)
+	info.MaxProducts = int(plan.MaxProducts)
+	info.Entitlements = ents
 	return &info, nil
 }
 
-var (
-	errTenantSuspended = errors.New("tenant suspended")
-	errLicenseInactive = errors.New("license inactive")
+// License states a request can be blocked with (LicenseBlockedError.State).
+const (
+	LicenseActive    = "ACTIVE"
+	LicenseGrace     = "GRACE"
+	LicenseDraft     = "DRAFT"
+	LicenseSuspended = "SUSPENDED"
+	LicenseExpired   = "EXPIRED"
+	LicenseRevoked   = "REVOKED"
 )
+
+// EvaluateLicense turns a licenses row into what the gate does with it.
+//
+// state is ACTIVE or GRACE for a request that may proceed; blocked is the
+// reason otherwise (SUSPENDED, REVOKED, DRAFT, EXPIRED). A stored ACTIVE
+// license past expires_at keeps working through the template's grace period
+// (GRACE, so the owner can be told) and is EXPIRED after it. Nothing has to
+// flip the row for expiry to take effect.
+func EvaluateLicense(status string, expiresAt *time.Time, graceDays int, now time.Time) (state string, graceEnds *time.Time, blocked string) {
+	switch status {
+	case "ACTIVE":
+	case "SUSPENDED", "REVOKED", "EXPIRED", "DRAFT":
+		return "", nil, status
+	default:
+		// No licence row at all: treated as DRAFT, i.e. not yet issued.
+		return "", nil, LicenseDraft
+	}
+	if expiresAt == nil || now.Before(*expiresAt) {
+		return LicenseActive, nil, ""
+	}
+	end := expiresAt.AddDate(0, 0, graceDays)
+	if now.Before(end) {
+		return LicenseGrace, &end, ""
+	}
+	return "", nil, LicenseExpired
+}
+
+// LicenseBlockedError is returned when the tenant's license does not allow
+// requests. State says why, so the console can tell an owner whose license
+// expired from one whose was suspended.
+type LicenseBlockedError struct{ State string }
+
+func (e *LicenseBlockedError) Error() string { return "license " + strings.ToLower(e.State) }
+
+func (e *LicenseBlockedError) message() string {
+	switch e.State {
+	case LicenseExpired:
+		return "This business's license has expired. Contact the platform administrator to renew it."
+	case LicenseSuspended:
+		return "This business's license is suspended. Contact the platform administrator."
+	default:
+		return "This business's license is not active. Contact the platform administrator."
+	}
+}
+
+var errTenantSuspended = errors.New("tenant suspended")
 
 // Middleware resolves tenant from Host, X-Tenant-Slug, or Origin.
 // Platform API hosts with no slug pass through without a tenant context.
@@ -321,6 +412,13 @@ func Middleware(pool *pgxpool.Pool, baseDomain string) func(http.Handler) http.H
 	q := sqlc.New(pool)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Liveness/readiness belong to the process, not to a tenant: a monitor
+			// pointed at a tenant-style host must not read "unknown tenant" or
+			// "suspended" as "the API is down".
+			if isHealthPath(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			hostInfo := ResolveTenantBinding(r, baseDomain)
 			ctx := WithHost(r.Context(), hostInfo)
 
@@ -339,8 +437,10 @@ func Middleware(pool *pgxpool.Pool, baseDomain string) func(http.Handler) http.H
 					response.Error(w, http.StatusForbidden, "tenant_suspended", "this shop is suspended")
 					return
 				}
-				if err == errLicenseInactive {
-					response.Error(w, http.StatusForbidden, "license_inactive", "this business's license is not active")
+				var blocked *LicenseBlockedError
+				if errors.As(err, &blocked) {
+					response.ErrorWithDetails(w, http.StatusForbidden, "license_inactive", blocked.message(),
+						map[string]any{"state": blocked.State})
 					return
 				}
 				response.Error(w, http.StatusInternalServerError, "internal_error", "failed to resolve tenant")
@@ -349,6 +449,10 @@ func Middleware(pool *pgxpool.Pool, baseDomain string) func(http.Handler) http.H
 			next.ServeHTTP(w, r.WithContext(WithTenant(ctx, *info)))
 		})
 	}
+}
+
+func isHealthPath(p string) bool {
+	return p == "/health" || strings.HasPrefix(p, "/health/")
 }
 
 // RequireCapability guards a route with a business capability rather than a

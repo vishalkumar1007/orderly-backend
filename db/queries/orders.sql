@@ -72,34 +72,40 @@ RETURNING *;
 
 -- Lifecycle timestamps. Each transition stamps only the column it owns, so the
 -- tracking timeline can show when the order actually reached each stage.
+--
+-- Every Stamp* is a compare-and-swap on expected_status: the caller validated
+-- the move against the status it read, so the write only lands if the order is
+-- still in that status. Zero rows (pgx.ErrNoRows) means somebody else moved it
+-- first — see orders.Move. Without this, two staff taps racing (Cancel vs
+-- Prepare) could both pass validation and leave an illegal state.
 -- name: StampOrderAccepted :one
 UPDATE orders
 SET status = 'ACCEPTED', accepted_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: StampOrderPreparing :one
 UPDATE orders
 SET status = 'PREPARING', preparing_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: StampOrderReady :one
 UPDATE orders
 SET status = 'READY', ready_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: StampOrderCompleted :one
 UPDATE orders
 SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: StampOrderCancelled :one
 UPDATE orders
 SET status = 'CANCELLED', cancelled_at = now(), cancel_reason = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: AppendOrderStatusHistory :one
@@ -188,7 +194,7 @@ RETURNING *;
 -- name: TenantDashboardStats :one
 SELECT
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.created_at >= date_trunc('day', now())) AS orders_today,
-    COALESCE((SELECT SUM(o.total) FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.created_at >= date_trunc('day', now()) AND o.status = 'COMPLETED'), 0)::text AS revenue_today,
+    COALESCE((SELECT SUM(o.total) FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.created_at >= date_trunc('day', now()) AND o.status = 'COMPLETED' AND NOT order_excluded_from_revenue(o.id)), 0)::text AS revenue_today,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'PENDING') AS pending_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'PREPARING') AS preparing_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'READY') AS ready_orders,
@@ -235,7 +241,7 @@ LIMIT sqlc.arg(row_limit) OFFSET sqlc.arg(row_offset);
 -- name: SummarizeOrderHistory :one
 SELECT
     COUNT(*)::bigint AS total_orders,
-    COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' THEN o.total ELSE 0 END), 0)::text AS total_revenue,
+    COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' AND NOT order_excluded_from_revenue(o.id) THEN o.total ELSE 0 END), 0)::text AS total_revenue,
     COUNT(*) FILTER (WHERE o.status = 'COMPLETED')::bigint AS completed,
     COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint AS cancelled
 FROM orders o
@@ -275,3 +281,120 @@ WHERE h.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(to_status)::text IS NULL OR h.to_status = sqlc.narg(to_status)::text)
 ORDER BY h.created_at DESC
 LIMIT sqlc.arg(row_limit);
+
+-- ---------------------------------------------------------------------------
+-- Payments framework (PAYMENTS-PLAN.md P-A)
+-- ---------------------------------------------------------------------------
+
+-- name: SetPaymentIntentDetails :one
+UPDATE payments
+SET provider = $3,
+    provider_order_id = $4,
+    mode = $5,
+    expires_at = $6,
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
+-- A payment is found by any gateway order it ever had, so a late capture of an
+-- earlier attempt still reaches the right payment.
+-- name: GetPaymentByProviderOrder :one
+SELECT * FROM payments
+WHERE (payments.provider = $1 AND payments.provider_order_id = $2 AND payments.provider_order_id <> '')
+   OR payments.id IN (
+       SELECT a.payment_id FROM payment_attempts a WHERE a.provider = $1 AND a.provider_order_id = $2)
+LIMIT 1;
+
+-- name: InsertPaymentAttempt :exec
+INSERT INTO payment_attempts (tenant_id, payment_id, provider, provider_order_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (provider, provider_order_id) DO NOTHING;
+
+-- name: MarkPaymentExpired :one
+UPDATE payments
+SET status = 'EXPIRED', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'PENDING'
+RETURNING *;
+
+-- name: ListExpiredPendingPayments :many
+SELECT * FROM payments
+WHERE status = 'PENDING' AND expires_at IS NOT NULL AND expires_at < now()
+ORDER BY expires_at
+LIMIT $1;
+
+-- Webhook replay guard: no row returned means this event was already seen.
+-- name: InsertPaymentEvent :one
+INSERT INTO payment_events (tenant_id, payment_id, provider, event_id, type, payload)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (provider, event_id) DO NOTHING
+RETURNING *;
+
+-- name: FinishPaymentEvent :exec
+UPDATE payment_events
+SET processed_at = now(), error = $2
+WHERE id = $1;
+
+-- name: InsertPaymentAudit :exec
+INSERT INTO payment_audit_log (tenant_id, payment_id, event_type, old_status, new_status, actor_type, actor_id, reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: SetPaymentProviderPaymentID :exec
+UPDATE payments
+SET provider_payment_id = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND provider_payment_id = '';
+
+-- ---------------------------------------------------------------------------
+-- Refunds (PAYMENTS-PLAN.md P-D)
+-- ---------------------------------------------------------------------------
+
+-- name: MarkPaymentRefunding :one
+UPDATE payments SET status = 'REFUNDING', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'PAID'
+RETURNING *;
+
+-- name: MarkPaymentRefunded :one
+UPDATE payments SET status = 'REFUNDED', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'REFUNDING'
+RETURNING *;
+
+-- A refund that did not happen puts the money back where it was: still paid.
+-- name: RevertPaymentRefunding :one
+UPDATE payments SET status = 'PAID', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'REFUNDING'
+RETURNING *;
+
+-- No row back means a live refund for this gateway payment already exists.
+-- name: InsertPaymentRefund :one
+INSERT INTO payment_refunds (tenant_id, payment_id, provider_payment_id, amount, reason)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (payment_id, provider_payment_id) WHERE status IN ('PENDING', 'COMPLETED') DO NOTHING
+RETURNING *;
+
+-- name: SetPaymentRefundResult :one
+UPDATE payment_refunds
+SET status = $2, gateway_refund_id = $3, error = $4, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: GetPaymentRefund :one
+SELECT * FROM payment_refunds WHERE id = $1;
+
+-- name: GetPaymentRefundByGatewayID :one
+SELECT * FROM payment_refunds WHERE gateway_refund_id = $1 AND gateway_refund_id <> '' LIMIT 1;
+
+-- name: GetLatestPaymentRefund :one
+SELECT * FROM payment_refunds WHERE payment_id = $1 ORDER BY created_at DESC LIMIT 1;
+
+-- Refunds that were started but never reached the gateway (a crash or an
+-- outage between recording and calling). Safe to repeat: the refund id is the
+-- gateway idempotency key.
+-- name: ListStaleUnsentRefunds :many
+SELECT * FROM payment_refunds
+WHERE status = 'PENDING' AND gateway_refund_id = '' AND updated_at < now() - interval '2 minutes'
+ORDER BY updated_at
+LIMIT $1;
+
+-- name: GetPaymentByProviderPayment :one
+SELECT * FROM payments
+WHERE provider = $1 AND provider_payment_id = $2 AND provider_payment_id <> ''
+LIMIT 1;

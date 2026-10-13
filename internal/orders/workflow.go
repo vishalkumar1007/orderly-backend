@@ -1,6 +1,10 @@
 package orders
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/orderly/orderly-backend/internal/payable"
+)
 
 // Order lifecycle states. The set is closed and the legal moves are fixed in
 // allowedTransitions below. Tenant configuration can only tune behaviour around
@@ -16,10 +20,10 @@ const (
 
 // Payment states. Only the backend moves these.
 const (
-	PaymentPending  = "PENDING"
-	PaymentPaid     = "PAID"
-	PaymentFailed   = "FAILED"
-	PaymentRefunded = "REFUNDED"
+	PaymentPending  = payable.StatusPending
+	PaymentPaid     = payable.StatusPaid
+	PaymentFailed   = payable.StatusFailed
+	PaymentRefunded = payable.StatusRefunded
 )
 
 // Order type. Delivery is deliberately not part of this build.
@@ -169,6 +173,10 @@ type ErrInvalidTransition struct {
 	To      string
 	Reason  string
 	Allowed []string
+	// Stale means the move was legal when validated but the order changed
+	// before the write landed (a concurrent update), not that the move was
+	// illegal. Callers that can safely re-read use it to recover.
+	Stale bool
 }
 
 func (e *ErrInvalidTransition) Error() string {

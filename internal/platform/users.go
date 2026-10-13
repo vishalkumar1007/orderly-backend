@@ -16,6 +16,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
+	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
@@ -195,6 +196,10 @@ func (h *Handler) createUserFor(w http.ResponseWriter, r *http.Request, req crea
 		return
 	}
 
+	if !entitlement.Allow(w, r, h.q, tuid, entitlement.Staff) {
+		return
+	}
+
 	inviteToken, err := randomToken(32)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to create invite")
@@ -269,6 +274,12 @@ func (h *Handler) UpdateTenantUser(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusBadRequest, errBadUserStatus.Error(), errBadUserStatus.Error())
 			return
 		}
+	}
+
+	// Re-enabling a user takes a seat again, so it counts against the plan.
+	if current.Status == "DISABLED" && nextStatus == "ACTIVE" &&
+		!entitlement.Allow(w, r, h.q, pgutil.UUID(tenantUUID), entitlement.Staff) {
+		return
 	}
 
 	// Never let a tenant be left with nobody who can administer it.

@@ -72,9 +72,9 @@ SELECT
     (SELECT COUNT(*)::bigint FROM subscriptions WHERE status = 'TRIAL') AS trial_tenants,
     (SELECT COUNT(*)::bigint FROM tenants WHERE setup_status <> 'COMPLETED') AS pending_setup,
     (SELECT COUNT(*)::bigint FROM orders) AS total_orders,
-    COALESCE((SELECT SUM(total) FROM orders WHERE status = 'COMPLETED'), 0)::text AS total_revenue,
+    COALESCE((SELECT SUM(total) FROM orders WHERE status <> 'CANCELLED'), 0)::text AS total_revenue,
     (SELECT COUNT(*)::bigint FROM orders WHERE created_at >= date_trunc('day', now())) AS orders_today,
-    COALESCE((SELECT SUM(total) FROM orders WHERE created_at >= date_trunc('day', now())), 0)::text AS order_value_today,
+    COALESCE((SELECT SUM(total) FROM orders WHERE status <> 'CANCELLED' AND created_at >= date_trunc('day', now())), 0)::text AS order_value_today,
     (SELECT COUNT(*)::bigint FROM users WHERE tenant_id IS NOT NULL AND status = 'ACTIVE') AS active_users;
 
 -- name: ListTenantsWithPlans :many

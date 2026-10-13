@@ -78,7 +78,7 @@ const tenantOrdersByDayRange = `-- name: TenantOrdersByDayRange :many
 SELECT
     date_trunc('day', created_at)::date AS day,
     COUNT(*)::bigint AS order_count,
-    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' THEN total ELSE 0 END), 0)::text AS revenue
+    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
 FROM orders
 WHERE tenant_id = $1
     AND created_at >= now() - $2::interval
@@ -167,13 +167,16 @@ func (q *Queries) TenantOrdersByHour(ctx context.Context, arg TenantOrdersByHour
 
 const tenantPaymentBreakdown = `-- name: TenantPaymentBreakdown :many
 SELECT
-    COALESCE(NULLIF(p.method, ''), 'UNRECORDED')::text AS method,
+    CASE WHEN p.is_test THEN 'ONLINE_TEST'
+         ELSE COALESCE(NULLIF(p.method, ''), 'UNRECORDED') END::text AS method,
     COALESCE(NULLIF(p.status, ''), 'NONE')::text AS status,
     COUNT(*)::bigint AS order_count,
     COALESCE(SUM(o.total), 0)::text AS revenue
 FROM orders o
 LEFT JOIN LATERAL (
-    SELECT method, status FROM payments
+    SELECT method, status,
+           (method = 'ONLINE' AND mode = 'SANDBOX' AND provider_order_id <> '') AS is_test
+    FROM payments
     WHERE payments.order_id = o.id
     ORDER BY created_at DESC LIMIT 1
 ) p ON TRUE
@@ -231,6 +234,7 @@ SELECT
         AND o.created_at >= date_trunc('day', now())) AS orders_today,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = $1
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status = 'COMPLETED'
         AND o.created_at >= date_trunc('day', now()))::text AS revenue_today,
     (SELECT COUNT(*)::bigint FROM orders o
@@ -239,6 +243,7 @@ SELECT
         AND o.created_at >= now() - interval '7 days') AS orders_7d,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = $1
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status <> 'CANCELLED'
         AND o.created_at >= now() - interval '7 days')::text AS revenue_7d,
     (SELECT COUNT(*)::bigint FROM orders o
@@ -247,6 +252,7 @@ SELECT
         AND o.created_at >= now() - interval '30 days') AS orders_30d,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = $1
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status <> 'CANCELLED'
         AND o.created_at >= now() - interval '30 days')::text AS revenue_30d,
     -- The 30 days before that, for the trend arrow.
@@ -257,6 +263,7 @@ SELECT
         AND o.created_at < now() - interval '30 days') AS orders_prev_30d,
     (SELECT COALESCE(SUM(o.total), 0) FROM orders o
       WHERE o.tenant_id = $1
+        AND NOT order_excluded_from_revenue(o.id)
         AND o.status <> 'CANCELLED'
         AND o.created_at >= now() - interval '60 days'
         AND o.created_at < now() - interval '30 days')::text AS revenue_prev_30d,
@@ -415,6 +422,56 @@ func (q *Queries) TenantTopProducts(ctx context.Context, arg TenantTopProductsPa
 	items := []TenantTopProductsRow{}
 	for rows.Next() {
 		var i TenantTopProductsRow
+		if err := rows.Scan(&i.Name, &i.Units, &i.Revenue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const tenantTopProductsByRevenue = `-- name: TenantTopProductsByRevenue :many
+SELECT
+    p.name AS name,
+    COALESCE(SUM(oi.quantity), 0)::bigint AS units,
+    COALESCE(SUM(oi.quantity * oi.unit_price), 0)::text AS revenue
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id
+JOIN products p ON p.id = oi.product_id
+WHERE o.tenant_id = $1
+    AND o.status <> 'CANCELLED'
+    AND o.created_at >= now() - $2::interval
+GROUP BY p.id, p.name
+ORDER BY SUM(oi.quantity * oi.unit_price) DESC, SUM(oi.quantity) DESC, p.name ASC
+LIMIT $3
+`
+
+type TenantTopProductsByRevenueParams struct {
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+	RowLimit int32           `json:"row_limit"`
+}
+
+type TenantTopProductsByRevenueRow struct {
+	Name    string `json:"name"`
+	Units   int64  `json:"units"`
+	Revenue string `json:"revenue"`
+}
+
+// The same best-seller list ranked by the money it made rather than by how many
+// were sold: a ₹400 dish sold twice outranks a ₹10 snack sold ten times.
+func (q *Queries) TenantTopProductsByRevenue(ctx context.Context, arg TenantTopProductsByRevenueParams) ([]TenantTopProductsByRevenueRow, error) {
+	rows, err := q.db.Query(ctx, tenantTopProductsByRevenue, arg.TenantID, arg.Days, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TenantTopProductsByRevenueRow{}
+	for rows.Next() {
+		var i TenantTopProductsByRevenueRow
 		if err := rows.Scan(&i.Name, &i.Units, &i.Revenue); err != nil {
 			return nil, err
 		}

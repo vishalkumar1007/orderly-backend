@@ -143,18 +143,24 @@ func (q *Queries) UpdateTable(ctx context.Context, arg UpdateTableParams) (Table
 
 const updateTableStatus = `-- name: UpdateTableStatus :one
 UPDATE tables SET status = $3
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, label, seats, status, created_at
 `
 
 type UpdateTableStatusParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-	Status   string      `json:"status"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	Status         string      `json:"status"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) UpdateTableStatus(ctx context.Context, arg UpdateTableStatusParams) (Table, error) {
-	row := q.db.QueryRow(ctx, updateTableStatus, arg.ID, arg.TenantID, arg.Status)
+	row := q.db.QueryRow(ctx, updateTableStatus,
+		arg.ID,
+		arg.TenantID,
+		arg.Status,
+		arg.ExpectedStatus,
+	)
 	var i Table
 	err := row.Scan(
 		&i.ID,

@@ -19,6 +19,9 @@ var secretFields = map[ServiceType][]string{
 	ServiceStorage: {"secret_key"},
 	ServiceAI:      {"api_key"},
 	ServiceSMS:     {"auth_token"},
+	// key_secret first: it drives HasSecret. webhook_secret authenticates
+	// gateway callbacks and is checked separately by payment readiness.
+	ServicePayments: {"key_secret", "webhook_secret"},
 }
 
 // SecretKeys returns the secret field names for a service.
@@ -201,6 +204,49 @@ func (c SMSConfig) Validate() error {
 	}
 	if !strings.HasPrefix(c.FromNumber, "+") {
 		return fmt.Errorf("%w: from_number must be in E.164 format, e.g. +14155551234", ErrInvalidRequest)
+	}
+	return nil
+}
+
+/* ------------------------------------------------------------------ *
+ * Payments
+ * ------------------------------------------------------------------ */
+
+// PaymentsConfig is the non-secret half of a payment gateway configuration.
+// key_id is public (it is embedded in the checkout widget); key_secret and
+// webhook_secret are sealed.
+type PaymentsConfig struct {
+	Provider string `json:"provider"`
+	KeyID    string `json:"key_id"`
+}
+
+func (c *PaymentsConfig) applyDefaults() {
+	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
+	c.KeyID = strings.TrimSpace(c.KeyID)
+	if c.Provider == "" {
+		c.Provider = ProviderRazorpay
+	}
+}
+
+// KeyKind reports whether the key belongs to the gateway's test or live
+// environment ("test", "live", or "" when it is not recognisable).
+func (c PaymentsConfig) KeyKind() string {
+	switch {
+	case strings.HasPrefix(c.KeyID, "rzp_test_"):
+		return "test"
+	case strings.HasPrefix(c.KeyID, "rzp_live_"):
+		return "live"
+	}
+	return ""
+}
+
+// Validate checks a payment gateway configuration is usable.
+func (c PaymentsConfig) Validate() error {
+	if c.KeyID == "" {
+		return fmt.Errorf("%w: key_id is required", ErrInvalidRequest)
+	}
+	if c.KeyKind() == "" || len(c.KeyID) <= len("rzp_test_") {
+		return fmt.Errorf("%w: key_id must look like rzp_test_… or rzp_live_…", ErrInvalidRequest)
 	}
 	return nil
 }

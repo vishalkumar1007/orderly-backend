@@ -253,6 +253,27 @@ func (q *Queries) GetTenantLicenseStatus(ctx context.Context, tenantID pgtype.UU
 	return status, err
 }
 
+const getTenantLicenseTerms = `-- name: GetTenantLicenseTerms :one
+SELECT l.status, l.expires_at, lt.grace_period_days
+FROM licenses l
+JOIN license_templates lt ON lt.id = l.template_id
+WHERE l.tenant_id = $1
+`
+
+type GetTenantLicenseTermsRow struct {
+	Status          string             `json:"status"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	GracePeriodDays int32              `json:"grace_period_days"`
+}
+
+// Status plus the dates the gate needs to tell ACTIVE from GRACE from EXPIRED.
+func (q *Queries) GetTenantLicenseTerms(ctx context.Context, tenantID pgtype.UUID) (GetTenantLicenseTermsRow, error) {
+	row := q.db.QueryRow(ctx, getTenantLicenseTerms, tenantID)
+	var i GetTenantLicenseTermsRow
+	err := row.Scan(&i.Status, &i.ExpiresAt, &i.GracePeriodDays)
+	return i, err
+}
+
 const listEnabledCapabilities = `-- name: ListEnabledCapabilities :many
 
 SELECT capability_code FROM tenant_capabilities

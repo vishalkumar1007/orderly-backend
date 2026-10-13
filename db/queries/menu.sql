@@ -131,3 +131,9 @@ WHERE tenant_id = sqlc.arg(tenant_id)
   AND is_popular = TRUE
 ORDER BY sort_order ASC, name ASC
 LIMIT sqlc.arg(limit_count);
+
+-- name: CountTenantProducts :one
+-- Products in use against the plan's max_products.
+SELECT COUNT(*)::bigint
+FROM products
+WHERE tenant_id = sqlc.arg(tenant_id);

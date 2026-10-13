@@ -23,6 +23,10 @@ type PublicView struct {
 	HasSecret bool `json:"has_secret"`
 	// HasAnySecret is true when at least one secret of any name is stored.
 	HasAnySecret bool `json:"has_any_secret"`
+	// SecretsStored reports, per secret field, whether a value is stored. It is
+	// presence only, which is what lets a form say "unchanged" for each secret
+	// of a service that has more than one.
+	SecretsStored map[string]bool `json:"secrets_stored"`
 	// Status is the lifecycle badge.
 	Status Status `json:"status"`
 	// Enabled reports whether the row is switched on.
@@ -47,20 +51,21 @@ type PublicView struct {
 func NewPublicView(rec *Record, scope Source) PublicView {
 	service := rec.ServiceType
 	view := PublicView{
-		Service:      service,
-		Label:        service.Label(),
-		Scope:        scope,
-		Provider:     rec.Provider,
-		Config:       redactConfig(service, rec.Config),
-		HasSecret:    rec.HasSecret(primarySecretKey(service)),
-		HasAnySecret: rec.HasAnySecret(),
-		Status:       rec.Status,
-		Enabled:      rec.Enabled,
-		AllowTenants: rec.AllowTenants,
-		LastError:    rec.LastError,
-		SecretFields: secretFields[service],
-		Providers:    ProvidersFor(service),
-		UpdatedAt:    rec.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		Service:       service,
+		Label:         service.Label(),
+		Scope:         scope,
+		Provider:      rec.Provider,
+		Config:        redactConfig(service, rec.Config),
+		HasSecret:     rec.HasSecret(primarySecretKey(service)),
+		HasAnySecret:  rec.HasAnySecret(),
+		SecretsStored: storedSecrets(service, rec),
+		Status:        rec.Status,
+		Enabled:       rec.Enabled,
+		AllowTenants:  rec.AllowTenants,
+		LastError:     rec.LastError,
+		SecretFields:  secretFields[service],
+		Providers:     ProvidersFor(service),
+		UpdatedAt:     rec.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 	}
 	if rec.LastTestedAt != nil {
 		view.LastTestedAt = rec.LastTestedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
@@ -68,17 +73,26 @@ func NewPublicView(rec *Record, scope Source) PublicView {
 	return view
 }
 
+func storedSecrets(service ServiceType, rec *Record) map[string]bool {
+	out := map[string]bool{}
+	for _, k := range secretFields[service] {
+		out[k] = rec.HasSecret(k)
+	}
+	return out
+}
+
 // NotConfiguredView is what an absent row looks like, so the UI can render one
 // shape for both cases.
 func NotConfiguredView(service ServiceType, scope Source) PublicView {
 	return PublicView{
-		Service:      service,
-		Label:        service.Label(),
-		Scope:        scope,
-		Config:       map[string]any{},
-		Status:       StatusUnconfigured,
-		SecretFields: secretFields[service],
-		Providers:    ProvidersFor(service),
+		Service:       service,
+		Label:         service.Label(),
+		Scope:         scope,
+		Config:        map[string]any{},
+		SecretsStored: map[string]bool{},
+		Status:        StatusUnconfigured,
+		SecretFields:  secretFields[service],
+		Providers:     ProvidersFor(service),
 	}
 }
 

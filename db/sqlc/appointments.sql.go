@@ -423,18 +423,24 @@ func (q *Queries) NextQueueNumberToday(ctx context.Context, tenantID pgtype.UUID
 
 const updateAppointmentStatus = `-- name: UpdateAppointmentStatus :one
 UPDATE appointments SET status = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at
 `
 
 type UpdateAppointmentStatusParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-	Status   string      `json:"status"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	Status         string      `json:"status"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) UpdateAppointmentStatus(ctx context.Context, arg UpdateAppointmentStatusParams) (Appointment, error) {
-	row := q.db.QueryRow(ctx, updateAppointmentStatus, arg.ID, arg.TenantID, arg.Status)
+	row := q.db.QueryRow(ctx, updateAppointmentStatus,
+		arg.ID,
+		arg.TenantID,
+		arg.Status,
+		arg.ExpectedStatus,
+	)
 	var i Appointment
 	err := row.Scan(
 		&i.ID,
@@ -452,18 +458,24 @@ func (q *Queries) UpdateAppointmentStatus(ctx context.Context, arg UpdateAppoint
 
 const updateQueueEntryStatus = `-- name: UpdateQueueEntryStatus :one
 UPDATE queue_entries SET status = $3
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = $4
 RETURNING id, tenant_id, appointment_id, customer_id, queue_date, queue_number, status, created_at
 `
 
 type UpdateQueueEntryStatusParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-	Status   string      `json:"status"`
+	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	Status         string      `json:"status"`
+	ExpectedStatus string      `json:"expected_status"`
 }
 
 func (q *Queries) UpdateQueueEntryStatus(ctx context.Context, arg UpdateQueueEntryStatusParams) (QueueEntry, error) {
-	row := q.db.QueryRow(ctx, updateQueueEntryStatus, arg.ID, arg.TenantID, arg.Status)
+	row := q.db.QueryRow(ctx, updateQueueEntryStatus,
+		arg.ID,
+		arg.TenantID,
+		arg.Status,
+		arg.ExpectedStatus,
+	)
 	var i QueueEntry
 	err := row.Scan(
 		&i.ID,

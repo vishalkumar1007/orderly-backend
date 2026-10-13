@@ -23,6 +23,12 @@ import (
 )
 
 func main() {
+	// `server healthcheck` is the container HEALTHCHECK: probe and exit, without
+	// loading config or touching the database.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	_ = godotenv.Load()
 
 	cfg, err := config.Load()
@@ -58,6 +64,7 @@ func main() {
 	}
 
 	go api.StartNotificationWorker(ctx)
+	go api.StartPaymentSweeper(ctx)
 
 	go func() {
 		log.Info("server listening", "addr", cfg.HTTPAddr, "env", cfg.AppEnv)

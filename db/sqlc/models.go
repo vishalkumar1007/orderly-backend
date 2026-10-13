@@ -113,6 +113,32 @@ type HousekeepingTask struct {
 	CompletedAt pgtype.Timestamptz `json:"completed_at"`
 }
 
+type InventoryItem struct {
+	ID               pgtype.UUID        `json:"id"`
+	TenantID         pgtype.UUID        `json:"tenant_id"`
+	ProductID        pgtype.UUID        `json:"product_id"`
+	Quantity         int32              `json:"quantity"`
+	Unit             string             `json:"unit"`
+	ReorderThreshold int32              `json:"reorder_threshold"`
+	Track            bool               `json:"track"`
+	AutoDisabled     bool               `json:"auto_disabled"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type InventoryMovement struct {
+	ID            pgtype.UUID        `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	ItemID        pgtype.UUID        `json:"item_id"`
+	Delta         int32              `json:"delta"`
+	QuantityAfter int32              `json:"quantity_after"`
+	Reason        string             `json:"reason"`
+	OrderID       pgtype.UUID        `json:"order_id"`
+	Note          string             `json:"note"`
+	Actor         string             `json:"actor"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type License struct {
 	ID            pgtype.UUID        `json:"id"`
 	TenantID      pgtype.UUID        `json:"tenant_id"`
@@ -183,6 +209,9 @@ type NotificationDelivery struct {
 	NextAttemptAt     pgtype.Timestamptz `json:"next_attempt_at"`
 	DeliveredAt       pgtype.Timestamptz `json:"delivered_at"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	Subject           string             `json:"subject"`
+	Body              string             `json:"body"`
+	Data              []byte             `json:"data"`
 }
 
 type NotificationEvent struct {
@@ -308,19 +337,82 @@ type Payment struct {
 	PayableType       string             `json:"payable_type"`
 	PayableID         pgtype.UUID        `json:"payable_id"`
 	Purpose           string             `json:"purpose"`
+	ProviderOrderID   string             `json:"provider_order_id"`
+	ProviderPaymentID string             `json:"provider_payment_id"`
+	Mode              string             `json:"mode"`
+	Currency          string             `json:"currency"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+}
+
+type PaymentAttempt struct {
+	ID              pgtype.UUID        `json:"id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+	PaymentID       pgtype.UUID        `json:"payment_id"`
+	Provider        string             `json:"provider"`
+	ProviderOrderID string             `json:"provider_order_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type PaymentAuditLog struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	PaymentID pgtype.UUID        `json:"payment_id"`
+	EventType string             `json:"event_type"`
+	OldStatus string             `json:"old_status"`
+	NewStatus string             `json:"new_status"`
+	ActorType string             `json:"actor_type"`
+	ActorID   string             `json:"actor_id"`
+	Reason    string             `json:"reason"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type PaymentEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	PaymentID   pgtype.UUID        `json:"payment_id"`
+	Provider    string             `json:"provider"`
+	EventID     string             `json:"event_id"`
+	Type        string             `json:"type"`
+	Payload     []byte             `json:"payload"`
+	ReceivedAt  pgtype.Timestamptz `json:"received_at"`
+	ProcessedAt pgtype.Timestamptz `json:"processed_at"`
+	Error       string             `json:"error"`
+}
+
+type PaymentRefund struct {
+	ID                pgtype.UUID        `json:"id"`
+	TenantID          pgtype.UUID        `json:"tenant_id"`
+	PaymentID         pgtype.UUID        `json:"payment_id"`
+	Amount            pgtype.Numeric     `json:"amount"`
+	Reason            string             `json:"reason"`
+	Status            string             `json:"status"`
+	GatewayRefundID   string             `json:"gateway_refund_id"`
+	Error             string             `json:"error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	ProviderPaymentID string             `json:"provider_payment_id"`
+}
+
+type PaymentSetting struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Mode      string             `json:"mode"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Plan struct {
-	ID          pgtype.UUID        `json:"id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Price       pgtype.Numeric     `json:"price"`
-	MaxStaff    int32              `json:"max_staff"`
-	MaxProducts int32              `json:"max_products"`
-	Features    []byte             `json:"features"`
-	IsActive    bool               `json:"is_active"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID           pgtype.UUID        `json:"id"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description"`
+	Price        pgtype.Numeric     `json:"price"`
+	MaxStaff     int32              `json:"max_staff"`
+	MaxProducts  int32              `json:"max_products"`
+	Features     []byte             `json:"features"`
+	IsActive     bool               `json:"is_active"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	Entitlements []string           `json:"entitlements"`
 }
 
 type PlatformConfiguration struct {

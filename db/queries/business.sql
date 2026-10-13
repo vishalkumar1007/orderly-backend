@@ -9,6 +9,13 @@ WHERE tenant_id = $1 AND enabled = TRUE;
 -- name: GetTenantLicenseStatus :one
 SELECT status FROM licenses WHERE tenant_id = $1;
 
+-- name: GetTenantLicenseTerms :one
+-- Status plus the dates the gate needs to tell ACTIVE from GRACE from EXPIRED.
+SELECT l.status, l.expires_at, lt.grace_period_days
+FROM licenses l
+JOIN license_templates lt ON lt.id = l.template_id
+WHERE l.tenant_id = $1;
+
 -- name: GetBusinessTypeCapabilities :many
 SELECT capability_code, default_enabled, configurable FROM business_type_capabilities
 WHERE business_type_code = $1;

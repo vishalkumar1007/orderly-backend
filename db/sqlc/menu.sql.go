@@ -29,6 +29,20 @@ func (q *Queries) CountProductsInCategory(ctx context.Context, arg CountProducts
 	return count, err
 }
 
+const countTenantProducts = `-- name: CountTenantProducts :one
+SELECT COUNT(*)::bigint
+FROM products
+WHERE tenant_id = $1
+`
+
+// Products in use against the plan's max_products.
+func (q *Queries) CountTenantProducts(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countTenantProducts, tenantID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createCategory = `-- name: CreateCategory :one
 INSERT INTO categories (tenant_id, name, description, sort_order, is_active, image_url)
 VALUES ($1, $2, $3, $4, $5, $6)

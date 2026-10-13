@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -138,6 +139,10 @@ func (h *Handler) DeleteService(w http.ResponseWriter, r *http.Request) {
 	if err := h.q.DeleteService(r.Context(), sqlc.DeleteServiceParams{
 		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID(r)),
 	}); err != nil {
+		if isForeignKeyViolation(err) {
+			response.Error(w, http.StatusConflict, "in_use", "This service has appointments. Mark it inactive instead of deleting it.")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to delete service")
 		return
 	}
@@ -185,6 +190,10 @@ func (h *Handler) CreateStaffAvailability(w http.ResponseWriter, r *http.Request
 	staffID, err := uuid.Parse(req.StaffID)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid staff_id")
+		return
+	}
+	if !h.ownsStaff(r.Context(), tenantID(r), &staffID) {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown staff member")
 		return
 	}
 	start, err := parseClock(req.StartTime)
@@ -290,18 +299,25 @@ func (h *Handler) CreateAppointment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid scheduled_at")
 		return
 	}
-	var customerID, staffID uuid.UUID
-	if req.CustomerID != nil {
-		if customerID, err = uuid.Parse(*req.CustomerID); err != nil {
-			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid customer_id")
-			return
-		}
+	// Absent means NULL, not the all-zero UUID (which no row has, so the foreign
+	// key would reject it and the booking would fail with a 500).
+	customerID, err := optionalID(req.CustomerID)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid customer_id")
+		return
 	}
-	if req.StaffID != nil {
-		if staffID, err = uuid.Parse(*req.StaffID); err != nil {
-			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid staff_id")
-			return
-		}
+	staffID, err := optionalID(req.StaffID)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid staff_id")
+		return
+	}
+	if !h.ownsCustomer(r.Context(), tenantID(r), customerID) {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown customer")
+		return
+	}
+	if !h.ownsStaff(r.Context(), tenantID(r), staffID) {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown staff member")
+		return
 	}
 	// Ownership check: the service must belong to this tenant, not just exist.
 	if _, err := h.q.GetServiceByID(r.Context(), sqlc.GetServiceByIDParams{
@@ -311,8 +327,8 @@ func (h *Handler) CreateAppointment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appt, err := h.q.CreateAppointment(r.Context(), sqlc.CreateAppointmentParams{
-		TenantID: pgutil.UUID(tenantID(r)), CustomerID: pgutil.NullUUID(&customerID),
-		ServiceID: pgutil.UUID(serviceID), StaffID: pgutil.NullUUID(&staffID),
+		TenantID: pgutil.UUID(tenantID(r)), CustomerID: pgutil.NullUUID(customerID),
+		ServiceID: pgutil.UUID(serviceID), StaffID: pgutil.NullUUID(staffID),
 		ScheduledAt: pgtype.Timestamptz{Time: scheduledAt, Valid: true},
 	})
 	if err != nil {
@@ -410,9 +426,15 @@ func (h *Handler) Transition(action string) http.HandlerFunc {
 				fmt.Sprintf("cannot move an appointment from %s to %s", appt.Status, target))
 			return
 		}
+		// Compare-and-swap on the status validated above (see orders.Move): a
+		// double tap on Check in would otherwise queue the customer twice.
 		updated, err := h.q.UpdateAppointmentStatus(r.Context(), sqlc.UpdateAppointmentStatusParams{
-			ID: appt.ID, TenantID: pgutil.UUID(tid), Status: target,
+			ID: appt.ID, TenantID: pgutil.UUID(tid), Status: target, ExpectedStatus: appt.Status,
 		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
+			return
+		}
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not update appointment")
 			return
@@ -428,11 +450,16 @@ func (h *Handler) Transition(action string) http.HandlerFunc {
 		if target == StatusCheckedIn {
 			entry, err := h.joinQueue(r.Context(), tid, pgutil.NullUUID(&id), updated.CustomerID)
 			if err != nil {
-				response.Error(w, http.StatusInternalServerError, "internal_error", "checked in but failed to join the queue")
+				// Undo the check-in so the appointment is not stranded as
+				// CHECKED_IN with no queue entry; the front desk can retry.
+				_, _ = h.q.UpdateAppointmentStatus(r.Context(), sqlc.UpdateAppointmentStatusParams{
+					ID: appt.ID, TenantID: pgutil.UUID(tid), Status: StatusConfirmed, ExpectedStatus: StatusCheckedIn,
+				})
+				response.Error(w, http.StatusInternalServerError, "internal_error", "could not check in; try again")
 				return
 			}
 			updated, err = h.q.UpdateAppointmentStatus(r.Context(), sqlc.UpdateAppointmentStatusParams{
-				ID: appt.ID, TenantID: pgutil.UUID(tid), Status: StatusWaiting,
+				ID: appt.ID, TenantID: pgutil.UUID(tid), Status: StatusWaiting, ExpectedStatus: StatusCheckedIn,
 			})
 			if err != nil {
 				response.Error(w, http.StatusInternalServerError, "internal_error", "could not update appointment")
@@ -475,15 +502,16 @@ type queueJoinReq struct {
 func (h *Handler) JoinQueue(w http.ResponseWriter, r *http.Request) {
 	var req queueJoinReq
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	var customerID uuid.UUID
-	if req.CustomerID != nil {
-		var err error
-		if customerID, err = uuid.Parse(*req.CustomerID); err != nil {
-			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid customer_id")
-			return
-		}
+	customerID, err := optionalID(req.CustomerID)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid customer_id")
+		return
 	}
-	entry, err := h.joinQueue(r.Context(), tenantID(r), pgtype.UUID{}, pgutil.NullUUID(&customerID))
+	if !h.ownsCustomer(r.Context(), tenantID(r), customerID) {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown customer")
+		return
+	}
+	entry, err := h.joinQueue(r.Context(), tenantID(r), pgtype.UUID{}, pgutil.NullUUID(customerID))
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not join the queue")
 		return
@@ -589,8 +617,12 @@ func (h *Handler) QueueTransition(action string) http.HandlerFunc {
 			return
 		}
 		updated, err := h.q.UpdateQueueEntryStatus(r.Context(), sqlc.UpdateQueueEntryStatusParams{
-			ID: current.ID, TenantID: pgutil.UUID(tid), Status: target,
+			ID: current.ID, TenantID: pgutil.UUID(tid), Status: target, ExpectedStatus: current.Status,
 		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
+			return
+		}
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not update the queue")
 			return
@@ -605,7 +637,7 @@ func (h *Handler) QueueTransition(action string) http.HandlerFunc {
 				ID: pgutil.UUID(aid), TenantID: pgutil.UUID(tid),
 			}); err == nil && CanTransition(appt.Status, apptTarget) {
 				_, _ = h.q.UpdateAppointmentStatus(r.Context(), sqlc.UpdateAppointmentStatusParams{
-					ID: appt.ID, TenantID: pgutil.UUID(tid), Status: apptTarget,
+					ID: appt.ID, TenantID: pgutil.UUID(tid), Status: apptTarget, ExpectedStatus: appt.Status,
 				})
 			}
 		}
@@ -624,4 +656,41 @@ func queueEntryJSON(q sqlc.QueueEntry) map[string]any {
 		out["customer_id"] = *id
 	}
 	return out
+}
+
+// optionalID parses an optional id: nil when absent or empty.
+func optionalID(raw *string) (*uuid.UUID, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
+}
+
+// ownsCustomer is true when no customer was named, or the customer belongs to
+// this business. A foreign key alone would accept another business's customer.
+func (h *Handler) ownsCustomer(ctx context.Context, tenantID uuid.UUID, id *uuid.UUID) bool {
+	if id == nil {
+		return true
+	}
+	_, err := h.q.GetCustomerByID(ctx, sqlc.GetCustomerByIDParams{ID: pgutil.UUID(*id), TenantID: pgutil.UUID(tenantID)})
+	return err == nil
+}
+
+// ownsStaff is true when no staff member was named, or they work for this business.
+func (h *Handler) ownsStaff(ctx context.Context, tenantID uuid.UUID, id *uuid.UUID) bool {
+	if id == nil {
+		return true
+	}
+	u, err := h.q.GetUserByID(ctx, pgutil.UUID(*id))
+	return err == nil && u.TenantID.Valid && uuid.UUID(u.TenantID.Bytes) == tenantID
+}
+
+// isForeignKeyViolation: a delete refused because other rows still point at it.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }

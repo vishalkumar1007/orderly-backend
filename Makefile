@@ -1,4 +1,4 @@
-.PHONY: run check check-integration migrate-up migrate-down migrate-status sqlc-generate tidy docker-up docker-down docker-reset wait-db up down down-v restart db-clear db-migrate fresh-run
+.PHONY: backup restore-test backup-selftest uptime-check run check check-integration migrate-up migrate-down migrate-status sqlc-generate tidy docker-up docker-down docker-reset wait-db up down down-v restart db-clear db-migrate fresh-run
 
 DATABASE_URL ?= postgres://orderly:orderly@localhost:5432/orderly?sslmode=disable
 MIGRATIONS_DIR := db/migrations
@@ -88,3 +88,24 @@ db-clear: down-v up
 db-migrate: migrate-up
 
 fresh-run: db-clear run
+
+# ---- Backups (see docs/operations.md). Local default talks to the dev container;
+# in production set PG_CONTAINER to the Postgres container and BACKUP_DIR to a real path.
+PG_CONTAINER ?= $(PG_CONTAINER_DEFAULT)
+PG_CONTAINER_DEFAULT := orderly-postgres
+export PG_CONTAINER
+
+backup:
+	scripts/backup.sh
+
+# Restores the newest backup (or BACKUP=path) into a throwaway database and checks it.
+restore-test:
+	scripts/restore-test.sh $(BACKUP)
+
+# Proves the restore test can fail: damages copies of a backup and expects refusal.
+backup-selftest:
+	scripts/backup-selftest.sh
+
+# One-shot uptime probe: make uptime-check URL=https://api.orderly.qd.je
+uptime-check:
+	scripts/uptime-check.sh $(URL)

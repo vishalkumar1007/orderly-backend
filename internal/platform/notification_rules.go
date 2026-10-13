@@ -12,6 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/entitlement"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
@@ -372,6 +375,9 @@ func (h *Handler) PutTenantNotificationRule(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	channel := strings.ToUpper(req.Channel)
+	if channel == notify.ChannelSMS && !h.requireFeature(w, r, tenantID, entitlement.FeatureNotifySMS) {
+		return
+	}
 	locked, err := h.q.IsRuleLockedForTenant(r.Context(), sqlc.IsRuleLockedForTenantParams{
 		TenantID: pgutil.UUID(tenantID), EventCode: req.EventCode, Channel: channel, RecipientPolicy: req.RecipientPolicy,
 	})
@@ -433,6 +439,9 @@ func (h *Handler) ListTenantNotificationTemplates(w http.ResponseWriter, r *http
 
 func (h *Handler) PutTenantNotificationTemplate(w http.ResponseWriter, r *http.Request) {
 	tenantID := mustTenantID(r)
+	if !h.requireFeature(w, r, tenantID, entitlement.FeatureNotifyTemplates) {
+		return
+	}
 	h.putTemplate(w, r, &tenantID)
 }
 
@@ -638,35 +647,48 @@ func (h *Handler) testSendTemplate(w http.ResponseWriter, r *http.Request, tenan
 		response.Error(w, http.StatusBadRequest, "invalid_request", "to is required")
 		return
 	}
-	tmpl, err := h.q.GetEffectiveTemplate(r.Context(), sqlc.GetEffectiveTemplateParams{
-		EventCode: req.EventCode, Channel: channel, TenantID: pgutil.NullUUID(tenantID),
-	})
-	subject, body := "Orderly notification test", "This is a test of the "+req.EventCode+" "+channel+" template."
-	if err == nil {
-		subject, body = tmpl.Subject, tmpl.Body
-	}
+	subject, body := notify.RenderSample(r.Context(), h.q, tenantID, req.EventCode, channel)
 	if h.configs == nil {
 		response.Error(w, http.StatusServiceUnavailable, "not_configured", "no provider is configured")
 		return
 	}
+	to := strings.TrimSpace(req.To)
 	switch channel {
 	case "EMAIL":
-		outcome, err := h.configs.Notifications().SendTest(r.Context(), tenantID, req.To)
-		if err != nil {
-			response.Error(w, http.StatusBadRequest, "send_failed", err.Error())
+		if err := h.configs.Notifications().Send(r.Context(), tenantID, configsvc.MailMessage{
+			To: []string{to}, Subject: subject, Body: body,
+		}); err != nil {
+			response.Error(w, http.StatusBadRequest, "send_failed", configsvc.SafeErrorMessage(err))
 			return
 		}
-		_ = subject
-		_ = body
-		response.JSON(w, http.StatusOK, outcome)
+		response.JSON(w, http.StatusOK, configsvc.TestOutcome{OK: true, Message: "Test email sent to " + to})
 	case "SMS":
-		outcome, err := h.configs.SMSService().SendTest(r.Context(), tenantID, req.To)
-		if err != nil {
-			response.Error(w, http.StatusBadRequest, "send_failed", err.Error())
+		if _, err := h.configs.SMSService().Send(r.Context(), tenantID, to, body); err != nil {
+			response.Error(w, http.StatusBadRequest, "send_failed", configsvc.SafeErrorMessage(err))
 			return
 		}
-		response.JSON(w, http.StatusOK, outcome)
+		response.JSON(w, http.StatusOK, configsvc.TestOutcome{OK: true, Message: "Test text sent to " + to})
 	default:
 		response.Error(w, http.StatusBadRequest, "invalid_request", "channel must be EMAIL or SMS")
 	}
+}
+
+// requireFeature writes the standard 403 `feature_not_in_plan` and returns false
+// when the tenant's plan lacks the feature, so the console can show an upgrade
+// prompt rather than a bare failure.
+func (h *Handler) requireFeature(w http.ResponseWriter, r *http.Request, tenantID uuid.UUID, code string) bool {
+	plan, err := h.q.GetTenantPlanLimits(r.Context(), pgutil.UUID(tenantID))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check plan")
+		return false
+	}
+	for _, e := range plan.Entitlements {
+		if e == code {
+			return true
+		}
+	}
+	response.ErrorWithDetails(w, http.StatusForbidden, "feature_not_in_plan",
+		"This feature is not included in your "+plan.Name+" plan.",
+		map[string]any{"feature": code, "plan": plan.Name})
+	return false
 }

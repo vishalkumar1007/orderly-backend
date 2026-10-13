@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -23,6 +24,9 @@ type Resolved struct {
 	Status Status
 	// TenantID is nil for the platform scope.
 	TenantID *uuid.UUID
+	// TestedAt is when the stored row last passed or failed a connection test.
+	// A save clears it, so it only describes the credentials as they are now.
+	TestedAt *time.Time
 }
 
 // Secret returns a decrypted secret, or "" when absent.
@@ -205,6 +209,7 @@ func (r *Resolver) hydrate(ctx context.Context, rec *Record, source Source, tena
 		Secrets:  secrets,
 		Status:   rec.Status,
 		TenantID: tenantID,
+		TestedAt: rec.LastTestedAt,
 	}, nil
 }
 

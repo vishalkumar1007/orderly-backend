@@ -27,14 +27,15 @@ import (
 type ServiceType string
 
 const (
-	ServiceSMTP    ServiceType = "SMTP"
-	ServiceStorage ServiceType = "STORAGE"
-	ServiceAI      ServiceType = "AI"
-	ServiceSMS     ServiceType = "SMS"
+	ServiceSMTP     ServiceType = "SMTP"
+	ServiceStorage  ServiceType = "STORAGE"
+	ServiceAI       ServiceType = "AI"
+	ServiceSMS      ServiceType = "SMS"
+	ServicePayments ServiceType = "PAYMENTS"
 )
 
 // AllServices is the canonical ordering used by every listing endpoint.
-var AllServices = []ServiceType{ServiceSMTP, ServiceStorage, ServiceAI, ServiceSMS}
+var AllServices = []ServiceType{ServiceSMTP, ServiceStorage, ServiceAI, ServiceSMS, ServicePayments}
 
 // ParseServiceType validates a service segment from a URL.
 func ParseServiceType(v string) (ServiceType, error) {
@@ -47,6 +48,8 @@ func ParseServiceType(v string) (ServiceType, error) {
 		return ServiceAI, nil
 	case ServiceSMS:
 		return ServiceSMS, nil
+	case ServicePayments:
+		return ServicePayments, nil
 	}
 	return "", fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, v)
 }
@@ -62,6 +65,8 @@ func (s ServiceType) Label() string {
 		return "AI"
 	case ServiceSMS:
 		return "SMS"
+	case ServicePayments:
+		return "Payments"
 	}
 	return string(s)
 }
@@ -263,7 +268,7 @@ type AIProvider interface {
 // SortServices orders service types canonically, tolerating unknown values by
 // placing them last so a typo cannot scramble the UI ordering.
 func SortServices(in []ServiceType) {
-	rank := map[ServiceType]int{ServiceSMTP: 0, ServiceStorage: 1, ServiceAI: 2, ServiceSMS: 3}
+	rank := map[ServiceType]int{ServiceSMTP: 0, ServiceStorage: 1, ServiceAI: 2, ServiceSMS: 3, ServicePayments: 4}
 	sort.SliceStable(in, func(i, j int) bool {
 		ri, oki := rank[in[i]]
 		rj, okj := rank[in[j]]

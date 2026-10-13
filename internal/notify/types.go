@@ -11,11 +11,19 @@ package notify
 // just a typo-proof way for Go code to reference it.
 const (
 	TypeOrderPlaced       = "ORDER_PLACED"
+	TypeOrderAccepted     = "ORDER_ACCEPTED"
+	TypeOrderPreparing    = "ORDER_PREPARING"
 	TypeOrderReady        = "ORDER_READY"
+	TypeOrderCompleted    = "ORDER_COMPLETED"
 	TypeOrderCancelled    = "ORDER_CANCELLED"
 	TypeBusinessOnboarded = "BUSINESS_ONBOARDED"
 
+	TypeInventoryLow = "INVENTORY_LOW"
+
 	TypePaymentFailed       = "PAYMENT_FAILED"
+	TypePaymentReceived     = "PAYMENT_RECEIVED"
+	TypePaymentRefunded     = "PAYMENT_REFUNDED"
+	TypePaymentRefundFailed = "PAYMENT_REFUND_FAILED"
 	TypeSubscriptionChanged = "SUBSCRIPTION_CHANGED"
 
 	TypeAppointmentCreated   = "APPOINTMENT_CREATED"
@@ -35,18 +43,18 @@ const (
 	TypeStaffDisabled    = "STAFF_DISABLED"
 	TypeStaffEnabled     = "STAFF_ENABLED"
 
-	TypeSecurityLoginFailed     = "SECURITY_LOGIN_FAILED"
-	TypeSecurityMFAEnabled      = "SECURITY_MFA_ENABLED"
-	TypeSecurityMFADisabled     = "SECURITY_MFA_DISABLED"
-	TypeSecurityMFAMethodAdded  = "SECURITY_MFA_METHOD_ADDED"
-	TypeSecurityMFARecoveryUsed = "SECURITY_MFA_RECOVERY_USED"
-	TypeSecurityMFAAdminReset   = "SECURITY_MFA_ADMIN_RESET"
+	TypeSecurityLoginFailed      = "SECURITY_LOGIN_FAILED"
+	TypeSecurityMFAEnabled       = "SECURITY_MFA_ENABLED"
+	TypeSecurityMFADisabled      = "SECURITY_MFA_DISABLED"
+	TypeSecurityMFAMethodAdded   = "SECURITY_MFA_METHOD_ADDED"
+	TypeSecurityMFARecoveryUsed  = "SECURITY_MFA_RECOVERY_USED"
+	TypeSecurityMFAAdminReset    = "SECURITY_MFA_ADMIN_RESET"
 	TypeSecurityMFAPolicyChanged = "SECURITY_MFA_POLICY_CHANGED"
-	TypeSecurityPasswordReset   = "SECURITY_PASSWORD_RESET"
-	TypeSecurityPasswordChanged = "SECURITY_PASSWORD_CHANGED"
+	TypeSecurityPasswordReset    = "SECURITY_PASSWORD_RESET"
+	TypeSecurityPasswordChanged  = "SECURITY_PASSWORD_CHANGED"
 
-	TypePlatformSystemError       = "PLATFORM_SYSTEM_ERROR"
-	TypePlatformOperationalAlert  = "PLATFORM_OPERATIONAL_ALERT"
+	TypePlatformSystemError      = "PLATFORM_SYSTEM_ERROR"
+	TypePlatformOperationalAlert = "PLATFORM_OPERATIONAL_ALERT"
 )
 
 // Channels a rule can target.
@@ -59,7 +67,7 @@ const (
 // Recipient policies a rule can carry. "ROLE:" is followed by an
 // identity.Permission value, e.g. "ROLE:selling".
 const (
-	PolicyPlatform     = "PLATFORM"
-	PolicyCustomer     = "CUSTOMER"
-	rolePolicyPrefix   = "ROLE:"
+	PolicyPlatform   = "PLATFORM"
+	PolicyCustomer   = "CUSTOMER"
+	rolePolicyPrefix = "ROLE:"
 )

@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
+	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 )
@@ -67,19 +70,36 @@ func Dispatch(ctx context.Context, d Deps, tenantID *uuid.UUID, eventCode, title
 		return
 	}
 
+	smsAllowed := tenantID == nil || planAllows(ctx, d, tid, entitlement.FeatureNotifySMS)
 	for _, rule := range rules {
 		if !rule.Enabled {
+			continue
+		}
+		if rule.Channel == ChannelSMS && !smsAllowed {
 			continue
 		}
 		switch rule.Channel {
 		case ChannelInApp:
 			dispatchInApp(ctx, d, tenantID, rule, eventCode, title, body, data)
-		case ChannelEmail:
-			dispatchOutbound(ctx, d, tenantID, rule, eventCode, ChannelEmail, title, body, data, contact)
-		case ChannelSMS:
-			dispatchOutbound(ctx, d, tenantID, rule, eventCode, ChannelSMS, title, body, data, contact)
+		case ChannelEmail, ChannelSMS:
+			dispatchOutbound(ctx, d, tenantID, rule, eventCode, rule.Channel, title, body, data, contact)
 		}
 	}
+}
+
+// planAllows reports whether the tenant's plan carries a feature. A lookup
+// failure denies: the paid channel is skipped rather than sent for free.
+func planAllows(ctx context.Context, d Deps, tenantID pgtype.UUID, feature string) bool {
+	plan, err := d.Q.GetTenantPlanLimits(ctx, tenantID)
+	if err != nil {
+		return false
+	}
+	for _, e := range plan.Entitlements {
+		if e == feature {
+			return true
+		}
+	}
+	return false
 }
 
 func dispatchInApp(ctx context.Context, d Deps, tenantID *uuid.UUID, rule sqlc.NotificationRule, eventCode, title, body string, data map[string]any) {
@@ -108,7 +128,7 @@ func dispatchOutbound(ctx context.Context, d Deps, tenantID *uuid.UUID, rule sql
 		}
 	case channel == ChannelEmail:
 		for _, r := range resolveStaffRecipients(ctx, d, tenantID, rule.RecipientPolicy) {
-			if r.Email != "" {
+			if r.Email != "" && !inQuietHours(ctx, d, r.UserID, time.Now()) {
 				addresses = append(addresses, r.Email)
 			}
 		}
@@ -125,14 +145,21 @@ func dispatchOutbound(ctx context.Context, d Deps, tenantID *uuid.UUID, rule sql
 	if tenantID != nil {
 		tid = pgutil.UUID(*tenantID)
 	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		payload = []byte("{}")
+	}
 	for _, addr := range addresses {
-		key := idempotencyKey(eventCode, tenantID, channel, addr, data)
+		key := idempotencyKey(eventCode, tenantID, channel, addr, data, time.Now())
 		_, err := d.Q.EnqueueNotificationDelivery(ctx, sqlc.EnqueueNotificationDeliveryParams{
 			TenantID:       tid,
 			EventCode:      eventCode,
 			Channel:        channel,
 			Recipient:      addr,
 			IdempotencyKey: key,
+			Subject:        title,
+			Body:           body,
+			Data:           payload,
 		})
 		if err != nil && err != pgx.ErrNoRows && d.Log != nil {
 			// pgx.ErrNoRows here means ON CONFLICT DO NOTHING matched an
@@ -178,7 +205,7 @@ func resolveStaffRecipients(ctx context.Context, d Deps, tenantID *uuid.UUID, po
 // the same delivery row instead of sending twice. entity_id (order id,
 // appointment id, etc.) is read from data when present so the SAME event for
 // a DIFFERENT entity still gets its own key.
-func idempotencyKey(eventCode string, tenantID *uuid.UUID, channel, recipient string, data map[string]any) string {
+func idempotencyKey(eventCode string, tenantID *uuid.UUID, channel, recipient string, data map[string]any, now time.Time) string {
 	h := sha256.New()
 	h.Write([]byte(eventCode))
 	h.Write([]byte{0})
@@ -190,7 +217,13 @@ func idempotencyKey(eventCode string, tenantID *uuid.UUID, channel, recipient st
 	h.Write([]byte{0})
 	h.Write([]byte(recipient))
 	h.Write([]byte{0})
-	h.Write([]byte(entityIDOf(data)))
+	entity := entityIDOf(data)
+	if entity == "" {
+		// No entity to tell two occurrences apart (e.g. a failed login): bucket by
+		// minute so repeats are not swallowed forever, only a same-minute retry.
+		entity = now.UTC().Truncate(time.Minute).Format(time.RFC3339)
+	}
+	h.Write([]byte(entity))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -210,4 +243,31 @@ func entityIDOf(data map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// inQuietHours reports whether a user asked not to be emailed right now. Only
+// staff email honours it: the in-app feed is silent by nature (the bell's sound
+// is a client setting) and customer messages are not the staff member's to mute.
+func inQuietHours(ctx context.Context, d Deps, userID uuid.UUID, now time.Time) bool {
+	p, err := d.Q.GetNotificationPreferences(ctx, pgutil.UUID(userID))
+	if err != nil || !p.QuietHoursStart.Valid || !p.QuietHoursEnd.Valid {
+		return false
+	}
+	loc := time.UTC
+	if p.QuietHoursTz.Valid {
+		if l, err := time.LoadLocation(p.QuietHoursTz.String); err == nil {
+			loc = l
+		}
+	}
+	return withinWindow(p.QuietHoursStart.Microseconds, p.QuietHoursEnd.Microseconds, now.In(loc))
+}
+
+// withinWindow: start/end are microseconds since midnight; a window that
+// crosses midnight (22:00-07:00) has start > end.
+func withinWindow(startMicros, endMicros int64, t time.Time) bool {
+	cur := int64(t.Hour()*3600+t.Minute()*60+t.Second()) * 1_000_000
+	if startMicros <= endMicros {
+		return cur >= startMicros && cur < endMicros
+	}
+	return cur >= startMicros || cur < endMicros
 }

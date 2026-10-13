@@ -13,6 +13,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/brand"
+	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -29,6 +30,9 @@ type planWriteRequest struct {
 	MaxStaff    *int     `json:"max_staff"`
 	MaxProducts *int     `json:"max_products"`
 	IsActive    *bool    `json:"is_active"`
+	// Entitlements are the feature codes the API enforces for this plan
+	// (see internal/entitlement); unlike Features they are not free text.
+	Entitlements *[]string `json:"entitlements"`
 
 	// Commercial terms. The plans table has columns for price and the two hard
 	// limits only, so everything else an offer needs lives in the features
@@ -190,6 +194,7 @@ func planJSONWithUsage(p sqlc.Plan, tenantCount, activeSubscriptions int64) map[
 		"max_staff":      p.MaxStaff,
 		"max_products":   p.MaxProducts,
 		"is_active":      p.IsActive,
+		"entitlements":   nonNilStrings(p.Entitlements),
 		"billing_period": terms.BillingPeriod,
 		"trial_days":     terms.TrialDays,
 		"features":       terms.Features,
@@ -219,10 +224,11 @@ func (h *Handler) ListAllPlans(w http.ResponseWriter, r *http.Request) {
 			ID: row.ID, Name: row.Name, Description: row.Description, Price: row.Price,
 			MaxStaff: row.MaxStaff, MaxProducts: row.MaxProducts, Features: row.Features,
 			IsActive: row.IsActive, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+			Entitlements: row.Entitlements,
 		}
 		out = append(out, planJSONWithUsage(plan, row.TenantCount, row.ActiveSubscriptions))
 	}
-	response.JSON(w, http.StatusOK, map[string]any{"plans": out})
+	response.JSON(w, http.StatusOK, map[string]any{"plans": out, "entitlement_catalog": entitlement.Catalog})
 }
 
 func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +262,16 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 	if req.Price != nil {
 		price = *req.Price
 	}
+	// Omitted means the baseline every plan has had so far, not "nothing": a
+	// plan created without thinking about features must not lose analytics.
+	entitlements := []string{entitlement.FeatureAnalytics}
+	if req.Entitlements != nil {
+		var err error
+		if entitlements, err = entitlement.Clean(*req.Entitlements); err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
 	terms, err := mergePlanTerms(parsePlanTerms(nil, name, price), req)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -268,13 +284,14 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plan, err := h.q.CreatePlan(r.Context(), sqlc.CreatePlanParams{
-		Name:        name,
-		Description: strings.TrimSpace(deref(req.Description)),
-		Price:       numericOrZero(req.Price),
-		MaxStaff:    int32(derefInt(req.MaxStaff, 5)),
-		MaxProducts: int32(derefInt(req.MaxProducts, 100)),
-		Features:    featuresDoc,
-		IsActive:    boolOrTrue(req.IsActive),
+		Name:         name,
+		Description:  strings.TrimSpace(deref(req.Description)),
+		Price:        numericOrZero(req.Price),
+		MaxStaff:     int32(derefInt(req.MaxStaff, 5)),
+		MaxProducts:  int32(derefInt(req.MaxProducts, 100)),
+		Features:     featuresDoc,
+		IsActive:     boolOrTrue(req.IsActive),
+		Entitlements: entitlements,
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to create plan")
@@ -347,6 +364,14 @@ func (h *Handler) UpdatePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := sqlc.UpdatePlanParams{ID: pgutil.UUID(id), Features: planTermsDoc}
+	if req.Entitlements != nil {
+		cleaned, err := entitlement.Clean(*req.Entitlements)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		params.Entitlements = cleaned
+	}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: strings.ToUpper(strings.TrimSpace(*req.Name)), Valid: true}
 	}
@@ -572,4 +597,12 @@ func boolOrTrue(v *bool) bool {
 		return true
 	}
 	return *v
+}
+
+// nonNilStrings keeps an empty list as [] in JSON rather than null.
+func nonNilStrings(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }

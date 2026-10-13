@@ -54,7 +54,7 @@ SELECT * FROM appointments WHERE id = $1 AND tenant_id = $2 LIMIT 1;
 
 -- name: UpdateAppointmentStatus :one
 UPDATE appointments SET status = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: CreateQueueEntry :one
@@ -74,5 +74,5 @@ ORDER BY queue_number ASC;
 
 -- name: UpdateQueueEntryStatus :one
 UPDATE queue_entries SET status = $3
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;

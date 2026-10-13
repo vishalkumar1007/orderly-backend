@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -72,7 +73,9 @@ func deliverOne(ctx context.Context, q *sqlc.Queries, log *slog.Logger, cfg *con
 		tenantID = &id
 	}
 
-	rendered := render(ctx, q, tenantID, d.EventCode, d.Channel, "", "", nil)
+	var data map[string]any
+	_ = json.Unmarshal(d.Data, &data)
+	rendered := render(ctx, q, tenantID, d.EventCode, d.Channel, d.Subject, d.Body, data)
 	var sendErr error
 	var providerMessageID string
 

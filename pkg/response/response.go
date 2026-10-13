@@ -14,6 +14,9 @@ type ErrorBody struct {
 type ErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Details carries machine-readable context a client can act on (for
+	// example the plan to upgrade to). Omitted when empty.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // JSON writes a successful JSON response.
@@ -29,6 +32,17 @@ func Error(w http.ResponseWriter, status int, code, message string) {
 		Error: ErrorDetail{
 			Code:    code,
 			Message: message,
+		},
+	})
+}
+
+// ErrorWithDetails is Error plus machine-readable context for the client.
+func ErrorWithDetails(w http.ResponseWriter, status int, code, message string, details map[string]any) {
+	JSON(w, status, ErrorBody{
+		Error: ErrorDetail{
+			Code:    code,
+			Message: message,
+			Details: details,
 		},
 	})
 }

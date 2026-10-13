@@ -15,7 +15,9 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
+	"github.com/orderly/orderly-backend/internal/inventory"
 	"github.com/orderly/orderly-backend/internal/notify"
+	"github.com/orderly/orderly-backend/internal/payments"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 )
@@ -28,6 +30,8 @@ type Handler struct {
 	store   *storefront.Loader
 	catalog *storefront.Catalog
 	log     *slog.Logger
+	// payments records staff-confirmed payments; set by the server wiring.
+	payments *payments.Service
 }
 
 // NewHandler wires the order handler.
@@ -41,6 +45,10 @@ func NewHandler(pool *pgxpool.Pool, log *slog.Logger) *Handler {
 		log:     log,
 	}
 }
+
+// SetPayments gives the handler the payments service (wired after both exist,
+// since payments is built from this handler's PayableSource).
+func (h *Handler) SetPayments(p *payments.Service) { h.payments = p }
 
 // Viewer exposes the read-only order surface to other packages.
 func (h *Handler) Viewer() *Viewer { return &Viewer{q: h.q} }
@@ -189,6 +197,11 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 	if totals.Total <= 0 {
 		return CreateResult{}, badRequest("empty_total", "This order has no value — please review your cart")
 	}
+	// Tracked products: refuse a cart asking for more than is in stock, with
+	// a message the customer can act on ("Only 2 left of Veg Momo").
+	if err := inventory.CheckLines(ctx, h.q, tenantID, stockLines(lines)); err != nil {
+		return CreateResult{}, stockError(err)
+	}
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
@@ -196,6 +209,7 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.q.WithTx(tx)
+	var stockAlerts []inventory.Alert
 
 	customerID := pgtype.UUID{}
 	source := "GUEST"
@@ -321,6 +335,8 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		if _, err := qtx.StampOrderAccepted(ctx, sqlc.StampOrderAcceptedParams{
 			ID:       order.ID,
 			TenantID: pgutil.UUID(tenantID),
+			// Inserted as ACCEPTED already; this only stamps accepted_at.
+			ExpectedStatus: StatusAccepted,
 		}); err != nil {
 			return CreateResult{}, err
 		}
@@ -333,11 +349,18 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		}); err != nil {
 			return CreateResult{}, err
 		}
+		// Accepted at placement: the stock leaves in the same transaction, so
+		// a race for the last unit fails the order instead of overselling.
+		stockAlerts, err = inventory.DeductForOrder(ctx, qtx, tenantID, uuid.UUID(order.ID.Bytes), "system:auto_accept")
+		if err != nil {
+			return CreateResult{}, stockError(err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return CreateResult{}, err
 	}
+	inventory.Notify(ctx, notify.Deps{Q: h.q, Log: h.log}, tenantID, stockAlerts)
 
 	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, notify.TypeOrderPlaced,
 		fmt.Sprintf("New order #%d", number),
@@ -349,6 +372,10 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 			"total":         totals.Total,
 		},
 		notify.Contact{Email: email, Phone: phone})
+	if status == StatusAccepted {
+		// Accepted at placement (auto-accept): placed first, then accepted.
+		h.publishTransition(ctx, tenantID, order, StatusAccepted, sf)
+	}
 
 	view, err := h.hydrateWithStore(ctx, order, sf)
 	if err != nil {
@@ -479,7 +506,7 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 	if err != nil {
 		return OrderView{}, err
 	}
-	if err := h.checkGate(order, to, sf); err != nil {
+	if err := h.checkGate(ctx, order, to, sf); err != nil {
 		return OrderView{}, err
 	}
 
@@ -490,20 +517,30 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 	defer tx.Rollback(ctx)
 	qtx := h.q.WithTx(tx)
 
+	// Every write is a compare-and-swap on the status validated above, so a
+	// concurrent move (double tap, two devices, payment landing mid-accept)
+	// cannot slip an illegal transition past CanTransition.
 	var updated sqlc.Order
+	from := order.Status
 	switch to {
 	case StatusAccepted:
-		updated, err = qtx.StampOrderAccepted(ctx, sqlc.StampOrderAcceptedParams{ID: order.ID, TenantID: order.TenantID})
+		updated, err = qtx.StampOrderAccepted(ctx, sqlc.StampOrderAcceptedParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: from})
 	case StatusPreparing:
-		updated, err = qtx.StampOrderPreparing(ctx, sqlc.StampOrderPreparingParams{ID: order.ID, TenantID: order.TenantID})
+		updated, err = qtx.StampOrderPreparing(ctx, sqlc.StampOrderPreparingParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: from})
 	case StatusReady:
-		updated, err = qtx.StampOrderReady(ctx, sqlc.StampOrderReadyParams{ID: order.ID, TenantID: order.TenantID})
+		updated, err = qtx.StampOrderReady(ctx, sqlc.StampOrderReadyParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: from})
 	case StatusCompleted:
-		updated, err = qtx.StampOrderCompleted(ctx, sqlc.StampOrderCompletedParams{ID: order.ID, TenantID: order.TenantID})
+		updated, err = qtx.StampOrderCompleted(ctx, sqlc.StampOrderCompletedParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: from})
 	case StatusCancelled:
-		updated, err = qtx.StampOrderCancelled(ctx, sqlc.StampOrderCancelledParams{ID: order.ID, TenantID: order.TenantID, CancelReason: reason})
+		updated, err = qtx.StampOrderCancelled(ctx, sqlc.StampOrderCancelledParams{ID: order.ID, TenantID: order.TenantID, CancelReason: reason, ExpectedStatus: from})
 	default:
 		return OrderView{}, &ErrInvalidTransition{From: order.Status, To: to}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OrderView{}, &ErrInvalidTransition{
+			From: from, To: to, Stale: true,
+			Reason: "This order was just updated by someone else. Refresh and try again.",
+		}
 	}
 	if err != nil {
 		return OrderView{}, err
@@ -518,10 +555,26 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 		return OrderView{}, err
 	}
 
+	// Stock follows the order, inside the same transaction as the status
+	// write: accepting takes stock (and fails if there is not enough),
+	// cancelling gives back whatever was taken.
+	var stockAlerts []inventory.Alert
+	switch to {
+	case StatusAccepted:
+		stockAlerts, err = inventory.DeductForOrder(ctx, qtx, tenantID, uuid.UUID(order.ID.Bytes), actor)
+	case StatusCancelled:
+		err = inventory.RestoreForOrder(ctx, qtx, tenantID, uuid.UUID(order.ID.Bytes), actor)
+	}
+	if err != nil {
+		return OrderView{}, err
+	}
+
 	// Auto-complete: a shop that does not track the pickup counter wants the
 	// order closed as soon as it is bagged.
+	autoCompleted := false
 	if to == StatusReady && sf.Workflow.AutoComplete {
-		final, err := qtx.StampOrderCompleted(ctx, sqlc.StampOrderCompletedParams{ID: order.ID, TenantID: order.TenantID})
+		autoCompleted = true
+		final, err := qtx.StampOrderCompleted(ctx, sqlc.StampOrderCompletedParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: StatusReady})
 		if err != nil {
 			return OrderView{}, err
 		}
@@ -542,28 +595,49 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 	}
 
 	h.publishTransition(ctx, tenantID, order, to, sf)
+	if autoCompleted {
+		// READY and COMPLETED both happened; each gets its own event.
+		h.publishTransition(ctx, tenantID, order, StatusCompleted, sf)
+	}
+	inventory.Notify(ctx, notify.Deps{Q: h.q, Log: h.log}, tenantID, stockAlerts)
+	if to == StatusCancelled && h.payments != nil {
+		// An order that was paid online and then cancelled gets its money back.
+		// Outside the transaction on purpose: a cancel must never fail or wait
+		// on a payment gateway.
+		h.payments.RefundOnCancel(ctx, tenantID, order.ID)
+	}
 
 	return h.hydrateWithStore(ctx, updated, sf)
 }
 
-// publishTransition dispatches the notification for a status change — in
-// app always, plus email to the customer where a rule enables it. Which
-// channels actually fire is the rules engine's call, not this handler's; see
-// notify.Dispatch.
+// orderEvents is the notification each order status publishes when an order
+// ENTERS it. PENDING is absent on purpose: an order is "placed" (ORDER_PLACED)
+// by the checkout, not moved there. A status with no row here would change
+// state silently, which TestEveryOrderStatusPublishesAnEvent forbids.
+var orderEvents = map[string]struct{ code, title string }{
+	StatusAccepted:  {notify.TypeOrderAccepted, "Order #%d was accepted"},
+	StatusPreparing: {notify.TypeOrderPreparing, "Order #%d is being prepared"},
+	StatusReady:     {notify.TypeOrderReady, "Order #%d is ready"},
+	StatusCompleted: {notify.TypeOrderCompleted, "Order #%d was completed"},
+	StatusCancelled: {notify.TypeOrderCancelled, "Order #%d was cancelled"},
+}
+
+// EventForStatus names the notification published when an order enters status.
+func EventForStatus(status string) (string, bool) {
+	e, ok := orderEvents[status]
+	return e.code, ok
+}
+
+// publishTransition dispatches the notification for a status change. Which
+// channels actually fire (in-app, customer email, SMS) is the rules engine's
+// call, not this handler's; see notify.Dispatch. This is called from Move, the
+// only writer of order status, and from placement when the shop auto-accepts.
 func (h *Handler) publishTransition(ctx context.Context, tenantID uuid.UUID, order sqlc.Order, to string, sf *storefront.Storefront) {
-	var (
-		eventType string
-		title     string
-	)
-	switch to {
-	case StatusReady:
-		eventType, title = notify.TypeOrderReady, fmt.Sprintf("Order #%d is ready", order.OrderNumber)
-	case StatusCancelled:
-		eventType, title = notify.TypeOrderCancelled, fmt.Sprintf("Order #%d was cancelled", order.OrderNumber)
-	default:
+	e, ok := orderEvents[to]
+	if !ok {
 		return
 	}
-	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, eventType, title, "",
+	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, e.code, fmt.Sprintf(e.title, order.OrderNumber), "",
 		map[string]any{
 			"order_id":      pgutil.UUIDString(order.ID),
 			"order_number":  order.OrderNumber,
@@ -575,7 +649,7 @@ func (h *Handler) publishTransition(ctx context.Context, tenantID uuid.UUID, ord
 // checkGate enforces the tenant's workflow rules. A shop that requires payment
 // before preparation cannot start cooking an unpaid online order, and a
 // cancelled order can never be revived.
-func (h *Handler) checkGate(order sqlc.Order, to string, sf *storefront.Storefront) error {
+func (h *Handler) checkGate(ctx context.Context, order sqlc.Order, to string, sf *storefront.Storefront) error {
 	if to == StatusCancelled {
 		return nil
 	}
@@ -587,7 +661,7 @@ func (h *Handler) checkGate(order sqlc.Order, to string, sf *storefront.Storefro
 		}
 	}
 	if to == StatusPreparing && sf.Workflow.RequiresPaymentUpfront() {
-		pay, err := h.q.GetPaymentByOrderID(context.Background(), sqlc.GetPaymentByOrderIDParams{
+		pay, err := h.q.GetPaymentByOrderID(ctx, sqlc.GetPaymentByOrderIDParams{
 			OrderID:  order.ID,
 			TenantID: order.TenantID,
 		})
@@ -617,5 +691,49 @@ func (h *Handler) AutoAcceptIfNeeded(ctx context.Context, tenantID uuid.UUID, or
 	if !sf.Workflow.AutoAccept() || order.Status != StatusPending {
 		return h.hydrateWithStore(ctx, order, sf)
 	}
-	return h.Move(ctx, tenantID, order, StatusAccepted, "", "system:auto_accept")
+	view, err := h.Move(ctx, tenantID, order, StatusAccepted, "", "system:auto_accept")
+	var it *ErrInvalidTransition
+	var short *inventory.InsufficientError
+	if errors.As(err, &short) {
+		// Paid, but not enough stock to accept it automatically. The payment
+		// stands; the order waits PENDING for staff to decide.
+		h.log.Warn("auto accept skipped: not enough stock", "order", order.OrderNumber, "reason", short.Error())
+		current, getErr := h.q.GetOrderByID(ctx, sqlc.GetOrderByIDParams{ID: order.ID, TenantID: order.TenantID})
+		if getErr != nil {
+			return OrderView{}, getErr
+		}
+		return h.hydrateWithStore(ctx, current, sf)
+	}
+	if errors.As(err, &it) && it.Stale {
+		// Staff moved the order between our read and our write; the order is
+		// already where auto-accept would have put it or further. Report that,
+		// rather than failing a payment that was recorded successfully.
+		current, getErr := h.q.GetOrderByID(ctx, sqlc.GetOrderByIDParams{ID: order.ID, TenantID: order.TenantID})
+		if getErr != nil {
+			return OrderView{}, getErr
+		}
+		return h.hydrateWithStore(ctx, current, sf)
+	}
+	return view, err
+}
+
+// stockLines turns merged cart lines into what the stock check needs.
+func stockLines(lines []RequestedLine) []inventory.Line {
+	out := make([]inventory.Line, 0, len(lines))
+	for _, l := range lines {
+		if id, err := uuid.Parse(trim(l.ProductID)); err == nil && l.Quantity > 0 {
+			out = append(out, inventory.Line{ProductID: id, Quantity: int32(l.Quantity)})
+		}
+	}
+	return out
+}
+
+// stockError turns a stock failure into the customer-facing validation error;
+// anything else is a real failure and passes through.
+func stockError(err error) error {
+	var short *inventory.InsufficientError
+	if errors.As(err, &short) {
+		return &validationError{Code: "out_of_stock", Message: short.Error(), Status: 409}
+	}
+	return err
 }

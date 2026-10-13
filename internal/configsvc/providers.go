@@ -17,6 +17,15 @@ const (
 	ProviderCustom    = "custom" // any OpenAI-compatible endpoint
 )
 
+// Payment gateway identifiers. The sandbox gateway is built in and is not a
+// configurable provider: it has no credentials.
+const ProviderRazorpay = "razorpay"
+
+// PaymentProviders is the catalogue the Super Admin UI renders.
+var PaymentProviders = []ProviderInfo{
+	{Value: ProviderRazorpay, Label: "Razorpay", BaseURL: "https://api.razorpay.com"},
+}
+
 // Email provider identifiers.
 const (
 	ProviderSMTP = "smtp"
@@ -87,6 +96,8 @@ func ProvidersFor(service ServiceType) []ProviderInfo {
 		return AIProviders
 	case ServiceSMS:
 		return SMSProviders
+	case ServicePayments:
+		return PaymentProviders
 	}
 	return nil
 }

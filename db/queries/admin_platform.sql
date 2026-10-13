@@ -1,20 +1,33 @@
+-- Revenue excludes cancelled orders, matching the dashboard's headline figures.
+-- Every one of the last 30 days is present (zero when nothing happened) so the
+-- charts and the trend are not computed over a gappy series.
 -- name: AdminOrdersByDay :many
 SELECT
-    date_trunc('day', created_at)::date AS day,
-    COUNT(*)::bigint AS order_count,
-    COALESCE(SUM(total), 0)::text AS revenue
-FROM orders
-WHERE created_at >= now() - interval '30 days'
-GROUP BY 1
+    d::date AS day,
+    COALESCE(o.order_count, 0)::bigint AS order_count,
+    COALESCE(o.revenue, 0)::text AS revenue
+FROM generate_series(current_date - 29, current_date, interval '1 day') AS d
+LEFT JOIN (
+    SELECT created_at::date AS day,
+           COUNT(*) AS order_count,
+           SUM(total) FILTER (WHERE status <> 'CANCELLED') AS revenue
+    FROM orders
+    WHERE created_at >= current_date - 29
+    GROUP BY 1
+) o ON o.day = d::date
 ORDER BY 1 ASC;
 
+-- Twelve weeks, empty weeks included.
 -- name: AdminTenantsByWeek :many
 SELECT
-    date_trunc('week', created_at)::date AS week_start,
-    COUNT(*)::bigint AS tenant_count
-FROM tenants
-WHERE created_at >= now() - interval '84 days'
-GROUP BY 1
+    w::date AS week_start,
+    COALESCE(t.tenant_count, 0)::bigint AS tenant_count
+FROM generate_series(date_trunc('week', now())::date - 77, date_trunc('week', now())::date, interval '7 days') AS w
+LEFT JOIN (
+    SELECT date_trunc('week', created_at)::date AS week_start, COUNT(*) AS tenant_count
+    FROM tenants
+    GROUP BY 1
+) t ON t.week_start = w::date
 ORDER BY 1 ASC;
 
 -- Every identity the platform knows about, tenant-scoped or not. The platform

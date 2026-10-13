@@ -144,6 +144,17 @@ func normalizeWriteRequest(service ServiceType, provider string, config map[stri
 		}
 		_ = mergeBack(cfg, sms)
 
+	case ServicePayments:
+		resolvedProvider = ProviderRazorpay
+		cfg["provider"] = ProviderRazorpay
+		pay := paymentsFrom(cfg)
+		pay.applyDefaults()
+		pay.Provider = ProviderRazorpay
+		if err := pay.Validate(); err != nil {
+			return WriteRequest{}, err
+		}
+		_ = mergeBack(cfg, pay)
+
 	default:
 		return WriteRequest{}, fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, service)
 	}
@@ -186,6 +197,13 @@ func smsFrom(cfg map[string]any) SMSConfig {
 		Provider:   asString(cfg["provider"]),
 		AccountSID: asString(cfg["account_sid"]),
 		FromNumber: asString(cfg["from_number"]),
+	}
+}
+
+func paymentsFrom(cfg map[string]any) PaymentsConfig {
+	return PaymentsConfig{
+		Provider: asString(cfg["provider"]),
+		KeyID:    asString(cfg["key_id"]),
 	}
 }
 
@@ -266,9 +284,9 @@ type TestRequest struct {
 
 // TestOutcome reports the result of a provider test.
 type TestOutcome struct {
-	OK      bool
-	Message string
-	Detail  string
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // runConnectionTest builds the provider and asks it to verify itself.
@@ -313,6 +331,12 @@ func (f *Factory) runConnectionTest(ctx context.Context, r *Resolved) (TestOutco
 			return TestOutcome{OK: false, Message: "Could not verify Twilio credentials", Detail: SafeErrorMessage(err)}, nil
 		}
 		return TestOutcome{OK: true, Message: "Twilio credentials verified"}, nil
+
+	case ServicePayments:
+		if err := CheckRazorpay(ctx, razorpayBaseURL, r.String("key_id"), r.Secret("key_secret")); err != nil {
+			return TestOutcome{OK: false, Message: "Could not verify the gateway credentials", Detail: SafeErrorMessage(err)}, nil
+		}
+		return TestOutcome{OK: true, Message: "Gateway credentials verified"}, nil
 	}
 	return TestOutcome{}, fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, r.Service)
 }

@@ -3,6 +3,7 @@ package orders
 import (
 	"context"
 	"errors"
+	"github.com/orderly/orderly-backend/internal/payments"
 	"net/http"
 	"time"
 
@@ -167,7 +168,7 @@ func (h *Handler) ConfirmPayment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid payment id")
 		return
 	}
-	pay, err := h.q.MarkPaymentPaid(r.Context(), sqlc.MarkPaymentPaidParams{
+	existing, err := h.q.GetPaymentByID(r.Context(), sqlc.GetPaymentByIDParams{
 		ID:       pgutil.UUID(id),
 		TenantID: pgutil.UUID(tenantID),
 	})
@@ -177,6 +178,29 @@ func (h *Handler) ConfirmPayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not confirm payment")
+		return
+	}
+	// Staff can only confirm money they handled: cash at the counter. An online
+	// payment is settled by the gateway alone.
+	if h.payments.V2() && existing.Method != storefront.MethodCash {
+		response.Error(w, http.StatusConflict, "not_cash_payment", "Only cash payments can be confirmed by staff")
+		return
+	}
+	order, lookupErr := h.orderByPayment(r.Context(), tenantID, existing.OrderID)
+	if lookupErr != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not confirm payment")
+		return
+	}
+	a := actorOf(r)
+	pay, changed, err := h.payments.Apply(r.Context(), refOf(order), existing, PaymentPaid, "",
+		payments.Actor{Type: a.Source, ID: a.ID})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not confirm payment")
+		return
+	}
+	if !changed {
+		// Already captured: same answer this endpoint always gave.
+		response.Error(w, http.StatusNotFound, "not_found", "payment not found")
 		return
 	}
 	// A shop that only starts cooking once payment lands should pick the order
@@ -232,6 +256,7 @@ func (h *Handler) StaffPaymentView(ctx context.Context, tenantID uuid.UUID, orde
 		t := pay.PaidAt.Time
 		out.PaidAt = &t
 	}
+	fillPaymentExtras(ctx, h.q, out, pay)
 	return out, nil
 }
 

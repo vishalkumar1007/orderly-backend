@@ -14,6 +14,7 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
+	"github.com/orderly/orderly-backend/internal/inventory"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
@@ -86,19 +87,19 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"methods":                sf.Payments.Methods(),
 		},
 		"ordering": map[string]any{
-			"enabled":             sf.OrderingAllowed(),
-			"closed_reason":       sf.ClosedReason(),
-			"prep_time_minutes":   sf.PrepTimeMinutes,
-			"customer_login":      sf.CustomerLogin,
-			"customer_login_mode": sf.CustomerLoginMode,
-			"payment_requirement": sf.Workflow.PaymentRequirement,
-			"auto_accept":         sf.Workflow.AutoAccept(),
-			"ready_notification":  sf.Workflow.ReadyNotification,
-			"order_ready_sound":   sf.Workflow.OrderReadySound,
-			"store_status":             sf.StoreStatus,
-			"store_status_label":       storefront.StoreStatusLabel(sf.StoreStatus),
-			"status_message":           sf.StatusMessage,
-			"status_message_display":   sf.DisplayStatusMessage(),
+			"enabled":                sf.OrderingAllowed(),
+			"closed_reason":          sf.ClosedReason(),
+			"prep_time_minutes":      sf.PrepTimeMinutes,
+			"customer_login":         sf.CustomerLogin,
+			"customer_login_mode":    sf.CustomerLoginMode,
+			"payment_requirement":    sf.Workflow.PaymentRequirement,
+			"auto_accept":            sf.Workflow.AutoAccept(),
+			"ready_notification":     sf.Workflow.ReadyNotification,
+			"order_ready_sound":      sf.Workflow.OrderReadySound,
+			"store_status":           sf.StoreStatus,
+			"store_status_label":     storefront.StoreStatusLabel(sf.StoreStatus),
+			"status_message":         sf.StatusMessage,
+			"status_message_display": sf.DisplayStatusMessage(),
 		},
 		"hours": map[string]any{
 			"always_open":  status.AlwaysOpen,
@@ -427,6 +428,21 @@ func asValidation(h *Handler, err error) *validationError {
 	var ve *validationError
 	if errors.As(err, &ve) {
 		return ve
+	}
+	// An illegal or gated order move is the caller's conflict, not a server
+	// fault: a staff double-tap must not look like an outage.
+	// Accepting needs stock the shop does not have: the staff member's call to
+	// make (adjust stock, or cancel), not a server fault.
+	var short *inventory.InsufficientError
+	if errors.As(err, &short) {
+		return &validationError{
+			Code: "insufficient_stock", Status: http.StatusConflict,
+			Message: short.Error() + ". Adjust the stock or cancel the order.",
+		}
+	}
+	var it *ErrInvalidTransition
+	if errors.As(err, &it) {
+		return &validationError{Code: "invalid_transition", Message: it.Message(), Status: http.StatusConflict}
 	}
 	return &validationError{Code: "internal_error", Message: "Could not complete that request", Status: 500}
 }

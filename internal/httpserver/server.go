@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -21,7 +22,9 @@ import (
 	"github.com/orderly/orderly-backend/internal/confighttp"
 	"github.com/orderly/orderly-backend/internal/configsvc"
 	"github.com/orderly/orderly-backend/internal/customers"
+	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/internal/hotel"
+	"github.com/orderly/orderly-backend/internal/inventory"
 	"github.com/orderly/orderly-backend/internal/menu"
 	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/orders"
@@ -49,6 +52,9 @@ type Server struct {
 	loader        *storefront.Loader
 	customers     *customers.Handler
 	payments      *payments.Handler
+	paymentMode   *payments.AdminHandler
+	paymentSvc    *payments.Service
+	payLimits     payLimits
 	configs       *confighttp.Handler
 	appointments  *appointments.Handler
 	hotel         *hotel.Handler
@@ -78,16 +84,21 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 	authSvc := auth.NewService(pool, cfg, log)
 	authSvc.AttachNotifications(configService.Notifications())
 	orderHandler := orders.NewHandler(pool, log)
+	paymentService := payments.NewService(pool, orderHandler.PayableSource(), configService, cfg.PaymentsV2, sandboxSecret(cfg), log)
+	orderHandler.SetPayments(paymentService)
 	loader := storefront.NewLoader(pool)
 	s := &Server{
 		log: log, pool: pool, cfg: cfg,
-		auth:         authSvc,
-		admin:        admin,
-		upload:       uploadHandler,
-		orders:       orderHandler,
-		customers:    customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
-		payments:     payments.NewHandler(pool, orderHandler, log),
-		configs:      confighttp.NewHandler(configService, box, admin, log),
+		auth:          authSvc,
+		admin:         admin,
+		upload:        uploadHandler,
+		orders:        orderHandler,
+		customers:     customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
+		payments:      payments.NewHandler(pool, orderHandler.PayableSource(), paymentService, log),
+		paymentMode:   payments.NewAdminHandler(paymentService, admin),
+		paymentSvc:    paymentService,
+		payLimits:     newPayLimits(cfg.PaymentsRateLimit),
+		configs:       confighttp.NewHandler(configService, box, admin, log),
 		appointments:  appointments.NewHandler(pool, log),
 		hotel:         hotel.NewHandler(pool, log),
 		tables:        tables.NewHandler(pool),
@@ -137,6 +148,12 @@ func (s *Server) StartNotificationWorker(ctx context.Context) {
 	notify.StartWorker(ctx, sqlc.New(s.pool), s.log, s.configService, 15*time.Second)
 }
 
+// StartPaymentSweeper expires payments whose time ran out, after first asking
+// the gateway whether a customer paid but the confirmation was lost.
+func (s *Server) StartPaymentSweeper(ctx context.Context) {
+	s.paymentSvc.RunSweeper(ctx, time.Minute)
+}
+
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -152,6 +169,10 @@ func (s *Server) Router() http.Handler {
 		MaxAge:           300,
 	}))
 	r.Use(tenantctx.Middleware(s.pool, s.cfg.BaseDomain))
+
+	// Gateway callbacks: no tenant host, no session. The provider signature is
+	// the credential.
+	r.With(wrap(s.payLimits.webhook)).Post("/api/v1/webhooks/payments/{provider}", s.payments.Webhook)
 
 	r.Get("/health", s.handleHealth)
 	r.Get("/health/ready", s.handleReady)
@@ -322,6 +343,13 @@ func (s *Server) Router() http.Handler {
 			ar.With(canConsoleIAM).Post("/users/{id}/resend-invite", s.admin.ResendConsoleInvite)
 
 			/* ---------- Providers ---------- */
+			// Dummy vs real payments: platform default and per-business override.
+			ar.With(canProviders).Get("/payments/health", s.paymentMode.Health)
+			ar.With(canProviders).Post("/payments/{id}/reconcile", s.paymentMode.Reconcile)
+			ar.With(canProviders).Get("/payments/settings", s.paymentMode.GetPlatform)
+			ar.With(canProviders).Put("/payments/settings", s.paymentMode.PutPlatform)
+			ar.With(canProviders).Get("/tenants/{id}/payments", s.paymentMode.GetTenant)
+			ar.With(canProviders).Put("/tenants/{id}/payments", s.paymentMode.PutTenant)
 			ar.With(canProviders).Get("/configurations", s.configs.ListConfigurations)
 			ar.With(canProviders).Get("/configurations/{service}", s.configs.GetConfiguration)
 			ar.With(canProviders).Put("/configurations/{service}", s.configs.PutConfiguration)
@@ -407,7 +435,10 @@ func (s *Server) Router() http.Handler {
 
 			tr.With(canStorefront).Patch("/theme", s.admin.UpdateMyTenantTheme)
 			tr.With(canAnalytics).Get("/dashboard", s.menu.Dashboard)
-			tr.With(canAnalytics).Get("/analytics", s.menu.Analytics)
+			tr.With(canAnalytics, entitlement.RequireFeature(sqlc.New(s.pool), entitlement.FeatureAnalytics)).Get("/analytics", s.menu.Analytics)
+			// What the plan includes and how much of it is used: drives the
+			// console's upgrade prompts and license banner.
+			tr.Get("/entitlements", entitlement.Handler{Q: sqlc.New(s.pool)}.Get)
 			tr.With(canStorefront).Post("/setup/complete-step", s.menu.CompleteSetupStep)
 			tr.With(canStorefront).Post("/publish", s.menu.Publish)
 			tr.With(canStorefront).Post("/unpublish", s.menu.Unpublish)
@@ -453,6 +484,15 @@ func (s *Server) Router() http.Handler {
 			tr.With(canMenu, reqCatalog).Patch("/categories/{id}", s.menu.UpdateCategory)
 			tr.With(canMenu, reqCatalog).Delete("/categories/{id}", s.menu.DeleteCategory)
 
+			// Inventory: menu permission, catalog capability, and the plan has to
+			// include it. A Basic plan gets feature_not_in_plan, not a blank page.
+			inv := inventory.NewHandler(s.pool, s.log)
+			reqInventory := entitlement.RequireFeature(sqlc.New(s.pool), entitlement.FeatureInventory)
+			tr.With(canMenu, reqCatalog, reqInventory).Get("/inventory", inv.List)
+			tr.With(canMenu, reqCatalog, reqInventory).Put("/inventory/{productId}", inv.Track)
+			tr.With(canMenu, reqCatalog, reqInventory).Post("/inventory/{productId}/adjust", inv.Adjust)
+			tr.With(canMenu, reqCatalog, reqInventory).Get("/inventory/{productId}/movements", inv.Movements)
+
 			tr.With(canMenu, reqCatalog).Get("/products", s.menu.ListProducts)
 			tr.With(canMenu, reqCatalog).Post("/products", s.menu.CreateProduct)
 			tr.With(canMenu, reqCatalog).Post("/products/reorder", s.menu.ReorderProducts)
@@ -477,6 +517,7 @@ func (s *Server) Router() http.Handler {
 			tr.With(canSell, reqOrders).Post("/orders/{id}/complete", s.orders.Transition("complete"))
 			tr.With(canSell, reqOrders).Post("/orders/{id}/cancel", s.orders.CancelStaffOrder)
 			tr.With(canSell, reqOrders).Post("/payments/{id}/confirm", s.orders.ConfirmPayment)
+			tr.With(canOrg, reqOrders).Post("/payments/{id}/refund", s.paymentMode.Refund)
 
 			// Staff and customers. A manager runs both; staff reach neither.
 			// CUSTOMERS/STAFF are "Yes" for every business type in the capability
@@ -592,6 +633,7 @@ func (s *Server) Router() http.Handler {
 			// the same configuration row, exposed at their own paths so the
 			// admin screens and the API surface both read clearly. Owner-only for
 			// the same reason as the rest of the storefront configuration.
+			tr.With(canOrg).Get("/payments/mode", s.paymentMode.GetOwn)
 			tr.With(canOrg).Get("/payment-settings", s.shop.GetStorefront)
 			tr.With(canOrg).Put("/payment-settings", s.shop.PutPaymentSettings)
 			tr.With(canOrg).Get("/order-workflow", s.shop.GetStorefront)
@@ -632,9 +674,9 @@ func (s *Server) Router() http.Handler {
 			pr.With(reqOrders).Get("/orders/lookup", s.orders.PublicLookupOrder)
 			pr.With(reqOrders).Get("/orders/{orderNumber}", s.orders.PublicTrackOrder)
 
-			pr.With(reqOrders).Post("/orders/{orderNumber}/pay", s.payments.Start)
-			pr.With(reqOrders).Post("/orders/{orderNumber}/pay/confirm", s.payments.Confirm)
-			pr.With(reqOrders).Get("/orders/{orderNumber}/pay", s.payments.Status)
+			pr.With(reqOrders, wrap(s.payLimits.start)).Post("/orders/{orderNumber}/pay", s.payments.Start)
+			pr.With(reqOrders, wrap(s.payLimits.confirm)).Post("/orders/{orderNumber}/pay/confirm", s.payments.Confirm)
+			pr.With(reqOrders, wrap(s.payLimits.status)).Get("/orders/{orderNumber}/pay", s.payments.Status)
 		})
 
 		// Storefront customer identity. Reachable before an order exists, so
@@ -755,17 +797,73 @@ func parseHTTPOrigin(origin string) (*url.URL, error) {
 	return u, nil
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	response.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+// Version is the build identifier, set at link time:
+//
+//	go build -ldflags "-X github.com/orderly/orderly-backend/internal/httpserver.Version=<git sha>"
+//
+// "dev" means a local build.
+var Version = "dev"
+
+var processStart = time.Now()
+
+func uptimeSeconds() int64 { return int64(time.Since(processStart).Seconds()) }
+
+// healthDetailAllowed says whether this caller may see build and schema detail.
+// With no HEALTH_DETAIL_TOKEN configured (local dev) everyone may; once one is
+// set, only a caller presenting it in X-Health-Token. The status itself —
+// up or down — is always public, because a monitor needs nothing more.
+func (s *Server) healthDetailAllowed(r *http.Request) bool {
+	want := s.cfg.HealthDetailToken
+	if want == "" {
+		return true
+	}
+	got := r.Header.Get("X-Health-Token")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
+// handleHealth is liveness: the process is up and serving. It deliberately
+// touches nothing else (no database), so a slow database never makes the
+// orchestrator kill a healthy API.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{"status": "ok"}
+	if s.healthDetailAllowed(r) {
+		out["version"], out["uptime_seconds"] = Version, uptimeSeconds()
+	}
+	response.JSON(w, http.StatusOK, out)
+}
+
+// handleReady is readiness: the API can actually serve — the database answers,
+// and (informationally) which migration it is on, so a deploy that forgot to
+// migrate is visible from outside. 503 only when the database is unreachable.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
+	t0 := time.Now()
 	if err := s.pool.Ping(ctx); err != nil {
 		s.log.Error("readiness check failed", "error", err)
 		response.Error(w, http.StatusServiceUnavailable, "not_ready", "database unavailable")
 		return
 	}
-	response.JSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	db := map[string]any{"ok": true}
+	out := map[string]any{"status": "ready", "database": db}
+	if s.healthDetailAllowed(r) {
+		db["latency_ms"] = time.Since(t0).Milliseconds()
+		out["version"], out["uptime_seconds"] = Version, uptimeSeconds()
+		// goose records applied migrations here. Best effort: a missing table (a
+		// database not managed by goose) just omits the field.
+		var schema *int64
+		if err := s.pool.QueryRow(ctx,
+			`SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&schema); err == nil && schema != nil {
+			out["schema_version"] = *schema
+		}
+	}
+	response.JSON(w, http.StatusOK, out)
+}
+
+// sandboxSecret is the key the dummy gateway signs its callbacks with.
+func sandboxSecret(cfg config.Config) string {
+	if cfg.PaymentsSandboxSecret != "" {
+		return cfg.PaymentsSandboxSecret
+	}
+	return cfg.JWTAccessSecret + ":payments-sandbox"
 }

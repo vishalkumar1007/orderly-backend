@@ -880,7 +880,6 @@ func TestCustomizeWritesAppearOnPublicStore(t *testing.T) {
 	env.mustStatus(http.StatusOK, status, "admin GET /customize while unpublished", body)
 }
 
-
 func TestCustomerLoginRequiredRejectsGuest(t *testing.T) {
 	env := newTestEnv(t)
 	shop := newShop(t, env)

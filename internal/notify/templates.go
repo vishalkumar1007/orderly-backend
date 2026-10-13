@@ -91,3 +91,17 @@ func substitute(body string, allowed []string, data map[string]any) string {
 	}
 	return strings.NewReplacer(pairs...).Replace(body)
 }
+
+// RenderSample is the saved wording for an event with each variable filled by a
+// readable sample ("Order #1042" style values), for a test send: it shows the
+// owner what a customer would actually receive. Falls back to a plain line when
+// no template exists yet.
+func RenderSample(ctx context.Context, q *sqlc.Queries, tenantID *uuid.UUID, eventCode, channel string) (subject, body string) {
+	sample := map[string]any{}
+	for _, name := range allowedVariables(ctx, q, eventCode) {
+		sample[name] = "[" + strings.ReplaceAll(name, "_", " ") + "]"
+	}
+	r := render(ctx, q, tenantID, eventCode, channel,
+		"Test: "+eventCode, "This is a test of the "+eventCode+" "+channel+" message.", sample)
+	return r.Subject, r.Body
+}

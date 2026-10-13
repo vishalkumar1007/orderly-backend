@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/config"
@@ -38,6 +40,9 @@ type testEnv struct {
 
 	// backupName prefixes this environment's configuration snapshots.
 	backupName string
+
+	// startedAt bounds the platform alerts this run may have raised.
+	startedAt time.Time
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -73,9 +78,38 @@ func newTestEnv(t *testing.T) *testEnv {
 	ts := httptest.NewServer(srv.Router())
 	t.Cleanup(ts.Close)
 
-	env := &testEnv{t: t, server: srv, http: ts, cfg: cfg}
+	ensureTestSuperAdmin(t, pool)
+	env := &testEnv{t: t, server: srv, http: ts, cfg: cfg, startedAt: time.Now().Add(-time.Second)}
 	env.snapshotConfigTables()
+	t.Cleanup(env.removePaymentAlerts)
 	return env
+}
+
+// A platform has at most one Super Admin (unique index), and many tests act as
+// one. A developer's database already has one; a fresh database (CI) does not,
+// so the suite makes one when it is missing and TestMain removes it afterwards.
+// Never created over an existing admin, and never left behind on a database
+// that had none: a leftover would make the real first-run setup screen
+// believe the platform is already initialised.
+var (
+	superAdminOnce    sync.Once
+	createdSuperAdmin uuid.UUID
+)
+
+func ensureTestSuperAdmin(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	superAdminOnce.Do(func() {
+		var id uuid.UUID
+		err := pool.QueryRow(context.Background(),
+			`INSERT INTO users (name, email, password_hash, role, status)
+			 SELECT 'Test Super Admin', 'test-super-admin@test.local', 'not-a-real-hash', 'SUPER_ADMIN', 'ACTIVE'
+			 WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'SUPER_ADMIN')
+			 ON CONFLICT DO NOTHING
+			 RETURNING id`).Scan(&id)
+		if err == nil {
+			createdSuperAdmin = id
+		}
+	})
 }
 
 // configTables are the rows the configuration tests rewrite. They hold real,
@@ -427,10 +461,29 @@ func (e *testEnv) createTenantOfType(name, slug, businessType string) uuid.UUID 
 		 FROM business_type_capabilities WHERE business_type_code = $2`, id, businessType); err != nil {
 		e.t.Fatalf("grant test tenant capabilities: %v", err)
 	}
+	// Real onboarding seeds the storefront row (storefront.Provision) in the
+	// same transaction; the public store and the order workflow read it with
+	// Load, which does not create it, so a fixture without it 404s / 500s.
+	if _, err := e.server.pool.Exec(ctx,
+		`INSERT INTO tenant_storefront_settings (tenant_id, business_name)
+		 VALUES ($1, $2) ON CONFLICT (tenant_id) DO NOTHING`, id, name); err != nil {
+		e.t.Fatalf("seed test tenant storefront: %v", err)
+	}
 	// Clean up so a test run does not leave a growing pile of tenants behind.
 	e.createdTenants = append(e.createdTenants, id)
 	e.t.Cleanup(e.removeTestTenants)
 	return id
+}
+
+// removePaymentAlerts removes the platform alerts this test run raised. A test
+// that provokes a payment problem makes the platform raise a real alert to the
+// real operator on this shared database; it must not be left in their bell.
+func (e *testEnv) removePaymentAlerts() {
+	_, _ = e.server.pool.Exec(context.Background(),
+		`DELETE FROM notifications
+		  WHERE event_code = 'PLATFORM_OPERATIONAL_ALERT'
+		    AND created_at >= $1
+		    AND data->>'alert_key' ~ '^(mismatch|refund|duplicate|overdue|badsig|unverifiable):'`, e.startedAt)
 }
 
 // removeTestTenants deletes every tenant this test created. Most child tables
@@ -449,6 +502,12 @@ func (e *testEnv) removeTestTenants() {
 			`DELETE FROM licenses WHERE tenant_id = $1`,
 			`DELETE FROM terms_acceptances WHERE tenant_id = $1`,
 			`DELETE FROM order_items WHERE tenant_id = $1`,
+			// Payment history is RESTRICT on purpose (financial record), so its
+			// children go before the payments themselves.
+			`DELETE FROM payment_attempts WHERE tenant_id = $1`,
+			`DELETE FROM payment_audit_log WHERE tenant_id = $1`,
+			`DELETE FROM payment_refunds WHERE tenant_id = $1`,
+			`DELETE FROM payment_events WHERE tenant_id = $1`,
 			`DELETE FROM payments WHERE tenant_id = $1`,
 			`DELETE FROM orders WHERE tenant_id = $1`,
 			`DELETE FROM subscriptions WHERE tenant_id = $1`,

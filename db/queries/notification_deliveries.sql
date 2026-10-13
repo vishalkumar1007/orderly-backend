@@ -3,9 +3,10 @@
 -- rather than an error, since "already enqueued" is success, not failure.
 -- name: EnqueueNotificationDelivery :one
 INSERT INTO notification_deliveries (
-    notification_id, tenant_id, event_code, channel, recipient, idempotency_key
+    notification_id, tenant_id, event_code, channel, recipient, idempotency_key,
+    subject, body, data
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING *;

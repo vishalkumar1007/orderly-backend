@@ -34,7 +34,7 @@ SELECT * FROM rooms WHERE id = $1 AND tenant_id = $2 LIMIT 1;
 
 -- name: UpdateRoomStatus :one
 UPDATE rooms SET status = $3
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: CreateReservation :one
@@ -50,19 +50,19 @@ SELECT * FROM reservations WHERE id = $1 AND tenant_id = $2 LIMIT 1;
 
 -- name: UpdateReservationStatus :one
 UPDATE reservations SET status = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: CheckInReservation :one
 UPDATE reservations
 SET status = 'CHECKED_IN', room_id = $3, checked_in_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: CheckOutReservation :one
 UPDATE reservations
 SET status = 'CHECKED_OUT', checked_out_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: CreateFolio :one
@@ -107,3 +107,6 @@ UPDATE housekeeping_tasks
 SET status = $3, completed_at = CASE WHEN $3 = 'DONE' THEN now() ELSE completed_at END
 WHERE id = $1 AND tenant_id = $2
 RETURNING *;
+
+-- name: GetRoomTypeByID :one
+SELECT * FROM room_types WHERE id = $1 AND tenant_id = $2 LIMIT 1;

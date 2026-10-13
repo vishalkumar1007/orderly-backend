@@ -11,6 +11,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cheapestPlanWithCapacity = `-- name: CheapestPlanWithCapacity :one
+SELECT name FROM plans
+WHERE is_active = TRUE
+  AND CASE $1::text
+        WHEN 'staff' THEN max_staff
+        ELSE max_products
+      END > $2::int
+  AND price > COALESCE((SELECT p.price FROM plans p WHERE p.name = $3::text), -1)
+ORDER BY price ASC, name ASC
+LIMIT 1
+`
+
+type CheapestPlanWithCapacityParams struct {
+	Resource    string `json:"resource"`
+	Needed      int32  `json:"needed"`
+	CurrentPlan string `json:"current_plan"`
+}
+
+// Cheapest active plan that allows more than `needed` of the resource and costs
+// more than the current plan (same rule as above).
+func (q *Queries) CheapestPlanWithCapacity(ctx context.Context, arg CheapestPlanWithCapacityParams) (string, error) {
+	row := q.db.QueryRow(ctx, cheapestPlanWithCapacity, arg.Resource, arg.Needed, arg.CurrentPlan)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
+const cheapestPlanWithEntitlement = `-- name: CheapestPlanWithEntitlement :one
+SELECT name FROM plans
+WHERE is_active = TRUE
+  AND $1::text = ANY (entitlements)
+  AND price > COALESCE((SELECT p.price FROM plans p WHERE p.name = $2::text), -1)
+ORDER BY price ASC, name ASC
+LIMIT 1
+`
+
+type CheapestPlanWithEntitlementParams struct {
+	Code        string `json:"code"`
+	CurrentPlan string `json:"current_plan"`
+}
+
+// The plan to point an upgrade prompt at: the cheapest active plan that carries
+// the feature AND costs more than the plan the business is on. A prompt that
+// said "upgrade" to a cheaper plan would be wrong; no row means "nothing to
+// upgrade to", and the caller drops the suggestion.
+func (q *Queries) CheapestPlanWithEntitlement(ctx context.Context, arg CheapestPlanWithEntitlementParams) (string, error) {
+	row := q.db.QueryRow(ctx, cheapestPlanWithEntitlement, arg.Code, arg.CurrentPlan)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
 const countTenantsOnPlan = `-- name: CountTenantsOnPlan :one
 SELECT COUNT(*)::bigint
 FROM tenants
@@ -25,19 +77,20 @@ func (q *Queries) CountTenantsOnPlan(ctx context.Context, planID pgtype.UUID) (i
 }
 
 const createPlan = `-- name: CreatePlan :one
-INSERT INTO plans (name, description, price, max_staff, max_products, features, is_active)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at
+INSERT INTO plans (name, description, price, max_staff, max_products, features, is_active, entitlements)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[])
+RETURNING id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements
 `
 
 type CreatePlanParams struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Price       pgtype.Numeric `json:"price"`
-	MaxStaff    int32          `json:"max_staff"`
-	MaxProducts int32          `json:"max_products"`
-	Features    []byte         `json:"features"`
-	IsActive    bool           `json:"is_active"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	Price        pgtype.Numeric `json:"price"`
+	MaxStaff     int32          `json:"max_staff"`
+	MaxProducts  int32          `json:"max_products"`
+	Features     []byte         `json:"features"`
+	IsActive     bool           `json:"is_active"`
+	Entitlements []string       `json:"entitlements"`
 }
 
 func (q *Queries) CreatePlan(ctx context.Context, arg CreatePlanParams) (Plan, error) {
@@ -49,6 +102,7 @@ func (q *Queries) CreatePlan(ctx context.Context, arg CreatePlanParams) (Plan, e
 		arg.MaxProducts,
 		arg.Features,
 		arg.IsActive,
+		arg.Entitlements,
 	)
 	var i Plan
 	err := row.Scan(
@@ -62,6 +116,7 @@ func (q *Queries) CreatePlan(ctx context.Context, arg CreatePlanParams) (Plan, e
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Entitlements,
 	)
 	return i, err
 }
@@ -103,7 +158,7 @@ func (q *Queries) CreateSubscription(ctx context.Context, arg CreateSubscription
 }
 
 const getPlanByID = `-- name: GetPlanByID :one
-SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at FROM plans
+SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements FROM plans
 WHERE id = $1
 LIMIT 1
 `
@@ -122,12 +177,13 @@ func (q *Queries) GetPlanByID(ctx context.Context, id pgtype.UUID) (Plan, error)
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Entitlements,
 	)
 	return i, err
 }
 
 const getPlanByName = `-- name: GetPlanByName :one
-SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at FROM plans
+SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements FROM plans
 WHERE name = $1
 LIMIT 1
 `
@@ -146,12 +202,13 @@ func (q *Queries) GetPlanByName(ctx context.Context, name string) (Plan, error) 
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Entitlements,
 	)
 	return i, err
 }
 
 const getPlanByNameAny = `-- name: GetPlanByNameAny :one
-SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at FROM plans
+SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements FROM plans
 WHERE name = $1
 LIMIT 1
 `
@@ -170,6 +227,7 @@ func (q *Queries) GetPlanByNameAny(ctx context.Context, name string) (Plan, erro
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Entitlements,
 	)
 	return i, err
 }
@@ -197,8 +255,38 @@ func (q *Queries) GetSubscriptionByTenant(ctx context.Context, tenantID pgtype.U
 	return i, err
 }
 
+const getTenantPlanLimits = `-- name: GetTenantPlanLimits :one
+SELECT p.name, p.max_staff, p.max_products, p.entitlements
+FROM tenants t
+JOIN plans p ON p.id = COALESCE(t.plan_id, (SELECT id FROM plans WHERE name = 'TRIAL' LIMIT 1))
+WHERE t.id = $1
+`
+
+type GetTenantPlanLimitsRow struct {
+	Name         string   `json:"name"`
+	MaxStaff     int32    `json:"max_staff"`
+	MaxProducts  int32    `json:"max_products"`
+	Entitlements []string `json:"entitlements"`
+}
+
+// What the tenant's plan allows: limits and enforced feature codes. One row per
+// tenant; loaded with the rest of the request's tenant context.
+// A tenant with no plan_id yet is treated as TRIAL, the same default the
+// tenet_architecture migration backfilled with.
+func (q *Queries) GetTenantPlanLimits(ctx context.Context, tenantID pgtype.UUID) (GetTenantPlanLimitsRow, error) {
+	row := q.db.QueryRow(ctx, getTenantPlanLimits, tenantID)
+	var i GetTenantPlanLimitsRow
+	err := row.Scan(
+		&i.Name,
+		&i.MaxStaff,
+		&i.MaxProducts,
+		&i.Entitlements,
+	)
+	return i, err
+}
+
 const listAllPlans = `-- name: ListAllPlans :many
-SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at FROM plans
+SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements FROM plans
 ORDER BY price ASC, name ASC
 `
 
@@ -222,6 +310,7 @@ func (q *Queries) ListAllPlans(ctx context.Context) ([]Plan, error) {
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Entitlements,
 		); err != nil {
 			return nil, err
 		}
@@ -234,7 +323,7 @@ func (q *Queries) ListAllPlans(ctx context.Context) ([]Plan, error) {
 }
 
 const listPlans = `-- name: ListPlans :many
-SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at FROM plans
+SELECT id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements FROM plans
 WHERE is_active = TRUE
 ORDER BY price ASC
 `
@@ -259,6 +348,7 @@ func (q *Queries) ListPlans(ctx context.Context) ([]Plan, error) {
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Entitlements,
 		); err != nil {
 			return nil, err
 		}
@@ -272,7 +362,7 @@ func (q *Queries) ListPlans(ctx context.Context) ([]Plan, error) {
 
 const listPlansWithUsage = `-- name: ListPlansWithUsage :many
 SELECT
-    p.id, p.name, p.description, p.price, p.max_staff, p.max_products, p.features, p.is_active, p.created_at, p.updated_at,
+    p.id, p.name, p.description, p.price, p.max_staff, p.max_products, p.features, p.is_active, p.created_at, p.updated_at, p.entitlements,
     (SELECT COUNT(*) FROM tenants t WHERE t.plan_id = p.id)::bigint AS tenant_count,
     (SELECT COUNT(*) FROM subscriptions s WHERE s.plan_id = p.id AND s.status IN ('TRIAL', 'ACTIVE'))::bigint AS active_subscriptions
 FROM plans p
@@ -290,6 +380,7 @@ type ListPlansWithUsageRow struct {
 	IsActive            bool               `json:"is_active"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	Entitlements        []string           `json:"entitlements"`
 	TenantCount         int64              `json:"tenant_count"`
 	ActiveSubscriptions int64              `json:"active_subscriptions"`
 }
@@ -316,6 +407,7 @@ func (q *Queries) ListPlansWithUsage(ctx context.Context) ([]ListPlansWithUsageR
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Entitlements,
 			&i.TenantCount,
 			&i.ActiveSubscriptions,
 		); err != nil {
@@ -342,20 +434,23 @@ SET
     -- the plan is offered to. NULL leaves the stored document untouched.
     features = COALESCE($6::jsonb, features),
     is_active = COALESCE($7, is_active),
+    -- entitlements are the feature codes the API enforces; NULL leaves them.
+    entitlements = COALESCE($8::text[], entitlements),
     updated_at = now()
-WHERE id = $8
-RETURNING id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at
+WHERE id = $9
+RETURNING id, name, description, price, max_staff, max_products, features, is_active, created_at, updated_at, entitlements
 `
 
 type UpdatePlanParams struct {
-	Name        pgtype.Text    `json:"name"`
-	Description pgtype.Text    `json:"description"`
-	Price       pgtype.Numeric `json:"price"`
-	MaxStaff    pgtype.Int4    `json:"max_staff"`
-	MaxProducts pgtype.Int4    `json:"max_products"`
-	Features    []byte         `json:"features"`
-	IsActive    pgtype.Bool    `json:"is_active"`
-	ID          pgtype.UUID    `json:"id"`
+	Name         pgtype.Text    `json:"name"`
+	Description  pgtype.Text    `json:"description"`
+	Price        pgtype.Numeric `json:"price"`
+	MaxStaff     pgtype.Int4    `json:"max_staff"`
+	MaxProducts  pgtype.Int4    `json:"max_products"`
+	Features     []byte         `json:"features"`
+	IsActive     pgtype.Bool    `json:"is_active"`
+	Entitlements []string       `json:"entitlements"`
+	ID           pgtype.UUID    `json:"id"`
 }
 
 func (q *Queries) UpdatePlan(ctx context.Context, arg UpdatePlanParams) (Plan, error) {
@@ -367,6 +462,7 @@ func (q *Queries) UpdatePlan(ctx context.Context, arg UpdatePlanParams) (Plan, e
 		arg.MaxProducts,
 		arg.Features,
 		arg.IsActive,
+		arg.Entitlements,
 		arg.ID,
 	)
 	var i Plan
@@ -381,6 +477,7 @@ func (q *Queries) UpdatePlan(ctx context.Context, arg UpdatePlanParams) (Plan, e
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Entitlements,
 	)
 	return i, err
 }

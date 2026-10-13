@@ -166,3 +166,9 @@ UPDATE users
 SET console_theme = sqlc.narg(console_theme), updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: CountActiveTenantUsers :one
+-- Seats in use against the plan's max_staff. Disabled users do not hold a seat.
+SELECT COUNT(*)::bigint
+FROM users
+WHERE tenant_id = sqlc.arg(tenant_id) AND status = 'ACTIVE';

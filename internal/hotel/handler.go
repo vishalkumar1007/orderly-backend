@@ -3,6 +3,7 @@ package hotel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -159,6 +162,10 @@ func (h *Handler) DeleteRoomType(w http.ResponseWriter, r *http.Request) {
 	if err := h.q.DeleteRoomType(r.Context(), sqlc.DeleteRoomTypeParams{
 		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID(r)),
 	}); err != nil {
+		if isForeignKeyViolation(err) {
+			response.Error(w, http.StatusConflict, "in_use", "This room type still has rooms or reservations. Remove or move them first.")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to delete room type")
 		return
 	}
@@ -205,6 +212,10 @@ func (h *Handler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid room_type_id")
 		return
 	}
+	if _, rerr := h.q.GetRoomTypeByID(r.Context(), sqlc.GetRoomTypeByIDParams{ID: pgutil.UUID(roomTypeID), TenantID: pgutil.UUID(tenantID(r))}); rerr != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown room type")
+		return
+	}
 	room, err := h.q.CreateRoom(r.Context(), sqlc.CreateRoomParams{
 		TenantID: pgutil.UUID(tenantID(r)), RoomTypeID: pgutil.UUID(roomTypeID), Number: strings.TrimSpace(req.Number),
 	})
@@ -244,8 +255,12 @@ func (h *Handler) SetRoomStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := h.q.UpdateRoomStatus(r.Context(), sqlc.UpdateRoomStatusParams{
-		ID: room.ID, TenantID: pgutil.UUID(tid), Status: req.Status,
+		ID: room.ID, TenantID: pgutil.UUID(tid), Status: req.Status, ExpectedStatus: room.Status,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
+		return
+	}
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not update room")
 		return
@@ -313,19 +328,31 @@ func (h *Handler) CreateReservation(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "check_out_date must be after check_in_date")
 		return
 	}
-	var customerID uuid.UUID
-	if req.CustomerID != nil {
-		if customerID, err = uuid.Parse(*req.CustomerID); err != nil {
+	// Absent means NULL, not the all-zero UUID (the foreign key rejects that and
+	// the booking used to fail with a 500).
+	var customerID *uuid.UUID
+	if req.CustomerID != nil && strings.TrimSpace(*req.CustomerID) != "" {
+		id, perr := uuid.Parse(strings.TrimSpace(*req.CustomerID))
+		if perr != nil {
 			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid customer_id")
 			return
 		}
+		if _, cerr := h.q.GetCustomerByID(r.Context(), sqlc.GetCustomerByIDParams{ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID(r))}); cerr != nil {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "unknown customer")
+			return
+		}
+		customerID = &id
+	}
+	if _, rerr := h.q.GetRoomTypeByID(r.Context(), sqlc.GetRoomTypeByIDParams{ID: pgutil.UUID(roomTypeID), TenantID: pgutil.UUID(tenantID(r))}); rerr != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown room type")
+		return
 	}
 	guests := int32(1)
 	if req.Guests != nil {
 		guests = *req.Guests
 	}
 	res, err := h.q.CreateReservation(r.Context(), sqlc.CreateReservationParams{
-		TenantID: pgutil.UUID(tenantID(r)), CustomerID: pgutil.NullUUID(&customerID),
+		TenantID: pgutil.UUID(tenantID(r)), CustomerID: pgutil.NullUUID(customerID),
 		RoomTypeID:   pgutil.UUID(roomTypeID),
 		CheckInDate:  pgtype.Date{Time: checkIn, Valid: true},
 		CheckOutDate: pgtype.Date{Time: checkOut, Valid: true},
@@ -390,8 +417,12 @@ func (h *Handler) Transition(action string) http.HandlerFunc {
 			return
 		}
 		updated, err := h.q.UpdateReservationStatus(r.Context(), sqlc.UpdateReservationStatusParams{
-			ID: res.ID, TenantID: pgutil.UUID(tid), Status: target,
+			ID: res.ID, TenantID: pgutil.UUID(tid), Status: target, ExpectedStatus: res.Status,
 		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
+			return
+		}
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not update reservation")
 			return
@@ -452,22 +483,43 @@ func (h *Handler) CheckIn(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("room is %s and cannot be occupied", room.Status))
 		return
 	}
-	updated, err := h.q.CheckInReservation(r.Context(), sqlc.CheckInReservationParams{
-		ID: res.ID, TenantID: pgutil.UUID(tid), RoomID: pgutil.UUID(roomID),
-	})
+	// One transaction, every write a compare-and-swap: two desks checking
+	// different guests into the same room cannot both succeed, and a failure
+	// part-way leaves neither the reservation nor the room changed.
+	tx, err := h.pool.Begin(r.Context())
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check in")
 		return
 	}
-	if _, err := h.q.UpdateRoomStatus(r.Context(), sqlc.UpdateRoomStatusParams{
-		ID: room.ID, TenantID: pgutil.UUID(tid), Status: RoomOccupied,
-	}); err != nil {
-		response.Error(w, http.StatusInternalServerError, "internal_error", "checked in but could not update the room")
+	defer tx.Rollback(r.Context())
+	qtx := h.q.WithTx(tx)
+	updated, err := qtx.CheckInReservation(r.Context(), sqlc.CheckInReservationParams{
+		ID: res.ID, TenantID: pgutil.UUID(tid), RoomID: pgutil.UUID(roomID), ExpectedStatus: res.Status,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
 		return
 	}
-	folio, err := h.q.CreateFolio(r.Context(), sqlc.CreateFolioParams{TenantID: pgutil.UUID(tid), ReservationID: res.ID})
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "internal_error", "checked in but could not open the folio")
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check in")
+		return
+	}
+	if _, err := qtx.UpdateRoomStatus(r.Context(), sqlc.UpdateRoomStatusParams{
+		ID: room.ID, TenantID: pgutil.UUID(tid), Status: RoomOccupied, ExpectedStatus: room.Status,
+	}); errors.Is(err, pgx.ErrNoRows) {
+		response.Error(w, http.StatusConflict, "invalid_transition", "That room was just taken. Pick another room.")
+		return
+	} else if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not update the room")
+		return
+	}
+	folio, err := qtx.CreateFolio(r.Context(), sqlc.CreateFolioParams{TenantID: pgutil.UUID(tid), ReservationID: res.ID})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not open the folio")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check in")
 		return
 	}
 	h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationCheckedIn, "Guest checked in")
@@ -498,24 +550,46 @@ func (h *Handler) CheckOut(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("cannot check out a reservation from %s", res.Status))
 		return
 	}
-	updated, err := h.q.CheckOutReservation(r.Context(), sqlc.CheckOutReservationParams{ID: res.ID, TenantID: pgutil.UUID(tid)})
+	tx, err := h.pool.Begin(r.Context())
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check out")
 		return
 	}
+	defer tx.Rollback(r.Context())
+	qtx := h.q.WithTx(tx)
+	updated, err := qtx.CheckOutReservation(r.Context(), sqlc.CheckOutReservationParams{
+		ID: res.ID, TenantID: pgutil.UUID(tid), ExpectedStatus: res.Status,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		response.Error(w, http.StatusConflict, "invalid_transition", "This record was just updated by someone else. Refresh and try again.")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check out")
+		return
+	}
+	// The room hand-off is conditional: housekeeping may already have moved
+	// it, in which case there is nothing to do (zero rows is not an error).
 	if roomID := pgutil.UUIDPtr(res.RoomID); roomID != nil {
 		rid, _ := uuid.Parse(*roomID)
-		if room, err := h.q.GetRoomByID(r.Context(), sqlc.GetRoomByIDParams{ID: pgutil.UUID(rid), TenantID: pgutil.UUID(tid)}); err == nil &&
-			CanTransitionRoom(room.Status, RoomCheckoutPending) {
-			_, _ = h.q.UpdateRoomStatus(r.Context(), sqlc.UpdateRoomStatusParams{
-				ID: room.ID, TenantID: pgutil.UUID(tid), Status: RoomCheckoutPending,
-			})
+		if _, err := qtx.UpdateRoomStatus(r.Context(), sqlc.UpdateRoomStatusParams{
+			ID: pgutil.UUID(rid), TenantID: pgutil.UUID(tid), Status: RoomCheckoutPending, ExpectedStatus: RoomOccupied,
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "could not release the room")
+			return
 		}
 	}
-	if folio, err := h.q.GetFolioByReservation(r.Context(), sqlc.GetFolioByReservationParams{
+	if folio, err := qtx.GetFolioByReservation(r.Context(), sqlc.GetFolioByReservationParams{
 		ReservationID: res.ID, TenantID: pgutil.UUID(tid),
 	}); err == nil {
-		_, _ = h.q.SetFolioStatus(r.Context(), sqlc.SetFolioStatusParams{ID: folio.ID, TenantID: pgutil.UUID(tid), Status: "SETTLED"})
+		if _, err := qtx.SetFolioStatus(r.Context(), sqlc.SetFolioStatusParams{ID: folio.ID, TenantID: pgutil.UUID(tid), Status: "SETTLED"}); err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "could not settle the folio")
+			return
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not check out")
+		return
 	}
 	h.notifyReservation(r.Context(), tid, updated, notify.TypeReservationCheckedOut, "Guest checked out")
 	response.JSON(w, http.StatusOK, reservationJSON(updated))
@@ -597,6 +671,10 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "reservation has no open folio yet — check in first")
 		return
 	}
+	if *req.Amount <= 0 || *req.Amount > 10_000_000 {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "amount must be greater than zero")
+		return
+	}
 	amount, err := pgutil.NumericFromFloat(*req.Amount)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid amount")
@@ -664,16 +742,29 @@ func (h *Handler) CreateHousekeepingTask(w http.ResponseWriter, r *http.Request)
 	default:
 		taskType = "CLEANING"
 	}
-	var assignedTo uuid.UUID
-	if req.AssignedTo != nil {
-		if assignedTo, err = uuid.Parse(*req.AssignedTo); err != nil {
+	// Absent means NULL, not the all-zero UUID (foreign key rejects it → 500).
+	var assignedTo *uuid.UUID
+	if req.AssignedTo != nil && strings.TrimSpace(*req.AssignedTo) != "" {
+		id, perr := uuid.Parse(strings.TrimSpace(*req.AssignedTo))
+		if perr != nil {
 			response.Error(w, http.StatusBadRequest, "invalid_request", "invalid assigned_to")
 			return
 		}
+		u, uerr := h.q.GetUserByID(r.Context(), pgutil.UUID(id))
+		if uerr != nil || !u.TenantID.Valid || uuid.UUID(u.TenantID.Bytes) != tenantID(r) {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "unknown staff member")
+			return
+		}
+		assignedTo = &id
+	}
+	// The room must be this business's own.
+	if _, rerr := h.q.GetRoomByID(r.Context(), sqlc.GetRoomByIDParams{ID: pgutil.UUID(roomID), TenantID: pgutil.UUID(tenantID(r))}); rerr != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown room")
+		return
 	}
 	task, err := h.q.CreateHousekeepingTask(r.Context(), sqlc.CreateHousekeepingTaskParams{
 		TenantID: pgutil.UUID(tenantID(r)), RoomID: pgutil.UUID(roomID), TaskType: taskType,
-		AssignedTo: pgutil.NullUUID(&assignedTo),
+		AssignedTo: pgutil.NullUUID(assignedTo),
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not create the task")
@@ -711,4 +802,10 @@ func housekeepingTaskJSON(t sqlc.HousekeepingTask) map[string]any {
 		out["assigned_to"] = *id
 	}
 	return out
+}
+
+// isForeignKeyViolation: a delete refused because other rows still point at it.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }

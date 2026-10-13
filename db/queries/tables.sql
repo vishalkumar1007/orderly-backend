@@ -20,7 +20,7 @@ RETURNING *;
 
 -- name: UpdateTableStatus :one
 UPDATE tables SET status = $3
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: DeleteTable :exec

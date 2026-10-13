@@ -51,6 +51,20 @@ func (q *Queries) CountActiveSessionsByTenant(ctx context.Context, tenantID pgty
 	return items, nil
 }
 
+const countActiveTenantUsers = `-- name: CountActiveTenantUsers :one
+SELECT COUNT(*)::bigint
+FROM users
+WHERE tenant_id = $1 AND status = 'ACTIVE'
+`
+
+// Seats in use against the plan's max_staff. Disabled users do not hold a seat.
+func (q *Queries) CountActiveTenantUsers(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTenantUsers, tenantID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countTenantUsers = `-- name: CountTenantUsers :one
 SELECT COUNT(*)::bigint
 FROM users

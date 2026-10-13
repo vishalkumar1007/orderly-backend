@@ -23,10 +23,15 @@ var analyticsWindows = map[string]int{
 	"90d": 90,
 }
 
+// analyticsGranularities are the bucket sizes the trend chart can use.
+var analyticsGranularities = map[string]bool{"day": true, "week": true, "month": true}
+
 // AnalyticsResponse is the tenant dashboard's data payload.
 type AnalyticsResponse struct {
 	Window string `json:"window"`
 	Days   int    `json:"days"`
+	// Granularity is the bucket size of OrdersByPeriod: day, week or month.
+	Granularity string `json:"granularity"`
 
 	OrdersToday  int64   `json:"orders_today"`
 	RevenueToday float64 `json:"revenue_today"`
@@ -55,16 +60,31 @@ type AnalyticsResponse struct {
 	MedianPrepMinutes float64 `json:"median_prep_minutes"`
 	AvgPrepMinutes    float64 `json:"avg_prep_minutes"`
 	AvgAcceptMinutes  float64 `json:"avg_accept_minutes"`
-	CompletionRate    float64 `json:"completion_rate"`
-	CancellationRate  float64 `json:"cancellation_rate"`
-	CancelledToday    int64   `json:"cancelled_today"`
+	// CompletionRate is completed ÷ ALL orders in the window, including ones
+	// still in the kitchen, so it dips on a busy afternoon. Kept for existing
+	// clients; FulfilmentRate is the figure to manage against.
+	CompletionRate   float64 `json:"completion_rate"`
+	CancellationRate float64 `json:"cancellation_rate"`
+	CancelledToday   int64   `json:"cancelled_today"`
+	// Fulfilment: of the orders that have FINISHED (completed or cancelled),
+	// how many were completed. Null until one has finished, so a quiet shop
+	// reads "—" instead of a misleading 0%.
+	CompletedOrders int64    `json:"completed_orders"`
+	CancelledOrders int64    `json:"cancelled_orders"`
+	FulfilmentRate  *float64 `json:"fulfilment_rate"`
 
-	OrdersByDay     []DayPoint      `json:"orders_by_day"`
-	OrdersByHour    []HourPoint     `json:"orders_by_hour"`
-	TopProducts     []ProductPoint  `json:"top_products"`
-	TopCategories   []CategoryPoint `json:"top_categories"`
-	PaymentMix      []PaymentPoint  `json:"payment_mix"`
-	StatusBreakdown []StatusPoint   `json:"status_breakdown"`
+	// OrdersByDay is always one point per day. OrdersByPeriod is the same data
+	// grouped by Granularity; its `day` is the first day of each bucket
+	// (Monday for weeks, the 1st for months).
+	OrdersByDay    []DayPoint     `json:"orders_by_day"`
+	OrdersByPeriod []DayPoint     `json:"orders_by_period"`
+	OrdersByHour   []HourPoint    `json:"orders_by_hour"`
+	TopProducts    []ProductPoint `json:"top_products"`
+	// TopProductsByRevenue ranks the same sales by money instead of volume.
+	TopProductsByRevenue []ProductPoint  `json:"top_products_by_revenue"`
+	TopCategories        []CategoryPoint `json:"top_categories"`
+	PaymentMix           []PaymentPoint  `json:"payment_mix"`
+	StatusBreakdown      []StatusPoint   `json:"status_breakdown"`
 }
 
 // CategoryPoint is a line on the best-selling categories list.
@@ -124,9 +144,17 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		// because of a stale or hand-edited query string.
 		window, days = "30d", analyticsWindows["30d"]
 	}
+	granularity := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("granularity")))
+	if !analyticsGranularities[granularity] {
+		granularity = "day"
+	}
 	// The queries take the window as a Postgres interval so the filter can use
 	// the column index; a plain integer would defeat that.
-	span := pgtype.Interval{Microseconds: int64(days) * int64(24*time.Hour/time.Microsecond)}
+	//
+	// Valid must be true: pgx sends an invalid Interval as NULL, `now() - NULL`
+	// is NULL, and every windowed query then returns no rows — the dashboard's
+	// charts, best sellers, prep times and rates all silently read zero.
+	span := pgtype.Interval{Microseconds: int64(days) * int64(24*time.Hour/time.Microsecond), Valid: true}
 
 	summary, err := h.q.TenantPeriodSummary(ctx, tenant)
 	if err != nil {
@@ -159,6 +187,16 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load top products")
+		return
+	}
+
+	topByRevenue, err := h.q.TenantTopProductsByRevenue(ctx, sqlc.TenantTopProductsByRevenueParams{
+		TenantID: tenant,
+		Days:     span,
+		RowLimit: 6,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load top products by revenue")
 		return
 	}
 
@@ -196,9 +234,11 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	daily := fillDayGaps(byDay, days)
 	out := AnalyticsResponse{
 		Window:              window,
 		Days:                days,
+		Granularity:         granularity,
 		OrdersToday:         summary.OrdersToday,
 		RevenueToday:        parseMoney(summary.RevenueToday),
 		Orders7d:            summary.Orders7d,
@@ -221,13 +261,18 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		CompletionRate:    rate(operations.Completed, operations.Total),
 		CancellationRate:  rate(operations.Cancelled, operations.Total),
 		CancelledToday:    operations.CancelledToday,
+		CompletedOrders:   operations.Completed,
+		CancelledOrders:   operations.Cancelled,
+		FulfilmentRate:    fulfilmentRate(operations.Completed, operations.Cancelled),
 
-		OrdersByDay:     fillDayGaps(byDay, days),
-		OrdersByHour:    averageByHour(byHour, days),
-		TopProducts:     topProducts(top),
-		TopCategories:   topCategories(categories),
-		PaymentMix:      paymentMix(payments),
-		StatusBreakdown: statusBreakdown(status),
+		OrdersByDay:          daily,
+		OrdersByPeriod:       bucketPoints(daily, granularity),
+		OrdersByHour:         averageByHour(byHour, days),
+		TopProducts:          topProducts(top),
+		TopProductsByRevenue: topProductsByRevenue(topByRevenue),
+		TopCategories:        topCategories(categories),
+		PaymentMix:           paymentMix(payments),
+		StatusBreakdown:      statusBreakdown(status),
 	}
 
 	response.JSON(w, http.StatusOK, out)
@@ -266,6 +311,55 @@ func paymentMix(rows []sqlc.TenantPaymentBreakdownRow) []PaymentPoint {
 			Revenue:    parseMoney(r.Revenue),
 			Share:      share,
 		})
+	}
+	return out
+}
+
+// fulfilmentRate is completed ÷ finished (completed + cancelled) as a
+// percentage, or nil while nothing has finished — an order still in the kitchen
+// is neither a success nor a failure yet.
+func fulfilmentRate(completed, cancelled int64) *float64 {
+	finished := completed + cancelled
+	if finished <= 0 {
+		return nil
+	}
+	v := round1(float64(completed) / float64(finished) * 100)
+	return &v
+}
+
+// bucketPoints groups the daily series by week (Monday start) or month (the
+// 1st). Day granularity returns the series unchanged. Totals are preserved: the
+// buckets always add up to exactly the days they were built from.
+func bucketPoints(days []DayPoint, granularity string) []DayPoint {
+	if granularity != "week" && granularity != "month" {
+		return days
+	}
+	out := make([]DayPoint, 0, len(days)/5+1)
+	index := map[string]int{}
+	for _, d := range days {
+		t, err := time.Parse("2006-01-02", d.Day)
+		if err != nil {
+			continue
+		}
+		if granularity == "week" {
+			// time.Weekday: Sunday=0. Step back to Monday.
+			t = t.AddDate(0, 0, -((int(t.Weekday()) + 6) % 7))
+		} else {
+			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+		}
+		key := t.Format("2006-01-02")
+		at, ok := index[key]
+		if !ok {
+			index[key] = len(out)
+			out = append(out, DayPoint{Day: key})
+			at = len(out) - 1
+		}
+		out[at].OrderCount += d.OrderCount
+		out[at].Revenue += d.Revenue
+	}
+	// Money summed as floats picks up artefacts (0.1 + 0.2); keep paise.
+	for i := range out {
+		out[i].Revenue = math.Round(out[i].Revenue*100) / 100
 	}
 	return out
 }
@@ -342,6 +436,14 @@ func topProducts(rows []sqlc.TenantTopProductsRow) []ProductPoint {
 			Units:   r.Units,
 			Revenue: parseMoney(r.Revenue),
 		})
+	}
+	return out
+}
+
+func topProductsByRevenue(rows []sqlc.TenantTopProductsByRevenueRow) []ProductPoint {
+	out := make([]ProductPoint, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ProductPoint{Name: r.Name, Units: r.Units, Revenue: parseMoney(r.Revenue)})
 	}
 	return out
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/orderly/orderly-backend/internal/payments"
 	"strconv"
 	"time"
 
@@ -68,6 +69,11 @@ type PaymentView struct {
 	FailureReason string
 	PaidAt        *time.Time
 	Attempts      int
+	// IsTest marks money that went through the dummy gateway: nobody was charged.
+	IsTest bool
+	// RefundStatus is PENDING, COMPLETED or FAILED for the latest refund, if any.
+	RefundStatus   string
+	RefundedAmount float64
 }
 
 // IsOnline reports whether the money is collected through the payment step
@@ -85,6 +91,20 @@ func (p *PaymentView) Settled() bool {
 // collects in person.
 func (p *PaymentView) AwaitingCash() bool {
 	return p != nil && !p.Settled() && p.Method == storefront.MethodCash
+}
+
+// fillPaymentExtras adds the test label and refund state to a payment view. A
+// refund is only looked up when the payment is in a refund state, so ordinary
+// order lists cost no extra query.
+func fillPaymentExtras(ctx context.Context, q *sqlc.Queries, p *PaymentView, pay sqlc.Payment) {
+	p.IsTest = payments.IsTest(pay)
+	if pay.Status != "REFUNDING" && pay.Status != PaymentRefunded {
+		return
+	}
+	if rf, err := q.GetLatestPaymentRefund(ctx, pay.ID); err == nil {
+		p.RefundStatus = rf.Status
+		p.RefundedAmount = pgutil.NumericToFloat(rf.Amount)
+	}
 }
 
 // HistoryEntry is one recorded state change.
@@ -225,6 +245,11 @@ func (o OrderView) Detail() map[string]any {
 			"status":   o.Payment.Status,
 			"amount":   o.Payment.Amount,
 			"attempts": o.Payment.Attempts,
+			"is_test":  o.Payment.IsTest,
+		}
+		if o.Payment.RefundStatus != "" {
+			payment["refund_status"] = o.Payment.RefundStatus
+			payment["refunded_amount"] = o.Payment.RefundedAmount
 		}
 		if o.Payment.PaidAt != nil {
 			payment["paid_at"] = o.Payment.PaidAt.Format(time.RFC3339)
@@ -288,10 +313,15 @@ func (o OrderView) StaffBoard() map[string]any {
 	}
 	if o.Payment != nil {
 		payment := map[string]any{
-			"id":     o.Payment.ID,
-			"method": o.Payment.Method,
-			"status": o.Payment.Status,
-			"amount": o.Payment.Amount,
+			"id":      o.Payment.ID,
+			"method":  o.Payment.Method,
+			"status":  o.Payment.Status,
+			"amount":  o.Payment.Amount,
+			"is_test": o.Payment.IsTest,
+		}
+		if o.Payment.RefundStatus != "" {
+			payment["refund_status"] = o.Payment.RefundStatus
+			payment["refunded_amount"] = o.Payment.RefundedAmount
 		}
 		if o.Payment.PaidAt != nil {
 			payment["paid_at"] = o.Payment.PaidAt.Format(time.RFC3339)
@@ -453,6 +483,7 @@ func (v *Viewer) hydrate(ctx context.Context, row sqlc.Order, sf storefront.Stor
 			t := pay.PaidAt.Time
 			p.PaidAt = &t
 		}
+		fillPaymentExtras(ctx, v.q, p, pay)
 		view.Payment = p
 	}
 	for _, h := range history {
