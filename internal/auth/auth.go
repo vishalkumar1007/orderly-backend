@@ -92,26 +92,9 @@ type Claims struct {
 	TenantID *string `json:"tenant_id,omitempty"`
 	Email    string  `json:"email"`
 	Name     string  `json:"name"`
-	// CustomerID is set only on storefront customer tokens. Staff and admin
-	// tokens identify a `users` row through Subject instead.
 	CustomerID *string `json:"customer_id,omitempty"`
-	// Purpose marks a token minted for one narrow use outside the normal
-	// access/refresh pair — "mfa_setup" or "mfa_challenge" — so it can never
-	// be mistaken for (or replayed as) a real session token: ordinary
-	// protected routes carry no Role/TenantID on these and parseMFAToken is
-	// the only code that accepts them, and only for the matching purpose.
 	Purpose string `json:"purpose,omitempty"`
-	// MFASecret rides along on an "mfa_setup" token only: the secret a user is
-	// enrolling is never written to the database until they prove they can
-	// generate a matching code, so it has nowhere to live between the two
-	// requests except this short-lived signed token.
 	MFASecret string `json:"mfa_secret,omitempty"`
-	// MFAVerified means "the MFA requirement in force at mint time was
-	// satisfied" — either a real challenge was just cleared, or none was
-	// required at all. It is NOT proof the user currently has an enrolled
-	// method: Refresh must re-derive that fresh from user_mfa_methods on
-	// every call rather than trust this bit, since a vacuously-true value
-	// minted before a policy change must not grant an indefinite free pass.
 	MFAVerified bool `json:"mfa_verified,omitempty"`
 	jwt.RegisteredClaims
 }
