@@ -12,24 +12,32 @@ import (
 )
 
 const createTemplateVersion = `-- name: CreateTemplateVersion :one
-INSERT INTO notification_templates (tenant_id, event_code, channel, subject, body, is_active, version)
+INSERT INTO notification_templates (tenant_id, event_code, channel, subject, body, heading, preheader, button_label, button_url, html_body, highlight, footnote, is_active, version)
 VALUES (
-    $5, $1, $2, $3, $4, TRUE,
+    $5, $1, $2, $3, $4,
+    $6, $7, $8, $9, $10, $11, $12, TRUE,
     COALESCE((
         SELECT MAX(version) + 1 FROM notification_templates
         WHERE event_code = $1 AND channel = $2
           AND tenant_id IS NOT DISTINCT FROM $5::uuid
     ), 1)
 )
-RETURNING id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at
+RETURNING id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at, heading, preheader, button_label, button_url, html_body, highlight, footnote
 `
 
 type CreateTemplateVersionParams struct {
-	EventCode string      `json:"event_code"`
-	Channel   string      `json:"channel"`
-	Subject   string      `json:"subject"`
-	Body      string      `json:"body"`
-	TenantID  pgtype.UUID `json:"tenant_id"`
+	EventCode   string      `json:"event_code"`
+	Channel     string      `json:"channel"`
+	Subject     string      `json:"subject"`
+	Body        string      `json:"body"`
+	TenantID    pgtype.UUID `json:"tenant_id"`
+	Heading     string      `json:"heading"`
+	Preheader   string      `json:"preheader"`
+	ButtonLabel string      `json:"button_label"`
+	ButtonUrl   string      `json:"button_url"`
+	HtmlBody    string      `json:"html_body"`
+	Highlight   string      `json:"highlight"`
+	Footnote    string      `json:"footnote"`
 }
 
 func (q *Queries) CreateTemplateVersion(ctx context.Context, arg CreateTemplateVersionParams) (NotificationTemplate, error) {
@@ -39,6 +47,13 @@ func (q *Queries) CreateTemplateVersion(ctx context.Context, arg CreateTemplateV
 		arg.Subject,
 		arg.Body,
 		arg.TenantID,
+		arg.Heading,
+		arg.Preheader,
+		arg.ButtonLabel,
+		arg.ButtonUrl,
+		arg.HtmlBody,
+		arg.Highlight,
+		arg.Footnote,
 	)
 	var i NotificationTemplate
 	err := row.Scan(
@@ -52,6 +67,13 @@ func (q *Queries) CreateTemplateVersion(ctx context.Context, arg CreateTemplateV
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Heading,
+		&i.Preheader,
+		&i.ButtonLabel,
+		&i.ButtonUrl,
+		&i.HtmlBody,
+		&i.Highlight,
+		&i.Footnote,
 	)
 	return i, err
 }
@@ -78,7 +100,7 @@ func (q *Queries) DeactivateTemplate(ctx context.Context, arg DeactivateTemplate
 }
 
 const getEffectiveTemplate = `-- name: GetEffectiveTemplate :one
-SELECT id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at FROM notification_templates
+SELECT id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at, heading, preheader, button_label, button_url, html_body, highlight, footnote FROM notification_templates
 WHERE event_code = $1 AND channel = $2 AND is_active
   AND (tenant_id = $3 OR tenant_id IS NULL)
 ORDER BY tenant_id NULLS LAST
@@ -105,12 +127,19 @@ func (q *Queries) GetEffectiveTemplate(ctx context.Context, arg GetEffectiveTemp
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Heading,
+		&i.Preheader,
+		&i.ButtonLabel,
+		&i.ButtonUrl,
+		&i.HtmlBody,
+		&i.Highlight,
+		&i.Footnote,
 	)
 	return i, err
 }
 
 const listEffectiveTemplatesForTenant = `-- name: ListEffectiveTemplatesForTenant :many
-SELECT DISTINCT ON (event_code, channel) id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at
+SELECT DISTINCT ON (event_code, channel) id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at, heading, preheader, button_label, button_url, html_body, highlight, footnote
 FROM notification_templates
 WHERE is_active AND (tenant_id = $1 OR tenant_id IS NULL)
 ORDER BY event_code, channel, tenant_id NULLS LAST
@@ -136,6 +165,13 @@ func (q *Queries) ListEffectiveTemplatesForTenant(ctx context.Context, tenantID 
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Heading,
+			&i.Preheader,
+			&i.ButtonLabel,
+			&i.ButtonUrl,
+			&i.HtmlBody,
+			&i.Highlight,
+			&i.Footnote,
 		); err != nil {
 			return nil, err
 		}
@@ -148,7 +184,7 @@ func (q *Queries) ListEffectiveTemplatesForTenant(ctx context.Context, tenantID 
 }
 
 const listPlatformTemplates = `-- name: ListPlatformTemplates :many
-SELECT id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at FROM notification_templates
+SELECT id, tenant_id, event_code, channel, subject, body, is_active, version, created_at, updated_at, heading, preheader, button_label, button_url, html_body, highlight, footnote FROM notification_templates
 WHERE is_active AND tenant_id IS NULL
 ORDER BY event_code, channel
 `
@@ -173,6 +209,13 @@ func (q *Queries) ListPlatformTemplates(ctx context.Context) ([]NotificationTemp
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Heading,
+			&i.Preheader,
+			&i.ButtonLabel,
+			&i.ButtonUrl,
+			&i.HtmlBody,
+			&i.Highlight,
+			&i.Footnote,
 		); err != nil {
 			return nil, err
 		}
@@ -182,4 +225,23 @@ func (q *Queries) ListPlatformTemplates(ctx context.Context) ([]NotificationTemp
 		return nil, err
 	}
 	return items, nil
+}
+
+const tenantMayEditTemplate = `-- name: TenantMayEditTemplate :one
+SELECT EXISTS (
+    SELECT 1 FROM notification_events e
+    WHERE e.code = $1
+      AND (e.category <> 'PLATFORM' OR EXISTS (
+          SELECT 1 FROM notification_rules r
+          WHERE r.event_code = e.code AND r.recipient_policy <> 'PLATFORM'))
+)::bool
+`
+
+// A business may word any message except the platform's own (PLATFORM events
+// that no business rule routes to, e.g. console invitations and system alerts).
+func (q *Queries) TenantMayEditTemplate(ctx context.Context, code string) (bool, error) {
+	row := q.db.QueryRow(ctx, tenantMayEditTemplate, code)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }

@@ -44,7 +44,7 @@ func allowAndPolicyTenant(t *testing.T, env *testEnv, name, slug, mode string, m
 	return tenantID
 }
 
-// createRealTenantAdmin inserts a tenant admin with a real bcrypt password —
+// createRealTenantAdmin inserts a tenant admin with a real bcrypt password:
 // mintToken's fixture users have no usable password, so exercising an actual
 // login requires a real row, same pattern mfa_test.go already established.
 func createRealTenantAdmin(t *testing.T, env *testEnv, tenantID uuid.UUID, password string) (email string) {
@@ -66,7 +66,7 @@ func createRealTenantAdmin(t *testing.T, env *testEnv, tenantID uuid.UUID, passw
 // TestAdminLoginRejectsAccountPendingPasswordSetup closes the third bypass
 // found while building this: authenticateUser skips the password check
 // entirely when must_set_password is true (there is no usable password
-// yet), and AdminLogin had no must_set_password check of its own — unlike
+// yet), and AdminLogin had no must_set_password check of its own: unlike
 // TenantLogin, which already guarded it. That combination meant any
 // invited-but-not-yet-activated console account could be logged into with
 // any password string at all.
@@ -88,7 +88,7 @@ func TestAdminLoginRejectsAccountPendingPasswordSetup(t *testing.T) {
 	})
 
 	status, body := env.do(http.MethodPost, "/api/v1/auth/admin/login", "", map[string]any{
-		"email": email, "password": "literally anything — the bug let this through",
+		"email": email, "password": "literally anything: the bug let this through",
 	})
 	if status == http.StatusOK {
 		t.Fatalf("admin login must not succeed while must_set_password is true, got 200: %v", body)
@@ -227,7 +227,7 @@ func TestMFAGracePeriodAllowsNormalLoginBeforeDeadline(t *testing.T) {
 
 // TestEmailOTPUnavailableWithoutProvider proves a missing email
 // configuration produces a clear, typed error rather than a silent
-// fallback — no SMTP provider is configured anywhere in this test stack.
+// fallback: no SMTP provider is configured anywhere in this test stack.
 func TestEmailOTPUnavailableWithoutProvider(t *testing.T) {
 	env := newTestEnv(t)
 	tenantID := allowAndPolicyTenant(t, env, "Email OTP Shop", "email-otp-"+randSuffix(),
@@ -244,7 +244,7 @@ func TestEmailOTPUnavailableWithoutProvider(t *testing.T) {
 }
 
 // TestEmailOTPAttemptLimitAndExpiry exercises the rate-limit and expiry
-// paths directly against the stored code row — mirroring
+// paths directly against the stored code row: mirroring
 // internal/customers/otp.go's own test shape, since no provider is
 // configured to drive a real send in this stack.
 func TestEmailOTPAttemptLimitAndExpiry(t *testing.T) {

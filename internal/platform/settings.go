@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/orderly/orderly-backend/internal/brand"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
@@ -22,7 +23,7 @@ type storedPlatformConfig struct {
 	// own row and never reads these.
 	//
 	// A logo and favicon URL used to live here too. They were stored,
-	// validated and returned, and nothing ever rendered either of them — the
+	// validated and returned, and nothing ever rendered either of them: the
 	// rail shows the platform name as text and the favicon comes from the
 	// tenant's storefront or the bundled asset. A field that cannot change
 	// anything is worse than a missing one, because somebody fills it in and
@@ -42,7 +43,7 @@ type storedPlatformConfig struct {
 	DefaultPlan           string `json:"default_plan"`
 	MaintenanceMode       bool   `json:"maintenance_mode"`
 
-	// MFA policy for console accounts (SuperAdmin/PlatformAdmin/Support) —
+	// MFA policy for console accounts (SuperAdmin/PlatformAdmin/Support):
 	// never a tenant's. Read by internal/auth.GetPlatformMFAPolicy, which
 	// unmarshals just these fields out of this same JSON blob rather than
 	// importing this package (this package already imports internal/auth).
@@ -335,10 +336,8 @@ func (h *Handler) PatchSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		switch cfg.BrandColorMode {
-		case "", "light", "soft", "dark", "night", "system":
-		default:
-			response.Error(w, http.StatusBadRequest, "invalid_request", "color mode must be light, soft, dark, night, or system")
+		if cfg.BrandColorMode != "" && !brand.ValidColorMode(cfg.BrandColorMode) {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "color mode must be one of "+strings.Join(brand.ColorModes, ", "))
 			return
 		}
 		if cfg.BrandPrimary != "" && !hexColorRe.MatchString(cfg.BrandPrimary) {

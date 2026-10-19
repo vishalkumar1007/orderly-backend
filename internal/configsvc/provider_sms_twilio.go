@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// twilioProvider talks to the Twilio REST API over plain net/http — no SDK
+// twilioProvider talks to the Twilio REST API over plain net/http: no SDK
 // dependency, matching this package's existing providers (net/smtp for
 // email, the AWS v4-signed S3 API for storage).
 type twilioProvider struct {
@@ -35,7 +35,7 @@ func newTwilioProvider(r *Resolved) *twilioProvider {
 func (p *twilioProvider) Provider() string   { return ProviderTwilio }
 func (p *twilioProvider) FromNumber() string { return p.cfg.FromNumber }
 
-// TestConnection fetches the account resource. It sends no message — the
+// TestConnection fetches the account resource. It sends no message: the
 // same "verify, don't act" contract as the SMTP and storage providers.
 func (p *twilioProvider) TestConnection(ctx context.Context) error {
 	endpoint := fmt.Sprintf("%s/Accounts/%s.json", twilioBaseURL, url.PathEscape(p.cfg.AccountSID))

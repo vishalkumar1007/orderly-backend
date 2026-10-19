@@ -11,7 +11,7 @@
 --
 -- One row per tenant, because a storefront has one draft. `document` is the
 -- same shape the admin API already returns, so the Studio edits, saves and
--- publishes exactly what it renders — no second schema to keep in step.
+-- publishes exactly what it renders: no second schema to keep in step.
 --
 -- `base_version` is the storefront's `updated_at` at the moment the draft was
 -- started. Publishing compares it with the live row: if the shop moved on

@@ -18,13 +18,14 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
 // Email OTP policy. Shape mirrors internal/customers/otp.go's phone-OTP
-// pattern exactly — the only rate-limiting precedent in this codebase —
+// pattern exactly: the only rate-limiting precedent in this codebase:
 // scoped by user_id instead of tenant_id+phone.
 const (
 	emailOTPCodeLength  = 6
@@ -34,10 +35,10 @@ const (
 
 var (
 	ErrEmailOTPUnavailable     = errors.New("email is not configured for this account")
-	ErrEmailOTPNoCode          = errors.New("no code was requested — request one first")
-	ErrEmailOTPExpired         = errors.New("that code has expired — send a new one")
-	ErrEmailOTPTooManyAttempts = errors.New("too many incorrect attempts — request a new code")
-	ErrEmailOTPRateLimited     = errors.New("too many codes requested — try again in a few minutes")
+	ErrEmailOTPNoCode          = errors.New("no code was requested: request one first")
+	ErrEmailOTPExpired         = errors.New("that code has expired: send a new one")
+	ErrEmailOTPTooManyAttempts = errors.New("too many incorrect attempts: request a new code")
+	ErrEmailOTPRateLimited     = errors.New("too many codes requested: try again in a few minutes")
 	ErrEmailOTPResendTooSoon   = errors.New("please wait before requesting another code")
 )
 
@@ -77,7 +78,7 @@ func (s *Service) activeEmailOTP(ctx context.Context, userID uuid.UUID) (sqlc.Mf
 // RequestEmailOTP issues and emails a fresh code, provided Email OTP is
 // allowed by this account's policy and a working, permitted email provider
 // resolves for it (configsvc.Notifications.Send/SendPlatform answers that
-// question itself — no separate availability precheck needed).
+// question itself: no separate availability precheck needed).
 func (s *Service) RequestEmailOTP(ctx context.Context, user sqlc.User) error {
 	if err := s.checkMethodAllowed(ctx, user, MethodEmailOTP); err != nil {
 		return err
@@ -109,7 +110,7 @@ func (s *Service) RequestEmailOTP(ctx context.Context, user sqlc.User) error {
 
 // verifyEmailOTP checks a submitted code against the stored digest and
 // consumes it on success. The attempt counter lives in the database and is
-// incremented on every failure — including the expired case — so a client
+// incremented on every failure, including the expired case, so a client
 // cannot reset it by reloading the page.
 func (s *Service) verifyEmailOTP(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
 	row, found, err := s.activeEmailOTP(ctx, userID)
@@ -147,18 +148,24 @@ func (s *Service) sendEmailOTPMail(ctx context.Context, user sqlc.User, code str
 	if s.notifications == nil {
 		return ErrEmailOTPUnavailable
 	}
-	msg := configsvc.MailMessage{
-		To:      []string{user.Email},
-		Subject: "Your Orderly verification code",
-		Body: fmt.Sprintf(
-			"Your verification code is %s. It expires in %d minutes.\r\n\r\nIf you did not request this, you can ignore this message.\r\n",
-			code, int(emailOTPTTL.Minutes()),
-		),
-	}
-	var err error
+	var tenantID *uuid.UUID
 	if user.TenantID.Valid {
 		tid := uuid.UUID(user.TenantID.Bytes)
-		err = s.notifications.Send(ctx, &tid, msg)
+		tenantID = &tid
+	}
+	minutes := int(emailOTPTTL.Minutes())
+	msg := notify.ComposeEmail(ctx, s.q, tenantID, "ACCOUNT_VERIFICATION_CODE",
+		map[string]any{"code": code, "minutes": minutes},
+		notify.EmailContent{
+			Subject: "Your Orderly verification code",
+			Body: fmt.Sprintf(
+				"Your verification code is %s. It expires in %d minutes.\r\n\r\nIf you did not request this, you can ignore this message.\r\n",
+				code, minutes,
+			),
+		}, user.Email)
+	var err error
+	if tenantID != nil {
+		err = s.notifications.Send(ctx, tenantID, msg)
 	} else {
 		err = s.notifications.SendPlatform(ctx, msg)
 	}

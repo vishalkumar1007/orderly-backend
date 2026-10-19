@@ -222,7 +222,7 @@ func (p *s3Provider) resolveTarget(objectKey string, query url.Values) (host, ca
 }
 
 // newRequest builds a signed S3 request. The body is taken as bytes so the
-// payload hash signed into the request is the hash of what is actually sent —
+// payload hash signed into the request is the hash of what is actually sent:
 // signing an empty hash while uploading content is rejected by every S3
 // implementation.
 func (p *s3Provider) newRequest(ctx context.Context, method, objectKey string, query url.Values, body []byte) (*http.Request, error) {

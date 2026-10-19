@@ -18,7 +18,7 @@ import (
 /* ------------------------------------------------------------------ *
  * Forced enrollment: a user with zero enrolled methods, under a policy that
  * now requires one, past its grace period (MFAEnrollRequiredError). These
- * four endpoints are unauthenticated — the enrollment token itself is the
+ * four endpoints are unauthenticated: the enrollment token itself is the
  * credential, the same shape /auth/mfa/verify already uses for a login
  * challenge. Each confirm endpoint completes the login on success, issuing
  * a real token pair with MFAVerified true, since a factor was just proven.
@@ -187,7 +187,7 @@ func (s *Service) HandleMFAEnrollEmailConfirm(w http.ResponseWriter, r *http.Req
 
 // finishForcedEnrollment is the shared tail of both confirm endpoints: sync
 // the cosmetic cache, issue the one-time recovery codes (this is always the
-// user's first method — forced enrollment only ever fires when they had
+// user's first method: forced enrollment only ever fires when they had
 // zero), notify, and complete the login with a real token pair.
 func (s *Service) finishForcedEnrollment(w http.ResponseWriter, r *http.Request, user sqlc.User, method string) {
 	userID := uuid.UUID(user.ID.Bytes)

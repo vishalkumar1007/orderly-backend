@@ -47,7 +47,7 @@ WHERE user_id = $1 AND read_at IS NULL;
 
 -- Recipient resolution for a platform-wide event. Tenant-wide recipient
 -- resolution reuses the existing ListTenantUsers query (users.sql) instead of
--- a second copy — it already returns every column this needs.
+-- a second copy: it already returns every column this needs.
 -- name: ListActivePlatformUsers :many
 SELECT * FROM users
 WHERE tenant_id IS NULL AND status = 'ACTIVE';

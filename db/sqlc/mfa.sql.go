@@ -173,7 +173,7 @@ SET mfa_enabled = EXISTS (SELECT 1 FROM user_mfa_methods WHERE user_id = $1 AND 
 WHERE id = $1
 `
 
-// Cosmetic status flag only (HandleMFAStatus display) — login/refresh logic
+// Cosmetic status flag only (HandleMFAStatus display): login/refresh logic
 // must never read this as authority, see user_mfa_methods queries below.
 func (q *Queries) SyncUserMfaEnabledCache(ctx context.Context, userID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, syncUserMfaEnabledCache, userID)

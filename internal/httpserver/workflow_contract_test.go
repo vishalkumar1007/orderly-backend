@@ -63,7 +63,7 @@ var frozenMachines = []machine{
 }
 
 // TestStateMachinesMatchTheFrozenContract: the code allows exactly the moves
-// in the golden tables — no more, no fewer.
+// in the golden tables: no more, no fewer.
 func TestStateMachinesMatchTheFrozenContract(t *testing.T) {
 	for _, m := range frozenMachines {
 		states := sortedKeys(m.transitions)
@@ -131,7 +131,7 @@ func TestStateMachinesMatchTheDatabase(t *testing.T) {
 
 // TestNoNewPerVerticalWorkflowPackages (C2): a state machine lives in one of
 // the four packages the contract already covers. A new `CanTransition…` in any
-// other package is a new fork of commerce/operations — the thing V1 forbids.
+// other package is a new fork of commerce/operations: the thing V1 forbids.
 // Extend the shared contract instead (book/LLD.md → Commerce & Operations).
 func TestNoNewPerVerticalWorkflowPackages(t *testing.T) {
 	approved := map[string]bool{"orders": true, "appointments": true, "hotel": true, "tables": true}
@@ -199,7 +199,7 @@ func race(n int, call func(i int) int) map[int]int {
 	return count
 }
 
-// wantOneWinner: exactly one 200, every loser a clean 409 — never a 500.
+// wantOneWinner: exactly one 200, every loser a clean 409: never a 500.
 func wantOneWinner(t *testing.T, label string, got map[int]int, n int) {
 	t.Helper()
 	if got[http.StatusOK] != 1 || got[http.StatusConflict] != n-1 {

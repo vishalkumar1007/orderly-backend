@@ -16,7 +16,7 @@ import (
 )
 
 // notificationFeedLimit is the recent-feed window. There is no pagination
-// here — the bell shows "what happened recently," not a full archive.
+// here: the bell shows "what happened recently," not a full archive.
 const notificationFeedLimit = 50
 
 func notificationJSON(n sqlc.Notification) map[string]any {
@@ -40,12 +40,12 @@ func notificationJSON(n sqlc.Notification) map[string]any {
 	return out
 }
 
-// ListNotifications returns the signed-in user's own recent notifications —
+// ListNotifications returns the signed-in user's own recent notifications:
 // shop staff and platform console accounts both land here; user_id alone
 // scopes the result, see notifications.sql.
 //
 // With ?before_id=&before_created_at= (both required together) it instead
-// returns the next older page, for the bell's "view all" history — the
+// returns the next older page, for the bell's "view all" history: the
 // unread_count in that response is still the live total, not "unread in this
 // page", so a caller paging back through history never has to re-derive it.
 func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {

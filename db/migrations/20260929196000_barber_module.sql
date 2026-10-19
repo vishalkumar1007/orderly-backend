@@ -18,7 +18,7 @@ CREATE TABLE services (
 CREATE INDEX services_tenant_id_idx ON services (tenant_id);
 
 -- Recurring weekly availability per staff member. Time-off/one-off overrides
--- are out of scope for the POC — a real requirement can add an exceptions
+-- are out of scope for the POC: a real requirement can add an exceptions
 -- table later without touching this one.
 CREATE TABLE staff_availability (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),

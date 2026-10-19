@@ -177,8 +177,8 @@ func (c StorageConfig) Validate() error {
  * ------------------------------------------------------------------ */
 
 // SMSConfig is the non-secret half of an SMS configuration. account_sid and
-// from_number are not secret — Twilio treats the account SID as a public
-// identifier — only auth_token is sealed.
+// from_number are not secret: Twilio treats the account SID as a public
+// identifier: only auth_token is sealed.
 type SMSConfig struct {
 	Provider   string `json:"provider"`
 	AccountSID string `json:"account_sid"`

@@ -4,7 +4,7 @@
 -- The onboarding wizard (HLD §8: Business Type → ... → Review → Provision →
 -- Complete) accumulates answers here, step by step, and touches `tenants`
 -- only once, in a single transaction, on the Provision step. Nothing before
--- that point creates a queryable tenant — this is what makes provisioning
+-- that point creates a queryable tenant: this is what makes provisioning
 -- idempotent and prevents a partially-active tenant (POC requirement) if any
 -- step fails: the draft just stays IN_PROGRESS and can be resumed or retried.
 CREATE TABLE tenant_onboarding_drafts (

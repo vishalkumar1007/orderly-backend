@@ -10,8 +10,8 @@ import (
 )
 
 // Hotel and appointments were the thinnest-tested parts of the platform. These
-// walk their real flows end to end through the API — including the refusals and
-// the isolation between businesses — so a change to either is caught.
+// walk their real flows end to end through the API: including the refusals and
+// the isolation between businesses: so a change to either is caught.
 
 type biz struct {
 	env   *testEnv
@@ -218,7 +218,7 @@ func TestBarberAppointmentThroughTheQueue(t *testing.T) {
 	in := b.must(http.StatusOK, "check in", http.MethodPost, "/appointments/"+appt+"/checkin", nil)
 	entry, _ := in["queue_entry"].(map[string]any)
 	if a, _ := in["appointment"].(map[string]any); a["status"] != "WAITING" || entry["status"] != "WAITING" {
-		t.Errorf("after check-in: appointment %v, queue %v — both want WAITING", in["appointment"], entry["status"])
+		t.Errorf("after check-in: appointment %v, queue %v: both want WAITING", in["appointment"], entry["status"])
 	}
 	entryID := idOf(t, entry, "id")
 	b.must(http.StatusConflict, "start before calling", http.MethodPost, "/queue/"+entryID+"/start", nil)

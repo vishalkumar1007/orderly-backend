@@ -94,7 +94,7 @@ func TestWrongAmountRaisesOneAlertForThePlatformOperator(t *testing.T) {
 		t.Fatal("a payment for the wrong amount must alert the platform operator")
 	}
 	perRecipient := after
-	// Three bad callbacks, one alert per recipient — not three.
+	// Three bad callbacks, one alert per recipient: not three.
 	env.postRazorpay(shop.webhookSecret, "evt_short_again", rzEventBody("payment.captured", row.GatewayOrder, "pay_S", 100, ""))
 	if again := env.count(`SELECT COUNT(*)::int FROM notifications WHERE event_code = 'PLATFORM_OPERATIONAL_ALERT' AND data->>'alert_key' = $1`, key); again != perRecipient {
 		t.Errorf("alerts grew from %d to %d: one problem must not spam", perRecipient, again)

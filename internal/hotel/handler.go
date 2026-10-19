@@ -444,7 +444,7 @@ type checkInReq struct {
 }
 
 // CheckIn assigns the physical room and moves both machines together: the
-// reservation to CHECKED_IN, the room to OCCUPIED — and opens the folio the
+// reservation to CHECKED_IN, the room to OCCUPIED: and opens the folio the
 // stay's charges and payments settle against.
 func (h *Handler) CheckIn(w http.ResponseWriter, r *http.Request) {
 	tid := tenantID(r)
@@ -531,7 +531,7 @@ func (h *Handler) CheckIn(w http.ResponseWriter, r *http.Request) {
 // CheckOut closes the stay: the reservation moves to CHECKED_OUT, the room to
 // CHECKOUT_PENDING (housekeeping takes it from there), and the folio is
 // marked SETTLED. Collecting the final payment is a separate call against
-// payments (payable_type='FOLIO') — checkout does not require it to have
+// payments (payable_type='FOLIO'): checkout does not require it to have
 // already happened, matching how a hotel actually settles a bill at the desk.
 func (h *Handler) CheckOut(w http.ResponseWriter, r *http.Request) {
 	tid := tenantID(r)
@@ -668,7 +668,7 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		ReservationID: pgutil.UUID(reservationID), TenantID: pgutil.UUID(tid),
 	})
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid_request", "reservation has no open folio yet — check in first")
+		response.Error(w, http.StatusBadRequest, "invalid_request", "reservation has no open folio yet: check in first")
 		return
 	}
 	if *req.Amount <= 0 || *req.Amount > 10_000_000 {
@@ -774,7 +774,7 @@ func (h *Handler) CreateHousekeepingTask(w http.ResponseWriter, r *http.Request)
 }
 
 // CompleteHousekeepingTask marks a task DONE. It does not itself move the
-// room's status — that stays an explicit SetRoomStatus call, so a finished
+// room's status: that stays an explicit SetRoomStatus call, so a finished
 // cleaning task doesn't silently skip the inspection stage.
 func (h *Handler) CompleteHousekeepingTask(w http.ResponseWriter, r *http.Request) {
 	tid := tenantID(r)

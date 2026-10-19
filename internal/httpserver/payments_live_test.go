@@ -166,7 +166,7 @@ type liveFixture struct {
 }
 
 // liveShop is a business with its own gateway keys, tested and switched to
-// real payments — exactly the path a Super Admin takes.
+// real payments: exactly the path a Super Admin takes.
 func liveShop(t *testing.T, env *testEnv) *liveFixture {
 	t.Helper()
 	shop := newShop(t, env)
@@ -426,7 +426,7 @@ func TestLateCaptureOfAnEarlierAttemptStillPaysTheOrder(t *testing.T) {
 	status, body = env.postRazorpay(shop.webhookSecret, "evt_late", rzEventBody("payment.captured", first.GatewayOrder, "pay_LATE", minor, ""))
 	env.mustStatus(http.StatusOK, status, "late capture of attempt one", body)
 	if body["status"] != "applied" || env.paymentFor(shop.tenantID, orderNo).Status != "PAID" {
-		t.Fatalf("late capture: %v / %s, want applied / PAID — the customer's money moved", body["status"], env.paymentFor(shop.tenantID, orderNo).Status)
+		t.Fatalf("late capture: %v / %s, want applied / PAID: the customer's money moved", body["status"], env.paymentFor(shop.tenantID, orderNo).Status)
 	}
 
 	// If the second attempt is then also captured, the customer paid twice:
@@ -647,7 +647,7 @@ func TestBrokenCredentialsNeverFallBackToSandboxOrDropMoney(t *testing.T) {
 		`UPDATE tenant_configurations SET enabled = false WHERE tenant_id = $1 AND service_type = 'PAYMENTS'`, shop.tenantID); err != nil {
 		t.Fatal(err)
 	}
-	// New checkouts are refused outright — never quietly paid in the sandbox.
+	// New checkouts are refused outright: never quietly paid in the sandbox.
 	order := shop.order(t, "Asha Rao", "9876543210", "ONLINE")
 	status, body := shop.guest(http.MethodPost, fmt.Sprintf("/api/v1/public/orders/%d/pay", number(t, order, "order_number")),
 		map[string]any{"method": "ONLINE", "phone": "9876543210"})

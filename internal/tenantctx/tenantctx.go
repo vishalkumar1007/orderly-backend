@@ -20,7 +20,7 @@ import (
 )
 
 // TenantSlugHeader is the browser/SSR signal for the shop tenant when dialing
-// the shared API host (api.{BASE_DOMAIN}). Slug only — never a client-supplied
+// the shared API host (api.{BASE_DOMAIN}). Slug only: never a client-supplied
 // tenant UUID.
 const TenantSlugHeader = "X-Tenant-Slug"
 
@@ -85,7 +85,7 @@ func (i Info) HasEntitlement(code string) bool {
 }
 
 // Capability codes. This is the exact set seeded in business_type_capabilities
-// (see db/migrations/20260929190000_capabilities_catalog.sql) — the platform
+// (see db/migrations/20260929190000_capabilities_catalog.sql): the platform
 // capability matrix from HLD §6, as Go constants instead of bare strings.
 const (
 	CapCustomers    = "CUSTOMERS"
@@ -208,8 +208,8 @@ func firstForwardedHost(header string) string {
 // EffectiveHost is the hostname used for tenant/admin routing.
 //
 // When the request already arrived on a tenant or admin host, that Host wins
-// (clients cannot override it with X-Forwarded-Host). Otherwise — API host,
-// internal Docker hostname, unknown — honor X-Forwarded-Host so SSR can dial
+// (clients cannot override it with X-Forwarded-Host). Otherwise: API host,
+// internal Docker hostname, unknown: honor X-Forwarded-Host so SSR can dial
 // the API container while advertising the shared public api.{base} host.
 func EffectiveHost(r *http.Request, baseDomain string) string {
 	direct := ParseHost(r.Host, baseDomain)

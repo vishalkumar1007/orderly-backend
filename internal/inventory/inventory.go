@@ -9,7 +9,7 @@
 //   - every change to quantity writes one ledger row in the same transaction;
 //   - an order takes stock once and returns it once (unique index on the ledger);
 //   - stock at zero hides the product from the storefront; restocking shows it
-//     again — but only if stock was why it was hidden (inventory_items.auto_disabled);
+//     again: but only if stock was why it was hidden (inventory_items.auto_disabled);
 //   - nothing here is active unless the tenant's plan has the INVENTORY feature.
 package inventory
 
@@ -236,7 +236,7 @@ func RestoreForOrder(ctx context.Context, q *sqlc.Queries, tenantID, orderID uui
 // notification problem never fails the caller (notify.Dispatch swallows it).
 func Notify(ctx context.Context, d notify.Deps, tenantID uuid.UUID, alerts []Alert) {
 	for _, a := range alerts {
-		title := fmt.Sprintf("%s is low on stock — %d %s left", a.ProductName, a.Quantity, a.Unit)
+		title := fmt.Sprintf("%s is low on stock: %d %s left", a.ProductName, a.Quantity, a.Unit)
 		if a.Quantity == 0 {
 			title = fmt.Sprintf("%s is out of stock", a.ProductName)
 		}

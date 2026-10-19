@@ -19,7 +19,7 @@ import (
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
-// MFA modes, enforcement scopes and method identifiers — a closed set, TEXT
+// MFA modes, enforcement scopes and method identifiers: a closed set, TEXT
 // columns rather than Postgres enums, matching this codebase's convention.
 const (
 	MFAModeDisabled = "DISABLED"
@@ -33,7 +33,7 @@ const (
 	MethodEmailOTP = "EMAIL_OTP"
 )
 
-// MFAPolicy is the resolved shape shared by tenant and platform scope — same
+// MFAPolicy is the resolved shape shared by tenant and platform scope: same
 // fields, same meaning, just a different source (tenant_mfa_policies vs the
 // platform settings JSON blob, since internal/platform already imports this
 // package and the reverse import would be circular).
@@ -73,7 +73,7 @@ func (s *Service) GetTenantMFAPolicy(ctx context.Context, tenantID uuid.UUID) (M
 
 // PutTenantMFAPolicy saves a tenant's policy. Callers (the tenant-admin HTTP
 // handler, and tenant creation) are responsible for checking
-// tenants.mfa_allowed first — this function writes whatever it is given.
+// tenants.mfa_allowed first: this function writes whatever it is given.
 func (s *Service) PutTenantMFAPolicy(ctx context.Context, tenantID uuid.UUID, p MFAPolicy) (MFAPolicy, error) {
 	row, err := s.q.UpsertTenantMfaPolicy(ctx, sqlc.UpsertTenantMfaPolicyParams{
 		TenantID: pgutil.UUID(tenantID), Mode: p.Mode, AllowedMethods: p.AllowedMethods,
@@ -89,7 +89,7 @@ func (s *Service) PutTenantMFAPolicy(ctx context.Context, tenantID uuid.UUID, p 
 }
 
 // platformMFAConfig mirrors just the fields this package needs out of
-// internal/platform's storedPlatformConfig JSON blob — the same pattern
+// internal/platform's storedPlatformConfig JSON blob: the same pattern
 // passwordMin already uses to read password_min_length, so this package
 // never has to import internal/platform (which imports this one).
 type platformMFAConfig struct {
@@ -100,7 +100,7 @@ type platformMFAConfig struct {
 	MFAGracePeriodDays int      `json:"mfa_grace_period_days"`
 }
 
-// GetPlatformMFAPolicy returns the console's own policy — governs console
+// GetPlatformMFAPolicy returns the console's own policy: governs console
 // accounts (SuperAdmin/PlatformAdmin/Support), never tenant staff.
 func (s *Service) GetPlatformMFAPolicy(ctx context.Context) (MFAPolicy, error) {
 	row, err := s.q.GetPlatformSettings(ctx)
@@ -130,7 +130,7 @@ func (s *Service) GetPlatformMFAPolicy(ctx context.Context) (MFAPolicy, error) {
 }
 
 // policyForUser resolves the policy that governs one user: platform policy
-// for a console account, tenant policy for tenant staff — and for a tenant,
+// for a console account, tenant policy for tenant staff: and for a tenant,
 // nil availability when the Super Admin has not granted mfa_allowed, since no
 // tenant policy matters at all until that gate is open.
 func (s *Service) policyForUser(ctx context.Context, user sqlc.User) (policy MFAPolicy, available bool, err error) {
@@ -201,7 +201,7 @@ var validMFAScopes = map[string]bool{MFAScopeAllAdmins: true, MFAScopeSelectedRo
 var validMFAMethods = map[string]bool{MethodTOTP: true, MethodEmailOTP: true}
 
 /* ------------------------------------------------------------------ *
- * Tenant self-service HTTP handlers — a Tenant Admin's own policy, within
+ * Tenant self-service HTTP handlers: a Tenant Admin's own policy, within
  * whatever the Super Admin's tenants.mfa_allowed permits. Gated at the
  * route level (canOrg) in internal/httpserver/server.go.
  * ------------------------------------------------------------------ */

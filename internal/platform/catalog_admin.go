@@ -20,7 +20,7 @@ import (
 )
 
 /* ------------------------------------------------------------------ *
- * Plans — the catalog the onboarding picker draws from.
+ * Plans: the catalog the onboarding picker draws from.
  * ------------------------------------------------------------------ */
 
 type planWriteRequest struct {
@@ -210,7 +210,7 @@ func planJSONWithUsage(p sqlc.Plan, tenantCount, activeSubscriptions int64) map[
 }
 
 // ListAllPlans includes deactivated plans so the console can manage them, and
-// carries how many businesses are on each one — deactivating a plan that
+// carries how many businesses are on each one: deactivating a plan that
 // tenants are still subscribed to is a decision, not an accident.
 func (h *Handler) ListAllPlans(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.q.ListPlansWithUsage(r.Context())
@@ -316,7 +316,7 @@ func (h *Handler) UpdatePlan(w http.ResponseWriter, r *http.Request) {
 	// nil leaves plans.features untouched (the query COALESCEs it).
 	var planTermsDoc []byte
 
-	// Refuse to rename a plan that tenants are already subscribed to — the
+	// Refuse to rename a plan that tenants are already subscribed to: the
 	// subscription row and the plan name must stay in agreement.
 	if req.Name != nil {
 		newName := strings.ToUpper(strings.TrimSpace(*req.Name))
@@ -414,7 +414,7 @@ func (h *Handler) UpdatePlan(w http.ResponseWriter, r *http.Request) {
 }
 
 /* ------------------------------------------------------------------ *
- * Theme presets — the catalog the brand picker draws from.
+ * Theme presets: the catalog the brand picker draws from.
  * ------------------------------------------------------------------ */
 
 type themePresetWriteRequest struct {

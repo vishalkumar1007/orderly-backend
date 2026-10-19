@@ -311,7 +311,7 @@ func (r *Resolver) OptionsFor(ctx context.Context, tenantID uuid.UUID, service S
 	}
 	// Availability has to mean "actually usable", not merely "permitted". A
 	// granted tenant whose platform row has been switched off cannot use it, so
-	// the UI must not offer the option as though it could — otherwise the page
+	// the UI must not offer the option as though it could: otherwise the page
 	// would show the platform as active while the backend refuses to use it.
 	opts.PlatformAvailable = perm.Allowed && perm.PlatformEnabled
 	if !opts.PlatformAvailable && perm.Reason == "" {

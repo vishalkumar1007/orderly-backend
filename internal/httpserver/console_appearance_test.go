@@ -54,7 +54,7 @@ func TestPersonalAppearanceIsPerUserAndNeverTouchesTheBusinessDefault(t *testing
 	status, body = env.doOn(http.MethodGet, "/api/v1/tenant/me/appearance", owner, nil, host)
 	env.mustStatus(http.StatusOK, status, "owner reads their appearance", body)
 	if source, _ := body["source"].(string); source != "BUSINESS" {
-		t.Fatalf("owner source = %q, want BUSINESS — another user's choice leaked", source)
+		t.Fatalf("owner source = %q, want BUSINESS: another user's choice leaked", source)
 	}
 	if mode := themeMode(t, body["business"]); mode != businessBefore {
 		t.Fatalf("business default color_mode = %q, want unchanged %q", mode, businessBefore)
@@ -117,7 +117,7 @@ func TestPlatformAppearanceIsPerOperatorAndLayersOverTheConsoleDefault(t *testin
 
 	/*
 	 * There is exactly one SUPER_ADMIN by schema, so this test shares a
-	 * long-lived row with whatever else has touched it — another test, or a
+	 * long-lived row with whatever else has touched it: another test, or a
 	 * developer clicking around the console against the same database. Start
 	 * from a known state and leave one behind, rather than assuming a personal
 	 * theme has never been set. Asserting on someone else's leftovers is how a
@@ -171,7 +171,7 @@ func TestPlatformAppearanceIsPerOperatorAndLayersOverTheConsoleDefault(t *testin
 
 // TestOnboardingSeedsTheBusinessConsoleTheme covers the promise onboarding
 // makes: the look chosen for a new business is the *business's*, so its owner's
-// console — the setup-password link and the first sign-in included — opens in
+// console, the setup-password link and the first sign-in included, opens in
 // it, not in the platform's stock accent.
 func TestOnboardingSeedsTheBusinessConsoleTheme(t *testing.T) {
 	env := newTestEnv(t)
@@ -193,7 +193,7 @@ func TestOnboardingSeedsTheBusinessConsoleTheme(t *testing.T) {
 	env.mustStatus(http.StatusCreated, status, "create a themed business", body)
 
 	// The public theme route is what the sign-in and setup-password screens
-	// read, and it renders with no token at all — which is the whole point.
+	// read, and it renders with no token at all: which is the whole point.
 	host := slug + ".localhost"
 	status, theme := env.doOn(http.MethodGet, "/api/v1/public/theme", "", nil, host)
 	env.mustStatus(http.StatusOK, status, "read the new shop's console theme unauthenticated", theme)
@@ -254,5 +254,25 @@ func TestConsoleDefaultThemeCanBeResetToFactory(t *testing.T) {
 	theme, _ := appearance["business"].(map[string]any)
 	if id, _ := theme["preset_id"].(string); id != "indigo-violet" {
 		t.Errorf("the painted default is %q, want the factory preset", id)
+	}
+}
+
+// Every look the console offers is stored as itself. Raw used to be reduced to
+// dark on save, so reopening Appearance showed Dark selected.
+func TestEveryConsoleLookSurvivesARoundTrip(t *testing.T) {
+	env := newTestEnv(t)
+	tenantID := env.createTenant("Looks Shop", "looks-shop-"+randSuffix())
+	host := env.hostFor(tenantID)
+	staff := tenantUser(env, identity.RoleStaff, tenantID)
+
+	for _, mode := range []string{"raw", "graphite", "midnight", "mist", "soft", "night"} {
+		status, body := env.doOn(http.MethodPatch, "/api/v1/tenant/me/appearance", staff,
+			map[string]any{"color_mode": mode}, host)
+		env.mustStatus(http.StatusOK, status, "set "+mode, body)
+		status, body = env.doOn(http.MethodGet, "/api/v1/tenant/me/appearance", staff, nil, host)
+		env.mustStatus(http.StatusOK, status, "read back "+mode, body)
+		if got := themeMode(t, body["theme"]); got != mode {
+			t.Fatalf("saved %q, read back %q", mode, got)
+		}
 	}
 }

@@ -80,7 +80,7 @@ var ErrUnknownPayment = errors.New("callback does not match any payment")
 
 // VerifyIncoming authenticates a gateway callback. For Razorpay the secret is
 // the paying business's, found through our own record of the order id in the
-// (still unverified) body — nothing else from the body is trusted until the
+// (still unverified) body: nothing else from the body is trusted until the
 // signature passes.
 func (s *Service) VerifyIncoming(ctx context.Context, name string, h http.Header, body []byte) (Event, error) {
 	if name != razorpayName {
@@ -323,7 +323,7 @@ func (s *Service) ProcessEvent(ctx context.Context, provider string, ev Event) (
 			"Two gateway payments were captured for one order. The extra one is being refunded automatically; confirm it completed.",
 			map[string]any{"payment_id": pgutil.UUIDString(pay.ID), "gateway_payment_id": ev.ProviderPaymentID})
 		// The customer was charged twice for one order (two attempts both
-		// captured). The first stands; this one needs refunding — flagged for
+		// captured). The first stands; this one needs refunding: flagged for
 		// the owner rather than silently kept.
 		s.audit(ctx, pay, "DUPLICATE_PAYMENT", "second capture "+ev.ProviderPaymentID+" for an order already paid")
 		s.log.Error("payments: duplicate capture", "payment", pgutil.UUIDString(pay.ID), "gateway_payment", ev.ProviderPaymentID)
@@ -375,7 +375,7 @@ const refreshGap = 5 * time.Second
 // RefreshPending reconciles one pending live payment with the gateway: if the
 // customer has paid but the webhook has not arrived, this is what notices. It
 // is safe to call often (throttled) and never marks anything paid on its own
-// say-so — it asks the gateway and applies the answer through ProcessEvent.
+// say-so: it asks the gateway and applies the answer through ProcessEvent.
 func (s *Service) RefreshPending(ctx context.Context, pay sqlc.Payment) (Result, bool, error) {
 	if pay.Status != payable.StatusPending || pay.Mode != string(ModeLive) || pay.ProviderOrderID == "" || pay.Provider != razorpayName {
 		return Result{}, false, nil
@@ -548,7 +548,7 @@ func (s *Service) Watch(ctx context.Context) {
 
 // badSignatureThreshold is how many rejected callbacks in badSignatureWindow
 // are worth waking someone for. One is noise; a run of them means either an
-// attack or — far more often — a webhook secret that does not match.
+// attack or, far more often, a webhook secret that does not match.
 const (
 	badSignatureThreshold = 10
 	badSignatureWindow    = 5 * time.Minute

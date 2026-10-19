@@ -41,7 +41,7 @@ var (
 // MFARequiredError is returned in place of a token pair when a password check
 // succeeds but the account already has a second factor enrolled. It carries
 // the challenge token the client must send back to /auth/mfa/verify, and the
-// methods enrolled (so the client can offer the right picker) — there is no
+// methods enrolled (so the client can offer the right picker): there is no
 // sentinel-only form of this error, since the caller cannot proceed without
 // that token.
 type MFARequiredError struct {
@@ -76,7 +76,7 @@ func NewService(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *Servic
 }
 
 // AttachNotifications wires in the shared email-delivery stack so Email OTP
-// can be sent — the same *configsvc.Notifications internal/platform's
+// can be sent: the same *configsvc.Notifications internal/platform's
 // mailer already uses for invite mail, just handed to this package too.
 func (s *Service) AttachNotifications(n *configsvc.Notifications) { s.notifications = n }
 
@@ -214,8 +214,8 @@ const (
 	auditDenied  = "DENIED"
 )
 
-// auditLogin records an authentication attempt. Only the email is captured —
-// never a password — and the row is platform-scoped (no tenant).
+// auditLogin records an authentication attempt. Only the email is captured:
+// never a password: and the row is platform-scoped (no tenant).
 func (s *Service) auditLogin(ctx context.Context, email, action, result string) {
 	addr := strings.ToLower(strings.TrimSpace(email))
 	if addr == "" || len(addr) > 254 {
@@ -237,13 +237,13 @@ func (s *Service) AdminLogin(ctx context.Context, email, password string) (Token
 		return TokenPair{}, UserResponse{}, err
 	}
 	if user.Role != identity.RoleSuperAdmin {
-		// Valid credentials, wrong portal — worth distinguishing from a bad password.
+		// Valid credentials, wrong portal: worth distinguishing from a bad password.
 		s.auditLogin(ctx, email, "admin.login", auditDenied)
 		return TokenPair{}, UserResponse{}, ErrInvalidCredentials
 	}
 	if user.MustSetPassword {
 		// authenticateUser lets this through without checking password at all
-		// (there is none usable yet) — this account cannot log in until the
+		// (there is none usable yet): this account cannot log in until the
 		// invite link sets one, the same gate TenantLogin already enforces.
 		s.auditLogin(ctx, email, "admin.login", auditDenied)
 		return TokenPair{}, toUserResponse(user), ErrMustSetPassword
@@ -308,7 +308,7 @@ func (s *Service) completeLoginMFA(ctx context.Context, user sqlc.User) (TokenPa
 		return TokenPair{}, err
 	}
 	if count > 0 {
-		// The login is not "successful" until the second factor clears too —
+		// The login is not "successful" until the second factor clears too:
 		// that audit entry is written in VerifyMFALogin instead, on whichever
 		// outcome actually happens.
 		methods, merr := s.enrolledMethods(ctx, userID)
@@ -340,7 +340,7 @@ func (s *Service) completeLoginMFA(ctx context.Context, user sqlc.User) (TokenPa
 		}
 		return TokenPair{}, &MFAEnrollRequiredError{EnrollmentToken: token, Methods: policy.AllowedMethods}
 	}
-	// Nothing was required, so there was nothing to verify — vacuously true.
+	// Nothing was required, so there was nothing to verify: vacuously true.
 	// checkMFAForRefresh never trusts this bit alone for a zero-method
 	// account; it re-derives the requirement fresh on every refresh instead.
 	return s.issueTokens(ctx, user, true)
@@ -353,7 +353,7 @@ func isMFAFlowError(err error) bool {
 }
 
 // notifyLoginFailed alerts the tenant's access-control holders. This is a
-// locked (mandatory) rule — it cannot be silenced by a tenant override — so
+// locked (mandatory) rule, it cannot be silenced by a tenant override, so
 // the function is unconditional; the engine itself decides whether it is
 // actually enabled.
 func (s *Service) notifyLoginFailed(ctx context.Context, tenantID uuid.UUID, email string) {
@@ -451,7 +451,7 @@ func (s *Service) SetupPassword(ctx context.Context, token, password string) (To
 			fmt.Sprintf("%s set their password", updated.Name), "",
 			map[string]any{"user_id": pgutil.UUIDString(updated.ID), "user_name": updated.Name}, notify.Contact{})
 	}
-	// A brand-new account structurally has zero enrolled methods — this is
+	// A brand-new account structurally has zero enrolled methods: this is
 	// always completeLoginMFA's "count == 0" branch, never the challenge one.
 	// Previously this called issueTokens directly with no MFA check at all,
 	// which meant a business that requires MFA could be bypassed entirely by
@@ -495,13 +495,13 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 // checkMFAForRefresh is the backstop that closes the historical refresh
 // bypass: a refresh token minted before MFA was required/enabled must not
 // keep silently rotating valid access tokens forever once policy changes.
-// It re-derives the requirement fresh from user_mfa_methods on every call —
+// It re-derives the requirement fresh from user_mfa_methods on every call:
 // never trusting the claim for "has zero methods", since a vacuously-true
 // MFAVerified minted before a policy flip must not grant an indefinite free
 // pass. For an account that already has an enrolled method, every token for
 // it was always minted either by VerifyMFALogin (a real challenge) or by
 // completeLoginMFA's zero-method branch (which can't apply once a method
-// exists) — so requiring the claim here is a defense-in-depth backstop, not
+// exists): so requiring the claim here is a defense-in-depth backstop, not
 // the only thing standing between an attacker and a bypass.
 func (s *Service) checkMFAForRefresh(ctx context.Context, user sqlc.User, mfaVerifiedClaim bool) error {
 	count, err := s.countEnrolledMethods(ctx, uuid.UUID(user.ID.Bytes))
@@ -707,8 +707,8 @@ func RequireRoles(roles ...string) func(http.Handler) http.Handler {
 
 // RequirePermission guards a route with a capability rather than a role list.
 //
-// Roles change shape — a manager was added after staff and owner already
-// existed — and every route that named roles directly had to be revisited when
+// Roles change shape: a manager was added after staff and owner already
+// existed: and every route that named roles directly had to be revisited when
 // that happened. Naming the capability instead means the role table is the only
 // thing that moves.
 func RequirePermission(permission identity.Permission) func(http.Handler) http.Handler {
@@ -747,7 +747,7 @@ func RequireTenant(next http.Handler) http.Handler {
 //
 // On the shared API host, the tenant usually comes from X-Tenant-Slug (or
 // Origin). When that signal is absent but the JWT carries a tenant_id, the
-// tenant is loaded from the claim so authenticated clients remain usable —
+// tenant is loaded from the claim so authenticated clients remain usable:
 // the JWT is still the authority and is re-checked against the DB user row
 // in AuthenticateRequest.
 func MatchHostTenant(pool *pgxpool.Pool) func(http.Handler) http.Handler {
@@ -851,7 +851,7 @@ func (s *Service) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeLoginMFABranch writes the response for either MFA sentinel and
-// reports whether it did — shared by every login handler so the three
+// reports whether it did: shared by every login handler so the three
 // response shapes (challenge, enrollment-required, must-set-password) never
 // drift apart between admin, tenant, and setup-password login.
 func writeLoginMFABranch(w http.ResponseWriter, err error) bool {

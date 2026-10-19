@@ -15,7 +15,7 @@ import (
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 )
 
-// TestBackoffFor is a pure unit test — no database needed.
+// TestBackoffFor is a pure unit test: no database needed.
 func TestBackoffFor(t *testing.T) {
 	if backoffFor(0) != backoffSchedule[0] {
 		t.Errorf("attempt 0 should use the first backoff step")
@@ -30,7 +30,7 @@ func TestBackoffFor(t *testing.T) {
 
 // loadDotEnv mirrors internal/httpserver's test helper: DATABASE_URL and
 // CONFIG_ENCRYPTION_KEY normally come from the project .env, and an
-// already-set (even empty) env var is left alone — that is what lets `make
+// already-set (even empty) env var is left alone: that is what lets `make
 // check` force these tests to skip by exporting them as empty.
 func loadDotEnv(t *testing.T) {
 	t.Helper()
@@ -97,7 +97,7 @@ func testTenant(t *testing.T, q *sqlc.Queries, pool *pgxpool.Pool, slug string) 
 // TestRulePrecedence verifies the Platform Defaults -> Business Configuration
 // override: a tenant that writes its own rule for an (event, channel,
 // audience) sees its own row, every other tenant still sees the platform
-// default — proving both the override and the tenant isolation in the same
+// default: proving both the override and the tenant isolation in the same
 // query path a cross-tenant read would otherwise leak through.
 func TestRulePrecedence(t *testing.T) {
 	pool := testPool(t)
@@ -108,7 +108,7 @@ func TestRulePrecedence(t *testing.T) {
 	tenantB := testTenant(t, q, pool, "notify-rules-b-"+uuid.NewString()[:8])
 
 	// The platform default for this (event, channel, audience) ships disabled
-	// — see the seed in 20260929240000_notification_rules_engine.sql.
+	// see the seed in 20260929240000_notification_rules_engine.sql.
 	const event, channel, policy = "APPOINTMENT_CREATED", "SMS", "CUSTOMER"
 
 	before, err := q.ListEffectiveRulesForEvent(ctx, sqlc.ListEffectiveRulesForEventParams{
@@ -178,7 +178,7 @@ func TestEnqueueIdempotent(t *testing.T) {
 			IdempotencyKey: key,
 			Data:           []byte("{}"),
 		})
-		// The second call hits ON CONFLICT DO NOTHING and returns no row —
+		// The second call hits ON CONFLICT DO NOTHING and returns no row:
 		// that is success (an already-enqueued delivery), not an error.
 		if err != nil && i == 0 {
 			t.Fatalf("first enqueue failed: %v", err)

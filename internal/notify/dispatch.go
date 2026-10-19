@@ -40,7 +40,7 @@ type Contact struct {
 // overridden per-rule by the tenant), and for each enabled one: writes an
 // IN_APP notification directly, or enqueues an EMAIL/SMS delivery for the
 // worker to send. It is the single entry point every business event goes
-// through — orders, payments, appointments, hotel, staff, security and
+// through: orders, payments, appointments, hotel, staff, security and
 // platform code never touch notification_rules or the channel plumbing
 // directly.
 //
@@ -132,7 +132,7 @@ func dispatchOutbound(ctx context.Context, d Deps, tenantID *uuid.UUID, rule sql
 				addresses = append(addresses, r.Email)
 			}
 		}
-	// SMS has no staff phone lookup in Phase 1 — no seeded rule needs it, and
+	// SMS has no staff phone lookup in Phase 1: no seeded rule needs it, and
 	// staff members are not guaranteed to have a phone on file.
 	default:
 		return
@@ -163,7 +163,7 @@ func dispatchOutbound(ctx context.Context, d Deps, tenantID *uuid.UUID, rule sql
 		})
 		if err != nil && err != pgx.ErrNoRows && d.Log != nil {
 			// pgx.ErrNoRows here means ON CONFLICT DO NOTHING matched an
-			// existing row — a duplicate event, not a failure.
+			// existing row: a duplicate event, not a failure.
 			d.Log.Error("notify: enqueue delivery failed", "event", eventCode, "channel", channel, "error", err)
 		}
 	}

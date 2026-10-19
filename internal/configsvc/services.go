@@ -129,7 +129,7 @@ func (s *Service) SMSService() *SMS { return &SMS{svc: s} }
 
 // Send delivers one SMS using the effective configuration for tenantID (nil
 // resolves the platform configuration). This is the one entry point the
-// notification worker (internal/notify) uses — it never reads configuration
+// notification worker (internal/notify) uses: it never reads configuration
 // tables or builds a provider itself.
 func (sm *SMS) Send(ctx context.Context, tenantID *uuid.UUID, to, body string) (messageID string, err error) {
 	resolved, err := sm.svc.resolver.Resolve(ctx, scopeFor(tenantID), tenantID, ServiceSMS)

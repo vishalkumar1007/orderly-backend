@@ -17,7 +17,7 @@ import (
 /*
 IAM and the audit log, from inside a business.
 
-Staff management answers "who works here". IAM answers "what can they reach" —
+Staff management answers "who works here". IAM answers "what can they reach":
 the same people seen through a different question, which is why this returns the
 role catalogue and the permission matrix alongside the users rather than making
 the console hard-code either. The catalogue comes from pkg/identity, the one
@@ -111,7 +111,7 @@ func (h *Handler) ShopIAM(w http.ResponseWriter, r *http.Request) {
 // ShopAuditLogs returns this business's own audit trail.
 //
 // It reuses the platform query with the tenant pinned from the token, never
-// from a parameter — a business can only ever read its own history.
+// from a parameter: a business can only ever read its own history.
 func (h *Handler) ShopAuditLogs(w http.ResponseWriter, r *http.Request) {
 	actor, ok := identity.UserFromContext(r.Context())
 	if !ok || actor.TenantID == nil {

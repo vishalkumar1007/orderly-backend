@@ -23,7 +23,7 @@ type renderedMessage struct {
 // render produces the EMAIL or SMS copy for an event, preferring a tenant's
 // own active template, falling back to the platform default template, and
 // finally falling back to the caller-supplied title/body when no template
-// row exists yet — so every event is sendable the moment it is wired, before
+// row exists yet: so every event is sendable the moment it is wired, before
 // anyone has visited the Templates screen.
 //
 // Substitution is plain string replacement of "{{var}}" tokens, never a
@@ -47,9 +47,24 @@ func render(ctx context.Context, q *sqlc.Queries, tenantID *uuid.UUID, eventCode
 
 	allowed := allowedVariables(ctx, q, eventCode)
 	return renderedMessage{
-		Subject: substitute(orFallback(tmpl.Subject, fallbackTitle), allowed, data),
-		Body:    substitute(orFallback(tmpl.Body, fallbackBody), allowed, data),
+		Subject: filled(substitute(orFallback(tmpl.Subject, fallbackTitle), allowed, data), allowed, fallbackTitle),
+		Body:    filled(substitute(orFallback(tmpl.Body, fallbackBody), allowed, data), allowed, fallbackBody),
 	}
+}
+
+// filled returns the rendered text, or the caller's fallback when a declared
+// variable is still unfilled: a template may use a variable this particular
+// sender did not supply, and "{{starts_at}}" must never reach a recipient.
+func filled(rendered string, allowed []string, fallback string) string {
+	if fallback == "" {
+		return rendered
+	}
+	for _, name := range allowed {
+		if strings.Contains(rendered, "{{"+name+"}}") {
+			return fallback
+		}
+	}
+	return rendered
 }
 
 func orFallback(v, fallback string) string {

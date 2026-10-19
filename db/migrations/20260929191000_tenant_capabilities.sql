@@ -5,7 +5,7 @@
 -- per (tenant, capability) that business_type_capabilities allows; a row can
 -- only exist here if business_type_capabilities has a matching pair, and
 -- `enabled` can only be flipped when that pair says `configurable = true`.
--- That second rule is enforced in the `business` module in Go, not in SQL —
+-- That second rule is enforced in the `business` module in Go, not in SQL:
 -- it needs to compare against the tenant's current business_type, which a
 -- plain CHECK constraint cannot do across tables.
 CREATE TABLE tenant_capabilities (

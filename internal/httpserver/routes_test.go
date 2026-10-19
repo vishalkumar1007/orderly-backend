@@ -15,7 +15,7 @@ import (
 // TestAdminRouteRegistration walks the real router and asserts every Super Admin
 // endpoint the console depends on is mounted. Auth middleware runs before
 // routing, so a 401 from a live server cannot distinguish "missing route" from
-// "protected route" — only the router itself can.
+// "protected route": only the router itself can.
 func TestAdminRouteRegistration(t *testing.T) {
 	s := New(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, config.Config{})
 
@@ -29,8 +29,8 @@ func TestAdminRouteRegistration(t *testing.T) {
 	// account, never the shop: a console that could rewrite a tenant's theme or
 	// hire its staff would blur the line the product draws between the two.
 	// Support may still see who has access (GET) and recover someone locked
-	// out (reset-access, resend-invite) — those are registered below and
-	// checked in `want`, not here — but it cannot create a user or edit a
+	// out (reset-access, resend-invite): those are registered below and
+	// checked in `want`, not here: but it cannot create a user or edit a
 	// name, role or status, the way routine staff management would.
 	forbidden := []string{
 		"POST /api/v1/admin/tenants/{id}/users",

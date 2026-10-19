@@ -101,7 +101,7 @@ func (h *Handler) GetTenantService(w http.ResponseWriter, r *http.Request, tenan
 	}
 
 	// A tenant pointed at the platform is told the effective level and, when the
-	// platform is unusable, exactly why — never a silent substitution.
+	// platform is unusable, exactly why: never a silent substitution.
 	payload := map[string]any{
 		"service":    service,
 		"options":    opts,

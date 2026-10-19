@@ -1,7 +1,7 @@
 name: Checks
 
 # Runs the whole backend test suite, including the database-backed tests, on a
-# fresh PostgreSQL built from the migrations — the same thing a new developer or a
+# fresh PostgreSQL built from the migrations: the same thing a new developer or a
 # new environment gets. Before this existed, nothing ran the tests before a push
 # to main deployed (see ci-deploy.yml).
 #

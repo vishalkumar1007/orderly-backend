@@ -190,7 +190,7 @@ func TestDisabledPlatformIsUnavailableWithNoFallback(t *testing.T) {
 
 	_, body := env.doAsTenant(http.MethodGet, "/api/v1/tenant/configurations/smtp/effective", token, nil, tenantID)
 	if body["available"] != false {
-		t.Fatalf("available = %v, want false — the resolver must not fall back", body["available"])
+		t.Fatalf("available = %v, want false: the resolver must not fall back", body["available"])
 	}
 	if body["source"] != "PLATFORM" {
 		t.Errorf("source = %v, want PLATFORM so the UI can explain the outage", body["source"])

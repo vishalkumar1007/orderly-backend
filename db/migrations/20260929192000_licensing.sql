@@ -3,7 +3,7 @@
 
 -- License is deliberately separate from Subscription (HLD §16): Subscription
 -- is the billing relationship (plans.max_staff/max_products already carry the
--- plan's concrete limits — not duplicated here). License is the enforcement
+-- plan's concrete limits: not duplicated here). License is the enforcement
 -- gate with its own lifecycle, so a tenant can be billing-ACTIVE and
 -- license-SUSPENDED at the same time (e.g. a compliance hold that has nothing
 -- to do with whether an invoice was paid).

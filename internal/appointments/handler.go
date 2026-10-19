@@ -36,7 +36,7 @@ func NewHandler(pool *pgxpool.Pool, log *slog.Logger) *Handler {
 
 // tenantID comes from the verified staff token, never from the request, so a
 // tenant admin cannot address another tenant's services, appointments or
-// queue — the same rule every other module in this codebase follows.
+// queue: the same rule every other module in this codebase follows.
 func tenantID(r *http.Request) uuid.UUID {
 	u, _ := identity.UserFromContext(r.Context())
 	return *u.TenantID
@@ -341,7 +341,7 @@ func (h *Handler) CreateAppointment(w http.ResponseWriter, r *http.Request) {
 }
 
 // customerContact looks up a customer's name and phone for the notification
-// payload. A missing or unset customer id resolves to an empty Contact —
+// payload. A missing or unset customer id resolves to an empty Contact:
 // best-effort, so a lookup problem never blocks the appointment itself.
 func (h *Handler) customerContact(ctx context.Context, tenantID uuid.UUID, customerID pgtype.UUID) (name string, contact notify.Contact) {
 	if !customerID.Valid {
@@ -358,7 +358,7 @@ func (h *Handler) customerContact(ctx context.Context, tenantID uuid.UUID, custo
 	return c.Name, notify.Contact{Phone: phone}
 }
 
-// notifyAppointment dispatches an appointment event — SMS to the customer
+// notifyAppointment dispatches an appointment event: SMS to the customer
 // stays off until a tenant explicitly enables it (no SMS provider is proven
 // yet in this build), but is wired here so turning it on is a rules change,
 // not a code change.
@@ -489,7 +489,7 @@ func appointmentJSON(a sqlc.Appointment) map[string]any {
 }
 
 /* ------------------------------------------------------------------ *
- * Queue — serves both walk-ins and checked-in appointment customers.
+ * Queue: serves both walk-ins and checked-in appointment customers.
  * ------------------------------------------------------------------ */
 
 type queueJoinReq struct {
@@ -522,7 +522,7 @@ func (h *Handler) JoinQueue(w http.ResponseWriter, r *http.Request) {
 // joinQueue allocates the next queue number for today and inserts the entry.
 //
 // ponytail: MAX+1 with retry-on-conflict rather than a dedicated per-day
-// counter table (like order_counters) — a front-desk walk-in queue is low
+// counter table (like order_counters): a front-desk walk-in queue is low
 // concurrency. Upgrade to a counters table if two people start being handed
 // the same number.
 func (h *Handler) joinQueue(ctx context.Context, tenantID uuid.UUID, appointmentID, customerID pgtype.UUID) (sqlc.QueueEntry, error) {

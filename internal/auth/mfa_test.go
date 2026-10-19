@@ -35,7 +35,7 @@ func TestRecoveryCodeHashRoundTripsRegardlessOfCaseOrSpacing(t *testing.T) {
 	code := codes[0]
 	stored := hashToken(normalizeRecoveryCode(code))
 
-	// A user may paste it back lowercase or with stray whitespace — the
+	// A user may paste it back lowercase or with stray whitespace: the
 	// comparison at verify time must still match.
 	typed := "  " + code + "  "
 	if hashToken(normalizeRecoveryCode(typed)) != stored {
@@ -76,7 +76,7 @@ func TestTOTPValidatesTheRightCodeAndRejectsAWrongOne(t *testing.T) {
 	if totp.Validate("000000", key.Secret()) {
 		// Astronomically unlikely to collide; if this ever flakes, the RNG is
 		// the story, not this test.
-		t.Error("an arbitrary wrong code validated — something is off")
+		t.Error("an arbitrary wrong code validated: something is off")
 	}
 	if totp.Validate(code, "") {
 		t.Error("a code validated against an empty secret")

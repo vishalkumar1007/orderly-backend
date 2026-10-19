@@ -146,7 +146,7 @@ INSERT INTO users (
 RETURNING *;
 
 -- Session counts per user, for the IAM screen. Signing out deletes the refresh
--- token rather than flagging it, so an unexpired row is an active session —
+-- token rather than flagging it, so an unexpired row is an active session:
 -- the closest thing to "signed in somewhere" this schema records.
 -- name: CountActiveSessionsByTenant :many
 SELECT

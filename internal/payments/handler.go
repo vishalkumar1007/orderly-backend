@@ -265,7 +265,7 @@ type ConfirmRequest struct {
 // The caller must present the intent token issued by Start. On success the
 // payment is marked PAID and, for a shop that only cooks once money lands, the
 // order is accepted automatically. On failure the payment is marked FAILED and
-// the order is left exactly as it was, so the customer can retry — with the same
+// the order is left exactly as it was, so the customer can retry: with the same
 // method or another enabled one.
 func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := tenantctx.FromContext(r.Context())

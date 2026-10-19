@@ -264,7 +264,7 @@ func (o OrderView) Detail() map[string]any {
 
 // StaffBoard is the tenant Selling/Kitchen payload. It includes order and
 // payment UUIDs so staff transitions and cash confirm can address rows
-// directly — fields the public Detail() deliberately omits.
+// directly: fields the public Detail() deliberately omits.
 func (o OrderView) StaffBoard() map[string]any {
 	items := make([]map[string]any, 0, len(o.Items))
 	for _, i := range o.Items {

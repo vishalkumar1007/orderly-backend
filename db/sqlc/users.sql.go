@@ -29,7 +29,7 @@ type CountActiveSessionsByTenantRow struct {
 }
 
 // Session counts per user, for the IAM screen. Signing out deletes the refresh
-// token rather than flagging it, so an unexpired row is an active session —
+// token rather than flagging it, so an unexpired row is an active session:
 // the closest thing to "signed in somewhere" this schema records.
 func (q *Queries) CountActiveSessionsByTenant(ctx context.Context, tenantID pgtype.UUID) ([]CountActiveSessionsByTenantRow, error) {
 	rows, err := q.db.Query(ctx, countActiveSessionsByTenant, tenantID)

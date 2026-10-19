@@ -143,7 +143,7 @@ func (s *Server) MigrateLegacyConfig(ctx context.Context) error {
 }
 
 // StartNotificationWorker runs the EMAIL/SMS delivery loop until ctx is
-// cancelled. Call it in a goroutine — it blocks for the life of ctx.
+// cancelled. Call it in a goroutine: it blocks for the life of ctx.
 func (s *Server) StartNotificationWorker(ctx context.Context) {
 	notify.StartWorker(ctx, sqlc.New(s.pool), s.log, s.configService, 15*time.Second)
 }
@@ -178,6 +178,9 @@ func (s *Server) Router() http.Handler {
 	r.Get("/health/ready", s.handleReady)
 
 	r.Route("/api/v1", func(api chi.Router) {
+		// Email logos, fetched anonymously by mail clients (see EmailAsset).
+		api.Get("/email-assets/{scope}/{name}", s.admin.EmailAsset)
+
 		api.Route("/auth", func(ar chi.Router) {
 			ar.Get("/admin/setup-status", s.auth.HandleAdminSetupStatus)
 			ar.Post("/admin/setup", s.auth.HandleAdminSetup)
@@ -186,7 +189,7 @@ func (s *Server) Router() http.Handler {
 			ar.Post("/setup-password", s.auth.HandleSetupPassword)
 			ar.Post("/refresh", s.auth.HandleRefresh)
 			ar.Post("/logout", s.auth.HandleLogout)
-			// The challenge token itself is the credential here — the caller
+			// The challenge token itself is the credential here: the caller
 			// has not finished logging in yet, so this sits outside auth.Middleware.
 			ar.Post("/mfa/verify", s.auth.HandleMFAVerify)
 			ar.Post("/mfa/challenge/email/send", s.auth.HandleMFAChallengeEmailSend)
@@ -205,7 +208,7 @@ func (s *Server) Router() http.Handler {
 			})
 			// Forced enrollment: a user with zero methods under REQUIRED policy
 			// past its grace period. The enrollment token itself is the
-			// credential — like /mfa/verify, this sits outside auth.Middleware.
+			// credential: like /mfa/verify, this sits outside auth.Middleware.
 			ar.Post("/mfa/enroll/start", s.auth.HandleMFAEnrollStart)
 			ar.Post("/mfa/enroll/confirm", s.auth.HandleMFAEnrollConfirm)
 			ar.Post("/mfa/enroll/email/send", s.auth.HandleMFAEnrollEmailSend)
@@ -235,10 +238,10 @@ func (s *Server) Router() http.Handler {
 			ar.With(canMonitoring).Get("/audit-logs", s.admin.ListAuditLogs)
 			// Live component status. It probes the API and the database and
 			// reports the configuration stack's own recorded state for the
-			// providers — it never dials a provider.
+			// providers: it never dials a provider.
 			ar.With(canMonitoring).Get("/system-health", s.admin.SystemHealth)
 
-			// Notifications: every signed-in console user sees their own — no
+			// Notifications: every signed-in console user sees their own: no
 			// extra capability, the router's RequireRoles above is the gate.
 			ar.Get("/notifications", s.admin.ListNotifications)
 			ar.Post("/notifications/{id}/read", s.admin.MarkNotificationRead)
@@ -249,13 +252,17 @@ func (s *Server) Router() http.Handler {
 
 			// Platform notification settings: catalog, platform-default rules
 			// and templates, and the full delivery log. Monitoring, not
-			// Providers — this is "what the platform sends," not credentials.
+			// Providers: this is "what the platform sends," not credentials.
 			ar.With(canMonitoring).Get("/notification-events", s.admin.ListNotificationEvents)
 			ar.With(canMonitoring).Get("/notification-rules", s.admin.ListPlatformNotificationRules)
 			ar.With(canMonitoring).Put("/notification-rules", s.admin.PutPlatformNotificationRule)
 			ar.With(canMonitoring).Get("/notification-templates", s.admin.ListPlatformNotificationTemplates)
 			ar.With(canMonitoring).Put("/notification-templates", s.admin.PutPlatformNotificationTemplate)
 			ar.With(canMonitoring).Post("/notification-templates/test-send", s.admin.TestSendPlatformNotificationTemplate)
+			ar.With(canMonitoring).Post("/notification-templates/preview", s.admin.PreviewPlatformEmail)
+			ar.With(canMonitoring).Get("/email-branding", s.admin.GetPlatformEmailBranding)
+			ar.With(canMonitoring).Put("/email-branding", s.admin.PutPlatformEmailBranding)
+			ar.With(canMonitoring).Post("/email-branding/logo", s.admin.UploadPlatformEmailLogo)
 			ar.With(canMonitoring).Get("/notification-deliveries", s.admin.ListAllNotificationDeliveries)
 			ar.With(canMonitoring).Post("/notification-deliveries/{id}/retry", s.admin.AdminRetryNotificationDelivery)
 
@@ -294,7 +301,7 @@ func (s *Server) Router() http.Handler {
 			 * The console owns the business *account*: who it is, what it pays
 			 * for, and whether it is allowed to trade. It does not own the shop.
 			 * There is deliberately no route here that writes a tenant's theme,
-			 * storefront, menu, opening hours or store status — those belong to
+			 * storefront, menu, opening hours or store status: those belong to
 			 * the people who run the business, on their own host.
 			 */
 			ar.With(canBusinesses).Get("/tenants", s.admin.ListTenants)
@@ -316,7 +323,7 @@ func (s *Server) Router() http.Handler {
 			// Read-only: the Super Admin seeds a business's initial MFA policy at
 			// creation and can see what it currently is, but day-to-day edits
 			// belong to that business's own Tenant Admin (PUT /tenant/mfa-policy)
-			// — the same split already used for the storefront template.
+			// the same split already used for the storefront template.
 			ar.With(canBusinesses).Get("/tenants/{id}/mfa-policy", s.admin.GetTenantMFAPolicy)
 
 			// A business's own staff are invited and managed day-to-day inside
@@ -324,7 +331,7 @@ func (s *Server) Router() http.Handler {
 			// support's read/recover path, not a second place to run a tenant's
 			// team from: Support can see who has access and unblock someone who
 			// is locked out, exactly as it can resend the owner's own invite
-			// above — there is deliberately no route here to create a user or
+			// above: there is deliberately no route here to create a user or
 			// change a name, role or status, the way routine staff management
 			// would.
 			ar.With(canBusinesses).Get("/tenants/{id}/users", s.admin.ListTenantUsers)
@@ -334,7 +341,7 @@ func (s *Server) Router() http.Handler {
 
 			/* ---------- Console access ----------
 			 *
-			 * Who can reach this console — the platform/support team, not a
+			 * Who can reach this console: the platform/support team, not a
 			 * tenant's own staff (that's the block above).
 			 */
 			ar.With(canConsoleIAM).Get("/users", s.admin.ListConsoleUsers)
@@ -389,7 +396,7 @@ func (s *Server) Router() http.Handler {
 
 			// Business capability guards. A permission says who inside the
 			// business may touch a module; a capability says whether the module
-			// exists for this business type at all — a Hotel tenant's own owner
+			// exists for this business type at all: a Hotel tenant's own owner
 			// token still 403s on /orders, because there is no (HOTEL, ORDERS)
 			// row for this tenant to have been granted. See
 			// planing/business_saas_lld.md §2.
@@ -451,7 +458,7 @@ func (s *Server) Router() http.Handler {
 			// Access control.
 			tr.With(canIAM).Get("/iam", s.admin.ShopIAM)
 
-			// Notifications: every signed-in tenant user sees their own — no
+			// Notifications: every signed-in tenant user sees their own: no
 			// extra capability, the router's RequireRoles above is the gate.
 			tr.Get("/notifications", s.admin.ListNotifications)
 			tr.Post("/notifications/{id}/read", s.admin.MarkNotificationRead)
@@ -463,7 +470,7 @@ func (s *Server) Router() http.Handler {
 			// Notification settings: this business's own events, rules,
 			// templates and delivery history. canOrg: the same permission that
 			// already covers "business profile, opening hours, payments and
-			// order workflow" — notifications are one more facet of how the
+			// order workflow": notifications are one more facet of how the
 			// business is configured.
 			tr.With(canOrg).Get("/mfa-policy", s.auth.HandleGetTenantMFAPolicy)
 			tr.With(canOrg).Put("/mfa-policy", s.auth.HandlePutTenantMFAPolicy)
@@ -474,7 +481,12 @@ func (s *Server) Router() http.Handler {
 			tr.With(canOrg).Delete("/notification-rules", s.admin.DeleteTenantNotificationRule)
 			tr.With(canOrg).Get("/notification-templates", s.admin.ListTenantNotificationTemplates)
 			tr.With(canOrg).Put("/notification-templates", s.admin.PutTenantNotificationTemplate)
+			tr.With(canOrg).Delete("/notification-templates", s.admin.DeleteTenantNotificationTemplate)
 			tr.With(canOrg).Post("/notification-templates/test-send", s.admin.TestSendTenantNotificationTemplate)
+			tr.With(canOrg).Post("/notification-templates/preview", s.admin.PreviewTenantEmail)
+			tr.With(canOrg).Get("/email-branding", s.admin.GetTenantEmailBranding)
+			tr.With(canOrg).Put("/email-branding", s.admin.PutTenantEmailBranding)
+			tr.With(canOrg).Post("/email-branding/logo", s.admin.UploadTenantEmailLogo)
 			tr.With(canOrg).Get("/notification-deliveries", s.admin.ListTenantNotificationDeliveries)
 			tr.With(canOrg).Post("/notification-deliveries/{id}/retry", s.admin.RetryTenantNotificationDelivery)
 
@@ -521,7 +533,7 @@ func (s *Server) Router() http.Handler {
 
 			// Staff and customers. A manager runs both; staff reach neither.
 			// CUSTOMERS/STAFF are "Yes" for every business type in the capability
-			// matrix, so these guards never actually block a real tenant today —
+			// matrix, so these guards never actually block a real tenant today:
 			// they exist so that stays true by construction, not by convention.
 			tr.With(canStaff, reqStaff).Get("/users", s.admin.ShopListUsers)
 			tr.With(canStaff, reqStaff).Post("/users", s.admin.ShopCreateUser)
@@ -656,7 +668,7 @@ func (s *Server) Router() http.Handler {
 			// The console brand theme, public.
 			//
 			// A sign-in page has to look like the shop it belongs to, and it
-			// renders precisely when nobody is signed in — so it cannot read the
+			// renders precisely when nobody is signed in: so it cannot read the
 			// authenticated /tenant/theme. This is the same handler on the same
 			// host-resolved tenant, not a weaker one.
 			//
@@ -680,7 +692,7 @@ func (s *Server) Router() http.Handler {
 		})
 
 		// Storefront customer identity. Reachable before an order exists, so
-		// these routes need no token — the tenant still comes from the host.
+		// these routes need no token: the tenant still comes from the host.
 		api.Route("/auth/customer", func(cr chi.Router) {
 			cr.Post("/send-otp", s.customers.SendOtp)
 			cr.Post("/verify-otp", s.customers.VerifyOtp)
@@ -810,8 +822,8 @@ func uptimeSeconds() int64 { return int64(time.Since(processStart).Seconds()) }
 
 // healthDetailAllowed says whether this caller may see build and schema detail.
 // With no HEALTH_DETAIL_TOKEN configured (local dev) everyone may; once one is
-// set, only a caller presenting it in X-Health-Token. The status itself —
-// up or down — is always public, because a monitor needs nothing more.
+// set, only a caller presenting it in X-Health-Token. The status itself:
+// up or down: is always public, because a monitor needs nothing more.
 func (s *Server) healthDetailAllowed(r *http.Request) bool {
 	want := s.cfg.HealthDetailToken
 	if want == "" {
@@ -832,7 +844,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, out)
 }
 
-// handleReady is readiness: the API can actually serve — the database answers,
+// handleReady is readiness: the API can actually serve: the database answers,
 // and (informationally) which migration it is on, so a deploy that forgot to
 // migrate is visible from outside. 503 only when the database is unreachable.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {

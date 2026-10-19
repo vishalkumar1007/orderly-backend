@@ -10,7 +10,7 @@ import (
 )
 
 // Analytics polish (Release V1 §3.7): trends by day/week/month, best sellers by
-// volume and by revenue, and the fulfilment rate — plus proof the response the
+// volume and by revenue, and the fulfilment rate: plus proof the response the
 // dashboard already depends on is unchanged.
 
 type historicLine struct {
@@ -119,7 +119,7 @@ func TestAnalyticsKeepsEveryFieldTheDashboardReads(t *testing.T) {
 		"orders_by_hour", "top_products", "top_categories", "payment_mix", "status_breakdown",
 	} {
 		if _, ok := body[key]; !ok {
-			t.Errorf("analytics response lost %q — the dashboard reads it", key)
+			t.Errorf("analytics response lost %q: the dashboard reads it", key)
 		}
 	}
 	if body["window"] != "30d" || body["granularity"] != "day" {
@@ -256,7 +256,7 @@ func TestAnalyticsNeverMixesShops(t *testing.T) {
 	body := quiet.analytics(t, "?window=30d&granularity=month")
 	orders, revenue := sumPoints(points(t, body, "orders_by_period"))
 	if orders != 1 || revenue != 240 {
-		t.Errorf("the quiet shop sees %v orders / ₹%v, want 1 / ₹240 — nothing from the busy shop", orders, revenue)
+		t.Errorf("the quiet shop sees %v orders / ₹%v, want 1 / ₹240: nothing from the busy shop", orders, revenue)
 	}
 	if body["fulfilment_rate"] != float64(100) || body["completed_orders"] != float64(1) {
 		t.Errorf("quiet shop fulfilment = %v (%v completed), want 100", body["fulfilment_rate"], body["completed_orders"])

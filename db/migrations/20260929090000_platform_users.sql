@@ -7,7 +7,7 @@
 -- give a colleague access was to share a password. These two roles fix that
 -- without weakening the owner account: PLATFORM_ADMIN runs the platform
 -- alongside the owner, SUPPORT can look but not change. Both are platform
--- identities — tenant_id stays NULL — and neither grants anything inside a
+-- identities, tenant_id stays NULL, and neither grants anything inside a
 -- business, which is still a separate authentication context entirely.
 --
 -- The single-owner rule is kept: the SUPER_ADMIN is the account that cannot be

@@ -124,8 +124,8 @@ func redactConfig(service ServiceType, cfg map[string]any) map[string]any {
 // allSecretFieldNames is the union of every secret key across every service.
 //
 // Redaction uses the union rather than the current service's list. A row should
-// never hold a foreign secret, but if one does — a bug, a hand-edited row, or a
-// config saved under the wrong service — the response still must not carry it.
+// never hold a foreign secret, but if one does: a bug, a hand-edited row, or a
+// config saved under the wrong service: the response still must not carry it.
 // Over-redacting a stray key costs nothing; under-redacting a credential is a
 // disclosure.
 var allSecretFieldNames = func() map[string]struct{} {

@@ -42,7 +42,7 @@ type EnsureStorefrontSettingsParams struct {
 //
 // The no-op assignment is deliberate: ON CONFLICT DO NOTHING returns no row, so
 // the conflict branch has to assign something, and it must not be `now()`.
-// Bumping updated_at here meant *reading* a storefront counted as changing it —
+// Bumping updated_at here meant *reading* a storefront counted as changing it:
 // which made `updated_at` useless as a version, told every client the shop had
 // just been edited, and marked every Studio draft stale the moment anyone
 // looked at the page it was drafted from.

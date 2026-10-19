@@ -9,12 +9,12 @@ Every screen in the business console, fetched the way the console fetches it.
 
 The console is a browser app: its routes render an empty shell server-side and
 then call the API. A page that 500s therefore looks like a working route to any
-check that only renders HTML — the failure is in the payload, one layer down.
+check that only renders HTML: the failure is in the payload, one layer down.
 This sweep is that layer. It signs in as the business owner, asks for every
 read the console performs, and fails on any 5xx.
 
 A 500 here is never acceptable: it means the handler broke rather than refused.
-403 and 404 are fine and are not asserted against — what may be reached is the
+403 and 404 are fine and are not asserted against: what may be reached is the
 subject of the IAM tests, not this one.
 */
 func TestTenantConsoleReadsNeverFail(t *testing.T) {

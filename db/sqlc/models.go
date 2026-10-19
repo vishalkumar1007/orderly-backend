@@ -94,6 +94,20 @@ type CustomerOtpCode struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type EmailBranding struct {
+	ID         pgtype.UUID        `json:"id"`
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	ShowLogo   bool               `json:"show_logo"`
+	LogoUrl    string             `json:"logo_url"`
+	BrandColor string             `json:"brand_color"`
+	FooterText string             `json:"footer_text"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	Theme      string             `json:"theme"`
+	PageColor  string             `json:"page_color"`
+	CardColor  string             `json:"card_color"`
+	Layout     string             `json:"layout"`
+}
+
 type Folio struct {
 	ID            pgtype.UUID        `json:"id"`
 	TenantID      pgtype.UUID        `json:"tenant_id"`
@@ -249,16 +263,23 @@ type NotificationRule struct {
 }
 
 type NotificationTemplate struct {
-	ID        pgtype.UUID        `json:"id"`
-	TenantID  pgtype.UUID        `json:"tenant_id"`
-	EventCode string             `json:"event_code"`
-	Channel   string             `json:"channel"`
-	Subject   string             `json:"subject"`
-	Body      string             `json:"body"`
-	IsActive  bool               `json:"is_active"`
-	Version   int32              `json:"version"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	EventCode   string             `json:"event_code"`
+	Channel     string             `json:"channel"`
+	Subject     string             `json:"subject"`
+	Body        string             `json:"body"`
+	IsActive    bool               `json:"is_active"`
+	Version     int32              `json:"version"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	Heading     string             `json:"heading"`
+	Preheader   string             `json:"preheader"`
+	ButtonLabel string             `json:"button_label"`
+	ButtonUrl   string             `json:"button_url"`
+	HtmlBody    string             `json:"html_body"`
+	Highlight   string             `json:"highlight"`
+	Footnote    string             `json:"footnote"`
 }
 
 type Order struct {

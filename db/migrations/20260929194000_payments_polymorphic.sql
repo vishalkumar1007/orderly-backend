@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 -- Payment is a common platform capability but must not be hard-coupled to
--- "an order" (HLD §15) — Barber pays against a service/appointment, Hotel
+-- "an order" (HLD §15): Barber pays against a service/appointment, Hotel
 -- pays a deposit and later a balance against a reservation/folio. Make the
 -- payable side polymorphic instead of a fixed FK.
 ALTER TABLE payments
@@ -41,7 +41,7 @@ ALTER TABLE payments
         CHECK (purpose IN ('FULL', 'DEPOSIT', 'BALANCE', 'ADDITIONAL'));
 
 -- Old rule was "one payment per order" (payments_order_id_unique). The new
--- rule is "one payment per (payable, purpose)" — Food/Barber/Cafe/Restaurant
+-- rule is "one payment per (payable, purpose)": Food/Barber/Cafe/Restaurant
 -- keep exactly one FULL row per payable, same as today; Hotel gets to record
 -- a DEPOSIT and a BALANCE as two distinct, auditable rows against the same
 -- reservation/folio instead of overwriting one row and losing the deposit.

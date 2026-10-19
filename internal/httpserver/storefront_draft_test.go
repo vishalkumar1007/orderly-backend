@@ -85,7 +85,7 @@ func TestPublishingARejectedDraftChangesNothing(t *testing.T) {
 
 	// A draft whose name is fine but whose layout is not. Identity is applied
 	// before the theme, so a non-transactional publish would leave the new name
-	// on a shop that refused the rest — which is the failure this guards.
+	// on a shop that refused the rest: which is the failure this guards.
 	draft := map[string]any{
 		"store": map[string]any{"name": "Should Not Survive"},
 		"theme": map[string]any{"product_layout": "not-a-layout"},
@@ -100,7 +100,7 @@ func TestPublishingARejectedDraftChangesNothing(t *testing.T) {
 	env.mustStatus(http.StatusOK, status, "read the storefront after", after)
 	afterStore, _ := after["store"].(map[string]any)
 	if afterStore["name"] != beforeStore["name"] {
-		t.Fatalf("store.name = %v, want it unchanged at %v — the publish was not atomic",
+		t.Fatalf("store.name = %v, want it unchanged at %v: the publish was not atomic",
 			afterStore["name"], beforeStore["name"])
 	}
 

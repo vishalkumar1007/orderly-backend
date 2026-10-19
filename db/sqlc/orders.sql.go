@@ -989,8 +989,8 @@ type ListOrderHistoryRow struct {
 	PaymentMethod    string             `json:"payment_method"`
 }
 
-// Order history for the tenant console. Unlike the Selling board — which shows
-// the live queue — this searches the whole record, so every filter is optional
+// Order history for the tenant console. Unlike the Selling board: which shows
+// the live queue: this searches the whole record, so every filter is optional
 // and applied in SQL rather than by shipping the table to the browser.
 //
 // sqlc.narg values are NULL when the console did not filter on them, and the
@@ -1869,7 +1869,7 @@ type StampOrderAcceptedParams struct {
 // Every Stamp* is a compare-and-swap on expected_status: the caller validated
 // the move against the status it read, so the write only lands if the order is
 // still in that status. Zero rows (pgx.ErrNoRows) means somebody else moved it
-// first — see orders.Move. Without this, two staff taps racing (Cancel vs
+// first: see orders.Move. Without this, two staff taps racing (Cancel vs
 // Prepare) could both pass validation and leave an illegal state.
 func (q *Queries) StampOrderAccepted(ctx context.Context, arg StampOrderAcceptedParams) (Order, error) {
 	row := q.db.QueryRow(ctx, stampOrderAccepted, arg.ID, arg.TenantID, arg.ExpectedStatus)

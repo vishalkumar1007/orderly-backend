@@ -242,7 +242,7 @@ func parseHours(raw []byte, timezone string) Hours {
 
 // HoursConfigured reports whether an admin has explicitly saved opening hours.
 // Virgin default '{}' parses as always-open for ordering but is not "configured"
-// for the launch checklist — otherwise every new shop would look finished.
+// for the launch checklist: otherwise every new shop would look finished.
 func HoursConfigured(raw []byte) bool {
 	trim := bytes.TrimSpace(raw)
 	if len(trim) == 0 || bytes.Equal(trim, []byte("{}")) || bytes.Equal(trim, []byte("null")) {

@@ -14,14 +14,14 @@ import (
 
 /*
 The MFA pipeline end to end: enroll through the real self-service endpoints,
-then prove a login is actually gated by it — rejected without a code,
+then prove a login is actually gated by it: rejected without a code,
 completed with one, and a recovery code works exactly once.
 
 Uses a disposable tenant admin with a known password (mintToken's fixture
 users have no real password hash, so login itself can't be exercised against
 them) on a fresh test tenant, never the real accounts in the database. MFA
 access is per-tenant (tenants.mfa_allowed), granted here the same way a super
-admin would from that business's own Configuration tab — a PATCH on that one
+admin would from that business's own Configuration tab: a PATCH on that one
 tenant, not a platform-wide switch.
 */
 
@@ -46,13 +46,13 @@ func TestMFALoginFlowEndToEnd(t *testing.T) {
 	}
 	// Cascades via removeTestTenants' `DELETE FROM users WHERE tenant_id = $1`.
 
-	// Grant this one business the right to use MFA — off by default.
+	// Grant this one business the right to use MFA: off by default.
 	status, body := env.do(http.MethodPatch, "/api/v1/admin/tenants/"+tenantID.String(), env.superAdmin(), map[string]any{
 		"mfa_allowed": true,
 	})
 	env.mustStatus(http.StatusOK, status, "allow MFA for this business", body)
 
-	// Permission alone isn't enough — the business's own policy must also
+	// Permission alone isn't enough: the business's own policy must also
 	// move off DISABLED before anyone can enroll.
 	status, body = env.do(http.MethodPut, "/api/v1/tenant/mfa-policy", env.tenantAdmin(tenantID), map[string]any{
 		"mode": "OPTIONAL", "allowed_methods": []string{"TOTP"}, "enforce_scope": "ALL_ADMINS", "grace_period_days": 7,
@@ -130,7 +130,7 @@ func TestMFALoginFlowEndToEnd(t *testing.T) {
 		t.Fatalf("mfa verify did not return a real token pair: %v", body)
 	}
 
-	// A fresh login challenge, completed with a recovery code instead —
+	// A fresh login challenge, completed with a recovery code instead:
 	// and the same code must not work a second time.
 	status, body = env.doOn(http.MethodPost, "/api/v1/auth/tenant/login", "", map[string]any{
 		"email": email, "password": password,
@@ -185,7 +185,7 @@ func TestMFAAccessIsPerTenantNotGlobal(t *testing.T) {
 	status, body = env.do(http.MethodPost, "/api/v1/auth/me/mfa/setup", env.tenantAdmin(allowed), nil)
 	env.mustStatus(http.StatusOK, status, "mfa setup on the allowed tenant", body)
 
-	// ...but the first tenant is still blocked — the grant did not leak.
+	// ...but the first tenant is still blocked: the grant did not leak.
 	status, body = env.do(http.MethodPost, "/api/v1/auth/me/mfa/setup", env.tenantAdmin(blocked), nil)
 	if status == http.StatusOK {
 		t.Fatalf("granting MFA to one business must not unlock it for another, got 200: %v", body)

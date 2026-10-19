@@ -965,7 +965,7 @@ jobs:
                 echo "Expected prefix: ${IMAGE_NAME}:"
                 echo "Actual: ${EXISTING_IMAGE}"
                 echo ""
-                echo "ABORT — will not replace unexpected container."
+                echo "ABORT: will not replace unexpected container."
                 exit 1
                 ;;
 

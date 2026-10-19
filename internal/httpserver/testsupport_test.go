@@ -161,7 +161,7 @@ func (e *testEnv) restoreConfigTables() {
 		// A restore can legitimately run twice: the harness test invokes it
 		// directly to prove it works, and the registered cleanup runs afterwards.
 		// Once the backup is gone there is nothing to put back, and clearing the
-		// table again would destroy data — so stop.
+		// table again would destroy data: so stop.
 		var exists bool
 		if err := e.server.pool.QueryRow(ctx,
 			`SELECT to_regclass($1) IS NOT NULL`, backup).Scan(&exists); err != nil {
@@ -229,7 +229,7 @@ func loadDotEnvFile(t *testing.T, path string) {
 //
 // The subject must be a real users row: audit_logs has a foreign key on
 // user_id, so a synthetic subject would make every audited change fail to
-// record — which is exactly the kind of thing these tests should catch rather
+// record: which is exactly the kind of thing these tests should catch rather
 // than paper over.
 func (e *testEnv) mintToken(role string, tenantID *uuid.UUID) string {
 	e.t.Helper()
@@ -288,7 +288,7 @@ func tenantPtr(id *uuid.UUID) any {
 // superAdmin mints a token for the platform's Super Admin.
 //
 // A partial unique index permits exactly one SUPER_ADMIN row, so the existing
-// one is reused rather than creating a second — the tests must not depend on
+// one is reused rather than creating a second: the tests must not depend on
 // being able to add another.
 func (e *testEnv) superAdmin() string {
 	e.t.Helper()
@@ -431,8 +431,8 @@ func (e *testEnv) createTenant(name, slug string) uuid.UUID {
 }
 
 // createTenantOfType inserts a tenant directly with a given business type. It
-// still has to leave the tenant in the same shape real onboarding does —
-// licensed and with its business type's capabilities turned on — because
+// still has to leave the tenant in the same shape real onboarding does:
+// licensed and with its business type's capabilities turned on: because
 // tenantctx.Middleware now enforces both on every tenant-host request; a
 // tenant fixture without them would 403 before reaching a handler.
 func (e *testEnv) createTenantOfType(name, slug, businessType string) uuid.UUID {
@@ -495,7 +495,7 @@ func (e *testEnv) removeTestTenants() {
 		for _, stmt := range []string{
 			// Tenant-scoped notifications cascade with the tenant row below, but
 			// a platform notification (e.g. BUSINESS_ONBOARDED) has tenant_id
-			// NULL and only names this tenant inside `data` — the real super
+			// NULL and only names this tenant inside `data`: the real super
 			// admin's account must not keep accumulating test noise.
 			`DELETE FROM notifications WHERE (data->>'tenant_id') = $1::text`,
 			`DELETE FROM audit_logs WHERE tenant_id = $1`,

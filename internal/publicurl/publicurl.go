@@ -1,5 +1,5 @@
 // Package publicurl builds browser-facing origins for tenants and the platform
-// console. These are never API hosts ({slug}.api.{base} / api.{base}) — only
+// console. These are never API hosts ({slug}.api.{base} / api.{base}): only
 // pages users open in a browser.
 package publicurl
 

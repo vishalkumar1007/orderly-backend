@@ -8,7 +8,7 @@ import (
 
 // Order lifecycle states. The set is closed and the legal moves are fixed in
 // allowedTransitions below. Tenant configuration can only tune behaviour around
-// this machine — it can never introduce a state or an unsafe move.
+// this machine: it can never introduce a state or an unsafe move.
 const (
 	StatusPending   = "PENDING"
 	StatusAccepted  = "ACCEPTED"
@@ -89,7 +89,7 @@ func StatusLabel(status string) string {
 	case StatusReady:
 		return "Ready for pickup"
 	case StatusCompleted:
-		return "Collected — thank you"
+		return "Collected: thank you"
 	case StatusCancelled:
 		return "Cancelled"
 	}

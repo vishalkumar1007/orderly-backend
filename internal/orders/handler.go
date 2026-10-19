@@ -62,7 +62,7 @@ func (h *Handler) StorefrontLoader() *storefront.Loader { return h.store }
 // Catalog exposes the menu reader.
 func (h *Handler) Catalog() *storefront.Catalog { return h.catalog }
 
-// CreateRequest is the public checkout payload. It carries intent only — no
+// CreateRequest is the public checkout payload. It carries intent only: no
 // prices, no totals, no tenant id.
 type CreateRequest struct {
 	CustomerName  string `json:"customer_name"`
@@ -158,7 +158,7 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 	}
 	clientToken := trim(req.ClientToken)
 	if utf8Len(clientToken) > 80 {
-		return CreateResult{}, badRequest("invalid_token", "Could not place this order — please try again")
+		return CreateResult{}, badRequest("invalid_token", "Could not place this order: please try again")
 	}
 
 	// A repeat submit short-circuits before any money is touched.
@@ -195,7 +195,7 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		return CreateResult{}, &validationError{Code: costErr.Code, Message: costErr.Message, Status: 400}
 	}
 	if totals.Total <= 0 {
-		return CreateResult{}, badRequest("empty_total", "This order has no value — please review your cart")
+		return CreateResult{}, badRequest("empty_total", "This order has no value: please review your cart")
 	}
 	// Tracked products: refuse a cart asking for more than is in stock, with
 	// a message the customer can act on ("Only 2 left of Veg Momo").
@@ -364,7 +364,7 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 
 	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, notify.TypeOrderPlaced,
 		fmt.Sprintf("New order #%d", number),
-		fmt.Sprintf("%s — ₹%.2f", name, totals.Total),
+		fmt.Sprintf("%s: ₹%.2f", name, totals.Total),
 		map[string]any{
 			"order_id":      pgutil.UUIDString(order.ID),
 			"order_number":  number,

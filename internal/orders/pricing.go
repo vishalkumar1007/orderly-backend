@@ -172,7 +172,7 @@ func PriceCart(products map[string]ProductRef, lines []RequestedLine, costing Co
 		subtotal += lineTotal
 		totalQuantity += line.Quantity
 		if totalQuantity > MaxTotalQuantity {
-			return nil, Totals{}, priceErr("cart_too_large", "that is more food than one order can hold — please split it")
+			return nil, Totals{}, priceErr("cart_too_large", "that is more food than one order can hold: please split it")
 		}
 	}
 
@@ -298,7 +298,7 @@ func nonNegative(v float64) float64 {
 // on its binary approximation: 1.005 is stored as 1.00499999…, so a naive
 // math.Round(v*100) would silently swallow the half paisa. Parsing the shortest
 // decimal form and rounding that in exact integer arithmetic is both correct
-// and cheap, because it runs once per line and once per total — not per
+// and cheap, because it runs once per line and once per total: not per
 // operation.
 func money(v float64) float64 {
 	if math.IsNaN(v) || math.IsInf(v, 0) {

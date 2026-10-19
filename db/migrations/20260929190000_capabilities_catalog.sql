@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 -- Two of the platform's six committed business types (barber, general) were
--- never actually rows in tenant_types — onboarding could not have offered
+-- never actually rows in tenant_types: onboarding could not have offered
 -- them. Add them now; deactivate OTHER in favour of GENERAL as the real
 -- catch-all (same pattern as the cuisine-code deprecation: deactivated, not
 -- deleted, so any tenant already stored as OTHER keeps a legal value).
@@ -92,7 +92,7 @@ INSERT INTO business_type_capabilities (business_type_code, capability_code, def
     ('HOTEL','HOUSEKEEPING',TRUE,FALSE), ('HOTEL','RESERVATIONS',TRUE,FALSE),
     ('HOTEL','CATALOG',FALSE,TRUE), ('HOTEL','APPOINTMENTS',FALSE,TRUE),
 
-    -- GENERAL — capability-driven: only the platform-wide four default on
+    -- GENERAL: capability-driven: only the platform-wide four default on
     ('GENERAL','CUSTOMERS',TRUE,FALSE), ('GENERAL','STAFF',TRUE,FALSE),
     ('GENERAL','PAYMENTS',TRUE,FALSE),  ('GENERAL','BILLING',FALSE,TRUE),
     ('GENERAL','CATALOG',FALSE,TRUE),  ('GENERAL','SERVICES',FALSE,TRUE),
@@ -102,7 +102,7 @@ INSERT INTO business_type_capabilities (business_type_code, capability_code, def
     ('GENERAL','ROOMS',FALSE,TRUE),    ('GENERAL','KITCHEN',FALSE,TRUE),
     ('GENERAL','HOUSEKEEPING',FALSE,TRUE),
 
-    -- GROCERY — real, currently-offered type with no HLD matrix row: same
+    -- GROCERY: real, currently-offered type with no HLD matrix row: same
     -- operational shape as Food Shop minus a kitchen (retail, not prep).
     ('GROCERY','CUSTOMERS',TRUE,FALSE), ('GROCERY','STAFF',TRUE,FALSE),
     ('GROCERY','PAYMENTS',TRUE,FALSE),  ('GROCERY','BILLING',TRUE,FALSE),

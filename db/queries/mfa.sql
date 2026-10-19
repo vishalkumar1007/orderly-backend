@@ -1,5 +1,5 @@
 -- name: SyncUserMfaEnabledCache :exec
--- Cosmetic status flag only (HandleMFAStatus display) — login/refresh logic
+-- Cosmetic status flag only (HandleMFAStatus display): login/refresh logic
 -- must never read this as authority, see user_mfa_methods queries below.
 UPDATE users
 SET mfa_enabled = EXISTS (SELECT 1 FROM user_mfa_methods WHERE user_id = $1 AND enabled)

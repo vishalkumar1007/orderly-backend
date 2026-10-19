@@ -76,7 +76,7 @@ RETURNING *;
 -- Every Stamp* is a compare-and-swap on expected_status: the caller validated
 -- the move against the status it read, so the write only lands if the order is
 -- still in that status. Zero rows (pgx.ErrNoRows) means somebody else moved it
--- first — see orders.Move. Without this, two staff taps racing (Cancel vs
+-- first: see orders.Move. Without this, two staff taps racing (Cancel vs
 -- Prepare) could both pass validation and leave an illegal state.
 -- name: StampOrderAccepted :one
 UPDATE orders
@@ -200,8 +200,8 @@ SELECT
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'READY') AS ready_orders,
     (SELECT COUNT(*)::bigint FROM orders o WHERE o.tenant_id = sqlc.arg(tenant_id) AND o.status = 'COMPLETED' AND o.created_at >= date_trunc('day', now())) AS completed_today;
 
--- Order history for the tenant console. Unlike the Selling board — which shows
--- the live queue — this searches the whole record, so every filter is optional
+-- Order history for the tenant console. Unlike the Selling board: which shows
+-- the live queue: this searches the whole record, so every filter is optional
 -- and applied in SQL rather than by shipping the table to the browser.
 --
 -- sqlc.narg values are NULL when the console did not filter on them, and the

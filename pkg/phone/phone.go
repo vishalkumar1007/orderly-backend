@@ -29,8 +29,8 @@ const (
 //
 // It accepts the shapes people actually type: spaces, dashes, brackets, dots and
 // a leading country code with or without "+". A bare 10-digit local number gains
-// the default country code; an 11-digit number starting with a zero — how this
-// market writes a mobile number ("0987 654 3210") — loses the zero first, since
+// the default country code; an 11-digit number starting with a zero: how this
+// market writes a mobile number ("0987 654 3210"): loses the zero first, since
 // keeping it would store an 11-digit number no gateway would recognise.
 func Normalize(raw string) (string, error) {
 	var b strings.Builder

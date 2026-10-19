@@ -10,9 +10,9 @@ import (
 )
 
 // Helpers used by the storefront test suite. They talk to the database directly
-// so a test can set up a state the API deliberately offers no shortcut for —
+// so a test can set up a state the API deliberately offers no shortcut for:
 // taking a product off sale, marking a shop closed, switching acceptance to
-// automatic — and then assert how the HTTP surface responds.
+// automatic: and then assert how the HTTP surface responds.
 
 func tctx() context.Context { return context.Background() }
 

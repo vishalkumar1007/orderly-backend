@@ -59,7 +59,7 @@ WHERE tenant_id = $1
 ORDER BY sort_order ASC, name ASC;
 
 -- name: TenantHasActiveCategory :one
--- Launch checklist only needs existence — never pull the full catalogue.
+-- Launch checklist only needs existence: never pull the full catalogue.
 SELECT EXISTS(
     SELECT 1 FROM categories
     WHERE tenant_id = $1 AND is_active = true

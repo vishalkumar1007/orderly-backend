@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/notify"
 )
 
 // deliverInvite sends a tenant setup link.
@@ -16,20 +17,18 @@ import (
 // stored blob, so a platform that has moved its mail settings keeps working and
 // a tenant-level configuration is honoured if one is ever selected for mail.
 //
-// A nil tenant pointer means platform scope, which is how invitations are sent
-// today: they are platform mail about a tenant, not mail on that tenant's
-// behalf.
-func (h *Handler) deliverInvite(ctx context.Context, to, tenantName, setupURL string) (bool, string) {
+// It is sent over platform SMTP: invitations are platform mail about a tenant,
+// not mail on that tenant's behalf. The wording is the tenant's own
+// ACCOUNT_SETUP_INVITE template when it has one, else the platform default.
+func (h *Handler) deliverInvite(ctx context.Context, tenantID uuid.UUID, to, tenantName, setupURL string) (bool, string) {
 	if !h.configsEnabled() {
 		// Only reachable if the stack was never attached, e.g. in a unit test.
 		return false, "email service unavailable"
 	}
 
-	msg := configsvc.MailMessage{
-		To:      []string{to},
-		Subject: "Set up " + tenantName + " on Orderly",
-		Body:    inviteBody(tenantName, setupURL),
-	}
+	msg := notify.ComposeEmail(ctx, h.q, &tenantID, "ACCOUNT_SETUP_INVITE",
+		map[string]any{"business_name": tenantName, "setup_url": setupURL},
+		notify.EmailContent{Subject: "Set up " + tenantName + " on Orderly", Body: inviteBody(tenantName, setupURL)}, to)
 	if err := h.notifications.SendPlatform(ctx, msg); err != nil {
 		// The reason is safe to return: the resolver's UnavailableError explains
 		// which level is unusable and why, and provider errors are redacted

@@ -61,7 +61,7 @@ func (h *Handler) ListTenantTypes(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListBusinessTypeCapabilities returns the capability matrix row for one
-// business type — what the onboarding wizard needs to render "included"
+// business type: what the onboarding wizard needs to render "included"
 // badges for the fixed capabilities and toggles for the configurable ones,
 // without carrying its own copy of business_type_capabilities.
 func (h *Handler) ListBusinessTypeCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +208,7 @@ func (h *Handler) normalizeTheme(ctx context.Context, req themeWrite) (string, s
 	if mode == "" {
 		mode = "system"
 	}
-	if mode != "light" && mode != "dark" && mode != "system" {
+	if !brand.ValidColorMode(mode) {
 		return "", "", nil, errBadMode
 	}
 	overrides, err := sanitizeOverrides(req.ThemeOverrides)

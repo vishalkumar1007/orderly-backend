@@ -5,7 +5,7 @@
 -- users.mfa_secret column now that TOTP has a second method (Email OTP)
 -- alongside it. secret_enc is TOTP-only (sealed with secretbox, same context
 -- string "user:"+userID already used for mfa_secret, so this is a pure
--- column move — the sealed value is byte-identical, not re-encrypted).
+-- column move: the sealed value is byte-identical, not re-encrypted).
 CREATE TABLE user_mfa_methods (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id       UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -31,7 +31,7 @@ WHERE mfa_enabled AND mfa_secret IS NOT NULL;
 ALTER TABLE users DROP COLUMN mfa_secret;
 
 -- users.mfa_enabled stays, but only as a cosmetic status cache from here on
--- (kept in sync by auth.syncMfaEnabledCache after every enrollment change) —
+-- (kept in sync by auth.syncMfaEnabledCache after every enrollment change):
 -- login/refresh logic must query user_mfa_methods directly, never this flag.
 
 -- +goose StatementEnd

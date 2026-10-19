@@ -31,7 +31,7 @@ import (
 const envelopeVersion = "v1"
 
 // scrypt cost parameters. N=32768, r=8, p=1 costs roughly 32 MiB and ~100ms per
-// operation, which is acceptable because sealing happens on admin writes only —
+// operation, which is acceptable because sealing happens on admin writes only:
 // never on a request-path read.
 const (
 	scryptN      = 1 << 15

@@ -170,7 +170,7 @@ var buttonRadius = map[string]string{
 
 // CSSVars renders the theme as CSS custom properties for the storefront root
 // element. The storefront layout writes these as an inline style on its root
-// node, which means the very first server-rendered frame is already themed —
+// node, which means the very first server-rendered frame is already themed:
 // there is no flash of an unstyled or wrong-coloured storefront.
 //
 // Contrast pairs (on-primary text, on-accent text) are computed here rather

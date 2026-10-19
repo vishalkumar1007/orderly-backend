@@ -49,12 +49,12 @@ var (
 )
 
 /* ------------------------------------------------------------------ *
- * Short-lived tokens — setup, login-challenge, forced-enrollment
+ * Short-lived tokens: setup, login-challenge, forced-enrollment
  * ------------------------------------------------------------------ */
 
 // signMFAToken mints a narrowly-scoped, short-lived token for one of the MFA
 // sub-flows. It is signed with the same access secret and library as a real
-// session token, but carries no Role — a route that forgot to check Purpose
+// session token, but carries no Role: a route that forgot to check Purpose
 // would still reject it as an unauthenticated request.
 func (s *Service) signMFAToken(purpose, userID, secret string, ttl time.Duration) (string, error) {
 	now := time.Now()
@@ -70,7 +70,7 @@ func (s *Service) signMFAToken(purpose, userID, secret string, ttl time.Duration
 }
 
 // parseMFAToken verifies signature, expiry, and that the token was minted for
-// exactly this purpose — a setup token can never be replayed as a login
+// exactly this purpose: a setup token can never be replayed as a login
 // challenge or vice versa.
 func (s *Service) parseMFAToken(tokenStr, wantPurpose string) (*Claims, error) {
 	claims, err := s.parseToken(tokenStr, s.cfg.JWTAccessSecret)
@@ -84,11 +84,11 @@ func (s *Service) parseMFAToken(tokenStr, wantPurpose string) (*Claims, error) {
 }
 
 /* ------------------------------------------------------------------ *
- * Per-business gate (permission, distinct from policy — see
+ * Per-business gate (permission, distinct from policy: see
  * mfa_policy.go for mode/methods/enforcement).
  *
  * Not a platform-wide switch: a super admin grants this to one business at a
- * time, from that business's own Configuration tab (or at onboarding) —
+ * time, from that business's own Configuration tab (or at onboarding):
  * tenants.mfa_allowed. A console/platform account (TenantID NULL) has no
  * business to gate against and is always allowed.
  * ------------------------------------------------------------------ */
@@ -105,7 +105,7 @@ func (s *Service) tenantAllowsMFA(ctx context.Context, tenantID pgtype.UUID) boo
 }
 
 /* ------------------------------------------------------------------ *
- * QR rendering — same library and PNG-data-URI shape as the storefront's
+ * QR rendering: same library and PNG-data-URI shape as the storefront's
  * marketing QR code (internal/storefront/qr.go), kept local rather than
  * importing storefront into auth for one function.
  * ------------------------------------------------------------------ */
@@ -123,14 +123,14 @@ func qrDataURI(content string, size int) (string, error) {
 }
 
 /* ------------------------------------------------------------------ *
- * Recovery codes — a fallback, not a selectable method. Issued once, the
+ * Recovery codes: a fallback, not a selectable method. Issued once, the
  * first time a user enrolls any method; never regenerated just because a
  * second method is added.
  * ------------------------------------------------------------------ */
 
 // generateRecoveryCodes returns n random, human-typeable codes (xxxx-xxxx,
 // uppercase hex). Never returned again after the confirm/regenerate response
-// that creates them — only their sha256 hash is stored.
+// that creates them: only their sha256 hash is stored.
 func generateRecoveryCodes(n int) ([]string, error) {
 	codes := make([]string, n)
 	for i := range codes {
@@ -165,7 +165,7 @@ func (s *Service) issueRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]s
 }
 
 // issueRecoveryCodesIfFirstMethod generates the one-time set of recovery
-// codes only when the user had none before — i.e. this is their first ever
+// codes only when the user had none before: i.e. this is their first ever
 // enrolled method. Adding a second method (TOTP after Email OTP, or vice
 // versa) must not invalidate codes already saved by the user; it returns nil
 // in that case rather than a fresh set.
@@ -211,7 +211,7 @@ func (s *Service) countEnrolledMethods(ctx context.Context, userID uuid.UUID) (i
 }
 
 func (s *Service) syncMfaEnabledCache(ctx context.Context, userID uuid.UUID) {
-	// Cosmetic only — a failure here can only ever produce a wrong display
+	// Cosmetic only: a failure here can only ever produce a wrong display
 	// value later, never a wrong authorization decision, so it is logged and
 	// swallowed rather than propagated.
 	if err := s.q.SyncUserMfaEnabledCache(ctx, pgutil.UUID(userID)); err != nil && s.log != nil {
@@ -338,7 +338,7 @@ func (s *Service) notifyMethodEnrolled(ctx context.Context, actor identity.User,
 
 // RemoveMFAMethod removes one enrolled method after re-checking the caller's
 // password. When this was the last enrolled method, recovery codes are
-// cleared too — they are meaningless (and risky to keep around) once nothing
+// cleared too: they are meaningless (and risky to keep around) once nothing
 // else authenticates the account.
 func (s *Service) RemoveMFAMethod(ctx context.Context, actor identity.User, method, password string) error {
 	user, err := s.q.GetUserByID(ctx, pgutil.UUID(actor.ID))
@@ -435,7 +435,7 @@ func (s *Service) VerifyMFALogin(ctx context.Context, challengeToken, method, co
 		return TokenPair{}, UserResponse{}, err
 	}
 	if count == 0 {
-		// Every method was removed between the password step and now —
+		// Every method was removed between the password step and now:
 		// nothing left to verify.
 		return TokenPair{}, UserResponse{}, ErrUnauthorized
 	}
@@ -688,7 +688,7 @@ type mfaChallengeEmailSendRequest struct {
 }
 
 // HandleMFAChallengeEmailSend sends an Email OTP code during a login
-// challenge — the counterpart to HandleMFAEmailSend (self-service) and
+// challenge: the counterpart to HandleMFAEmailSend (self-service) and
 // HandleMFAEnrollEmailSend (forced enrollment), for a user who is already
 // enrolled in Email OTP and is now completing a normal login with it.
 func (s *Service) HandleMFAChallengeEmailSend(w http.ResponseWriter, r *http.Request) {
@@ -734,11 +734,11 @@ func writeMFAError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrMFANotOn):
 		response.Error(w, http.StatusConflict, "mfa_not_enabled", "Two-factor authentication is not on")
 	case errors.Is(err, ErrInvalidMFACode):
-		response.Error(w, http.StatusUnauthorized, "invalid_code", "That code didn't match — try again")
+		response.Error(w, http.StatusUnauthorized, "invalid_code", "That code didn't match: try again")
 	case errors.Is(err, ErrInvalidCredentials):
 		response.Error(w, http.StatusUnauthorized, "invalid_credentials", "Incorrect password")
 	case errors.Is(err, ErrUnauthorized):
-		response.Error(w, http.StatusUnauthorized, "unauthorized", "This setup link has expired — start again")
+		response.Error(w, http.StatusUnauthorized, "unauthorized", "This setup link has expired: start again")
 	case errors.Is(err, ErrEmailOTPUnavailable):
 		response.Error(w, http.StatusForbidden, "email_otp_unavailable", emailOTPUnavailableMessage(err))
 	case errors.Is(err, ErrEmailOTPRateLimited), errors.Is(err, ErrEmailOTPResendTooSoon), errors.Is(err, ErrEmailOTPTooManyAttempts):

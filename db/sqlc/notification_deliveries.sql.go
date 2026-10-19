@@ -104,7 +104,7 @@ type EnqueueNotificationDeliveryParams struct {
 }
 
 // Fire-and-forget enqueue. A duplicate idempotency_key (a retried or
-// re-published event) is silently skipped — the caller sees zero rows
+// re-published event) is silently skipped: the caller sees zero rows
 // rather than an error, since "already enqueued" is success, not failure.
 func (q *Queries) EnqueueNotificationDelivery(ctx context.Context, arg EnqueueNotificationDeliveryParams) (NotificationDelivery, error) {
 	row := q.db.QueryRow(ctx, enqueueNotificationDelivery,

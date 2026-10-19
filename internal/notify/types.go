@@ -1,13 +1,13 @@
-// Package notify publishes in-app notifications — a persistent, per-recipient
+// Package notify publishes in-app notifications: a persistent, per-recipient
 // feed a signed-in user can open, distinct from the audit log (write-only,
 // no reader) and from email (configsvc/SMTP, invites only).
 package notify
 
 // Event types. A closed set, like this codebase's other small enums
-// (storefront.Workflow's acceptance_mode etc.) — TEXT column, Go constants,
+// (storefront.Workflow's acceptance_mode etc.): TEXT column, Go constants,
 // not a Postgres ENUM type. Every value here has a matching row in the
 // notification_events catalog (db/migrations/20260929240000_notification_rules_engine.sql)
-// — that row is what the rules engine resolves against; this constant is
+// that row is what the rules engine resolves against; this constant is
 // just a typo-proof way for Go code to reference it.
 const (
 	TypeOrderPlaced       = "ORDER_PLACED"

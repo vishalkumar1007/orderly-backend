@@ -58,8 +58,8 @@ type appearanceWrite struct {
 }
 
 // defaultLayer resolves "what this console looks like before you personalise
-// it", and the signed-in row to personalise. Two implementations — a business
-// and the platform — so the three verbs below are written once.
+// it", and the signed-in row to personalise. Two implementations: a business
+// and the platform: so the three verbs below are written once.
 type defaultLayer func(http.ResponseWriter, *http.Request) (map[string]any, sqlc.User, bool)
 
 // GetMyConsoleAppearance returns the theme this user's console should paint
@@ -68,7 +68,7 @@ func (h *Handler) GetMyConsoleAppearance(w http.ResponseWriter, r *http.Request)
 	h.readAppearance(w, r, h.tenantDefaultTheme)
 }
 
-// UpdateMyConsoleAppearance saves — or clears — this user's personal theme.
+// UpdateMyConsoleAppearance saves, or clears, this user's personal theme.
 func (h *Handler) UpdateMyConsoleAppearance(w http.ResponseWriter, r *http.Request) {
 	h.writeAppearance(w, r, h.tenantDefaultTheme)
 }
@@ -157,7 +157,7 @@ func (h *Handler) clearAppearance(w http.ResponseWriter, r *http.Request, layer 
 // signedInUser loads the row behind the token.
 //
 // The personal layer is written against a `users` row, so the handlers need the
-// row and not just the claims — the claims do not carry console_theme.
+// row and not just the claims: the claims do not carry console_theme.
 func (h *Handler) signedInUser(w http.ResponseWriter, r *http.Request) (sqlc.User, bool) {
 	var none sqlc.User
 	actor, ok := identity.UserFromContext(r.Context())
@@ -267,7 +267,7 @@ func (h *Handler) mergePersonalTheme(
 	}
 	if req.ColorMode != nil {
 		mode := strings.ToLower(strings.TrimSpace(*req.ColorMode))
-		if mode != "light" && mode != "dark" && mode != "system" {
+		if !brand.ValidColorMode(mode) {
 			return next, errBadMode
 		}
 		next.ColorMode = mode
@@ -348,7 +348,7 @@ func parsePersonalTheme(raw []byte) personalTheme {
 	}
 	t.PresetID = strings.TrimSpace(t.PresetID)
 	t.ColorMode = strings.ToLower(strings.TrimSpace(t.ColorMode))
-	if t.ColorMode != "light" && t.ColorMode != "dark" && t.ColorMode != "system" {
+	if !brand.ValidColorMode(t.ColorMode) {
 		t.ColorMode = "system"
 	}
 	clean, err := cleanAccentOverrides(t.Overrides)

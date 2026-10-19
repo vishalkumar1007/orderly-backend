@@ -12,7 +12,7 @@
 # after that, so a failed run never costs you an existing backup.
 set -euo pipefail
 # A backup is the whole customer database in one file. Everything this script
-# creates — the directory (if it makes it), the dump, checksum and manifest — is
+# creates, the directory (if it makes it), the dump, checksum and manifest, is
 # private to the user running it.
 umask 077
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -525,7 +525,7 @@ SELECT EXISTS(
 )
 `
 
-// Launch checklist only needs existence — never pull the full catalogue.
+// Launch checklist only needs existence: never pull the full catalogue.
 func (q *Queries) TenantHasActiveCategory(ctx context.Context, tenantID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, tenantHasActiveCategory, tenantID)
 	var exists bool

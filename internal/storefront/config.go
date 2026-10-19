@@ -88,7 +88,7 @@ const (
 	StoreClosed = "CLOSED"
 
 	// Notification sound choices. Played client-side (Web Audio tones, no
-	// audio files) — this only picks which one, never a file to host.
+	// audio files): this only picks which one, never a file to host.
 	SoundNone  = "NONE"
 	SoundChime = "CHIME"
 	SoundBell  = "BELL"
@@ -259,7 +259,7 @@ type Workflow struct {
 	// becomes ready, gated by ReadyNotification.
 	OrderReadySound string `json:"order_ready_sound"`
 	// InAppNewOrder/InAppOrderReady gate the in-app notification feed
-	// (internal/notify), independent of the sounds above — a tenant can mute
+	// (internal/notify), independent of the sounds above: a tenant can mute
 	// the sound and still want the bell, or the reverse.
 	InAppNewOrder   bool `json:"in_app_new_order_enabled"`
 	InAppOrderReady bool `json:"in_app_order_ready_enabled"`
@@ -418,9 +418,9 @@ func (s *Storefront) ClosedReason() string {
 		}
 		switch s.StoreStatus {
 		case StoreAway:
-			return "Temporarily away — back soon"
+			return "Temporarily away: back soon"
 		case StoreBusy:
-			return "Currently busy — longer wait times"
+			return "Currently busy: longer wait times"
 		case StoreClosed:
 			return "Currently Closed"
 		default:
@@ -443,7 +443,7 @@ func (s *Storefront) DisplayStatusMessage() string {
 	}
 	switch s.StoreStatus {
 	case StoreBusy:
-		return "High demand right now — expect longer wait times."
+		return "High demand right now: expect longer wait times."
 	case StoreAway:
 		return "We're temporarily away. Please check back soon."
 	case StoreClosed:

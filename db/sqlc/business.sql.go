@@ -126,7 +126,7 @@ type GetBusinessTypeCapabilitiesWithLabelsRow struct {
 	Configurable   bool   `json:"configurable"`
 }
 
-// Same as GetBusinessTypeCapabilities, with the human label joined in — for
+// Same as GetBusinessTypeCapabilities, with the human label joined in: for
 // the onboarding wizard, which has no reason to carry its own copy of the
 // capability catalogue's labels.
 func (q *Queries) GetBusinessTypeCapabilitiesWithLabels(ctx context.Context, businessTypeCode string) ([]GetBusinessTypeCapabilitiesWithLabelsRow, error) {
@@ -282,7 +282,7 @@ WHERE tenant_id = $1 AND enabled = TRUE
 
 // Capability, license and terms queries. These back the tenant-isolation
 // middleware (tenantctx) and the onboarding transaction (platform.CreateTenant)
-// — see planing/business_saas_lld.md and business_saas_db_map.md.
+// see planing/business_saas_lld.md and business_saas_db_map.md.
 func (q *Queries) ListEnabledCapabilities(ctx context.Context, tenantID pgtype.UUID) ([]string, error) {
 	rows, err := q.db.Query(ctx, listEnabledCapabilities, tenantID)
 	if err != nil {
@@ -384,7 +384,7 @@ type SetTenantCapabilityParams struct {
 	Enabled        bool        `json:"enabled"`
 }
 
-// Caller must have already checked business_type_capabilities.configurable —
+// Caller must have already checked business_type_capabilities.configurable:
 // this statement does not, since it has no way to know the tenant's business
 // type without a join the caller already has cheaper access to.
 func (q *Queries) SetTenantCapability(ctx context.Context, arg SetTenantCapabilityParams) (TenantCapability, error) {

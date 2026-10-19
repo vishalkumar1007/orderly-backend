@@ -9,8 +9,8 @@
 # against a real database.
 #
 # Every JSON body is built into a variable first. Interpolating a double-quoted
-# string inside a "$( … )" is a quoting trap in bash — the escaped quotes stop
-# protecting the argument and the shell brace-expands the payload — so bodies
+# string inside a "$( … )" is a quoting trap in bash: the escaped quotes stop
+# protecting the argument and the shell brace-expands the payload: so bodies
 # are assembled here and passed as a single already-quoted word.
 set -uo pipefail
 
@@ -27,7 +27,7 @@ fail()    { printf '  FAIL %s: expected %s got %s\n' "$1" "$2" "$3"; FAIL=$((FAI
 check()   { if [ "$2" = "$3" ]; then pass "$1" "$3"; else fail "$1" "$2" "$3"; fi; }
 checky()  { if [ "$2" = "yes" ]; then pass "$1" yes; else fail "$1" yes "$2"; fi; }
 
-# jget <json> <dotted.path> — reads one value out of a JSON response.
+# jget <json> <dotted.path>: reads one value out of a JSON response.
 jget() {
   printf '%s' "$1" | python3 -c '
 import json, sys
@@ -59,7 +59,7 @@ else:
 ' "$2" 2>/dev/null
 }
 
-# req <method> <path> [body] [host] [auth] — prints the response body.
+# req <method> <path> [body] [host] [auth]: prints the response body.
 req() {
   local method="$1" path="$2" body="${3:-}" host="${4:-$HOST}" auth="${5:-}"
   if [ -n "$body" ] && [ -n "$auth" ]; then
@@ -75,7 +75,7 @@ req() {
   fi
 }
 
-# status <method> <path> [body] [host] [auth] — prints the HTTP status only.
+# status <method> <path> [body] [host] [auth]: prints the HTTP status only.
 status() {
   local method="$1" path="$2" body="${3:-}" host="${4:-$HOST}" auth="${5:-}"
   if [ -n "$body" ] && [ -n "$auth" ]; then
@@ -93,7 +93,7 @@ status() {
 }
 
 if ! curl -sf -m 5 "$API/health" >/dev/null; then
-  echo "API is not reachable at $API — start it with 'make -C .. run'." >&2
+  echo "API is not reachable at $API: start it with 'make -C .. run'." >&2
   exit 1
 fi
 

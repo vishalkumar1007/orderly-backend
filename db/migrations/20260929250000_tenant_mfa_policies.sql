@@ -2,13 +2,13 @@
 -- +goose StatementBegin
 
 -- One row per tenant describing how MFA behaves for that business, distinct
--- from tenants.mfa_allowed (the Super Admin's permission gate — whether the
+-- from tenants.mfa_allowed (the Super Admin's permission gate: whether the
 -- business may use MFA at all). No row for a tenant means DISABLED with the
 -- defaults below, handled in application code rather than backfilled, so a
 -- business that never touches this stays exactly as it is today.
 --
 -- Owned by the business's own Tenant Admin after creation (PUT
--- /api/v1/tenant/mfa-policy) — a Super Admin only seeds the initial row at
+-- /api/v1/tenant/mfa-policy): a Super Admin only seeds the initial row at
 -- onboarding and reads it back read-only afterward, the same split already
 -- used for the storefront template.
 CREATE TABLE tenant_mfa_policies (

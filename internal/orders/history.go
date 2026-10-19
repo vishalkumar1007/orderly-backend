@@ -21,7 +21,7 @@ its present tense. The distinction matters operationally: the board is a queue
 somebody is working, and it must never grow filters and date pickers that slow
 the person clearing it down. The history is where questions get answered.
 
-The activity feed here is business history — orders moving through the
+The activity feed here is business history: orders moving through the
 workflow. Who changed a price or a permission is a different question with
 different retention needs, and it lives in the audit log.
 */

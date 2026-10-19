@@ -463,7 +463,7 @@ type Preference struct {
 }
 
 // GetPreference returns a tenant's elected source. When unset, the tenant
-// defaults to its own configuration — never the platform's.
+// defaults to its own configuration: never the platform's.
 func (s *Store) GetPreference(ctx context.Context, tenantID uuid.UUID, service ServiceType) (Preference, error) {
 	row, err := s.q.GetTenantServicePreference(ctx, sqlc.GetTenantServicePreferenceParams{
 		TenantID:    pgutil.UUID(tenantID),

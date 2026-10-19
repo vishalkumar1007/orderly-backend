@@ -10,13 +10,13 @@ import (
 
 /*
 The in-app notification pipeline (internal/notify), end to end through the
-real HTTP handlers — not the bare-SQL fixtures other tests use, since those
+real HTTP handlers: not the bare-SQL fixtures other tests use, since those
 skip the provisioning a notification event hooks into.
 
 Runs against the developer's database like the rest of this suite. The
 platform event test publishes to the real super admin account found in the
 database (same account env.superAdmin() always authenticates as elsewhere in
-this file) — it deletes the one notification row it created, leaving that
+this file): it deletes the one notification row it created, leaving that
 account exactly as it found it.
 */
 

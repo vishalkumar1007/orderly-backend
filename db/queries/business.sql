@@ -1,6 +1,6 @@
 -- Capability, license and terms queries. These back the tenant-isolation
 -- middleware (tenantctx) and the onboarding transaction (platform.CreateTenant)
--- — see planing/business_saas_lld.md and business_saas_db_map.md.
+-- see planing/business_saas_lld.md and business_saas_db_map.md.
 
 -- name: ListEnabledCapabilities :many
 SELECT capability_code FROM tenant_capabilities
@@ -21,7 +21,7 @@ SELECT capability_code, default_enabled, configurable FROM business_type_capabil
 WHERE business_type_code = $1;
 
 -- name: GetBusinessTypeCapabilitiesWithLabels :many
--- Same as GetBusinessTypeCapabilities, with the human label joined in — for
+-- Same as GetBusinessTypeCapabilities, with the human label joined in: for
 -- the onboarding wizard, which has no reason to carry its own copy of the
 -- capability catalogue's labels.
 SELECT btc.capability_code, c.label, btc.default_enabled, btc.configurable
@@ -42,7 +42,7 @@ WHERE tenant_id = $1
 ORDER BY capability_code;
 
 -- name: SetTenantCapability :one
--- Caller must have already checked business_type_capabilities.configurable —
+-- Caller must have already checked business_type_capabilities.configurable:
 -- this statement does not, since it has no way to know the tenant's business
 -- type without a join the caller already has cheaper access to.
 UPDATE tenant_capabilities

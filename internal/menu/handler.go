@@ -605,7 +605,7 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Existence checks only — never pull the full menu catalogue into memory.
+	// Existence checks only: never pull the full menu catalogue into memory.
 	hasCategory, _ := h.q.TenantHasActiveCategory(ctx, t.ID)
 	hasSellable, _ := h.q.TenantHasAvailableProduct(ctx, t.ID)
 

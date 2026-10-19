@@ -32,7 +32,7 @@ CREATE INDEX rooms_tenant_status_idx ON rooms (tenant_id, status);
 
 -- Reservation and room lifecycles are deliberately two separate state
 -- machines on two separate tables (POC: "Reservation and room state machines
--- remain separate") — a room can go to CLEANING while its reservation is
+-- remain separate"): a room can go to CLEANING while its reservation is
 -- already CHECKED_OUT, and a walk-in stay can occupy a room with no
 -- reservation at all. room_id is assigned at check-in, not at booking time,
 -- so it stays nullable.

@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 -- The event catalog: every real, wired event in the system. Data-driven on
--- purpose — adding a new event anywhere else in the codebase is a row here,
+-- purpose: adding a new event anywhere else in the codebase is a row here,
 -- never a new table or a new column. `category` groups events for the
 -- settings UI (Orders/Payments/Bookings/Staff/Security/Platform); whether an
 -- event shows under "Admin" or "Storefront" is derived from each rule's
@@ -24,7 +24,7 @@ CREATE TABLE notification_events (
 
 -- One row per (tenant, event, channel). tenant_id NULL is the platform
 -- default every tenant inherits until it writes its own row for that
--- (event, channel) — the same override shape as tenant_service_preferences.
+-- (event, channel): the same override shape as tenant_service_preferences.
 -- `locked` rows (mandatory security/critical alerts) can be read but never
 -- written by a tenant; only a platform default may set it.
 CREATE TABLE notification_rules (
@@ -77,7 +77,7 @@ CREATE UNIQUE INDEX notification_templates_platform_active_idx
     ON notification_templates (event_code, channel) WHERE is_active AND tenant_id IS NULL;
 
 -- Per-channel delivery attempts for EMAIL/SMS. The IN_APP channel has no row
--- here — it is written directly to `notifications`, which already is its own
+-- here: it is written directly to `notifications`, which already is its own
 -- delivery record (read_at is its only "status"). `notification_id` links
 -- back to that row only when an IN_APP copy of the same event was also
 -- published, purely for cross-reference in the UI.
@@ -128,7 +128,7 @@ CREATE TABLE notification_preferences (
 );
 
 /* ------------------------------------------------------------------ *
- * Catalog seed — every event this change wires to a real trigger.
+ * Catalog seed: every event this change wires to a real trigger.
  * ------------------------------------------------------------------ */
 
 INSERT INTO notification_events (code, category, label, description, default_channels, required_capability, variables) VALUES
@@ -192,7 +192,7 @@ INSERT INTO notification_events (code, category, label, description, default_cha
 -- defaults on for the two order events already proven safe (storefront
 -- always captures a contact at checkout); SMS/booking-customer rows exist but
 -- start disabled, since no SMS provider is configured anywhere out of the
--- box. Security events are `locked` — a tenant cannot silently turn these
+-- box. Security events are `locked`: a tenant cannot silently turn these
 -- off.
 INSERT INTO notification_rules (event_code, channel, enabled, recipient_policy, priority, locked) VALUES
     ('ORDER_PLACED', 'IN_APP', TRUE, 'ROLE:selling', 'NORMAL', FALSE),

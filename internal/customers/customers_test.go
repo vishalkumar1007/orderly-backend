@@ -97,7 +97,7 @@ func TestCodesAreNotPredictable(t *testing.T) {
 	// This deliberately does not assert that 500 draws are all distinct.
 	//
 	// A six-digit code has a million values, so by the birthday bound a
-	// collision appears in 500 draws about 12% of the time — a correct
+	// collision appears in 500 draws about 12% of the time: a correct
 	// generator would fail that assertion roughly one run in eight, and a
 	// suite that cries wolf is worse than no suite. What actually matters is
 	// that codes are spread across the range and do not follow each other,

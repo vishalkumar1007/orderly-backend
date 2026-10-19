@@ -1084,7 +1084,7 @@ func TestCapturedPaymentCannotBeReversed(t *testing.T) {
 	_, statusBody := shop.guest(http.MethodGet,
 		fmt.Sprintf("/api/v1/public/orders/%d/pay?phone=9811122233", orderNo), nil)
 	if got := statusBody["payment_status"]; got != "PAID" {
-		t.Errorf("payment_status = %v, want PAID — a captured payment must stay captured", got)
+		t.Errorf("payment_status = %v, want PAID: a captured payment must stay captured", got)
 	}
 }
 

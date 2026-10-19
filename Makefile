@@ -25,7 +25,7 @@ run:
 	echo $$p > .api-port; echo "API on localhost:$$p"; \
 	DATABASE_URL="$(DATABASE_URL)" HTTP_ADDR=":$$p" go run ./cmd/server
 
-# Same gates as the GitHub Actions "Checks" job — run before push.
+# Same gates as the GitHub Actions "Checks" job: run before push.
 # Clears DATABASE_URL / CONFIG_ENCRYPTION_KEY so a local .env does not force
 # integration tests (those skip in CI when no DB is configured).
 check:

@@ -1,6 +1,6 @@
 -- Hotel capability group: room types, rooms, reservations, folios/charges and
 -- housekeeping. Reservation and room status are two separate state machines
--- (POC requirement) — never write both from one statement.
+-- (POC requirement): never write both from one statement.
 
 -- name: CreateRoomType :one
 INSERT INTO room_types (tenant_id, name, base_price, max_guests)

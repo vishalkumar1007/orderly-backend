@@ -5,6 +5,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/smtp"
 	"strconv"
@@ -181,15 +184,44 @@ func buildMIME(cfg SMTPConfig, msg MailMessage) string {
 	for _, to := range msg.To {
 		b.WriteString("To: " + sanitizeMailHeader(strings.TrimSpace(to)) + "\r\n")
 	}
-	b.WriteString("Subject: " + sanitizeMailHeader(msg.Subject) + "\r\n")
+	// RFC 2047 so "₹" and other non-ASCII survive every server; ASCII is unchanged.
+	b.WriteString("Subject: " + mime.QEncoding.Encode("UTF-8", sanitizeMailHeader(msg.Subject)) + "\r\n")
 	if replyTo != "" {
 		b.WriteString("Reply-To: " + sanitizeMailHeader(replyTo) + "\r\n")
 	}
 	b.WriteString("MIME-Version: 1.0\r\n")
+	if msg.HTMLBody != "" {
+		writeAlternative(&b, msg)
+		return b.String()
+	}
 	b.WriteString("Content-Type: " + sanitizeMailHeader(contentType) + "\r\n")
 	b.WriteString("\r\n")
 	b.WriteString(normalizeNewlines(msg.Body))
 	return b.String()
+}
+
+// writeAlternative writes a multipart/alternative body: plain text first, HTML
+// last (clients prefer the last part they can show). Both parts are
+// quoted-printable, which keeps every line under SMTP's 998-octet limit even
+// for long single-line HTML.
+func writeAlternative(b *strings.Builder, msg MailMessage) {
+	var parts strings.Builder
+	mw := multipart.NewWriter(&parts)
+	b.WriteString("Content-Type: multipart/alternative; boundary=" + mw.Boundary() + "\r\n\r\n")
+	for _, part := range []struct{ ctype, body string }{
+		{"text/plain; charset=UTF-8", msg.Body},
+		{"text/html; charset=UTF-8", msg.HTMLBody},
+	} {
+		w, _ := mw.CreatePart(map[string][]string{
+			"Content-Type":              {part.ctype},
+			"Content-Transfer-Encoding": {"quoted-printable"},
+		})
+		qp := quotedprintable.NewWriter(w)
+		_, _ = qp.Write([]byte(normalizeNewlines(part.body)))
+		_ = qp.Close()
+	}
+	_ = mw.Close()
+	b.WriteString(parts.String())
 }
 
 // sanitizeMailHeader makes a value safe to place in a header.

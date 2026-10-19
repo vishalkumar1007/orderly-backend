@@ -18,7 +18,7 @@ import (
 // ships with real wording.
 
 // TestEveryOrderStatusPublishesAnEvent: a status added to the order machine
-// without an event would change state silently. PENDING is the one exception —
+// without an event would change state silently. PENDING is the one exception:
 // an order is placed by checkout (ORDER_PLACED), never moved into PENDING.
 func TestEveryOrderStatusPublishesAnEvent(t *testing.T) {
 	env := newTestEnv(t)
@@ -160,7 +160,7 @@ func TestOrderLifecyclePublishesAnEventAtEveryStep(t *testing.T) {
 	}
 	want := "[ORDER_PLACED ORDER_ACCEPTED ORDER_PREPARING ORDER_READY ORDER_COMPLETED]"
 	if got := fmt.Sprint(inAppEvents(t, env, shop.tenantID)); got != want {
-		t.Errorf("events = %s, want %s — one per status, in order, none twice", got, want)
+		t.Errorf("events = %s, want %s: one per status, in order, none twice", got, want)
 	}
 
 	// A cancelled order publishes ORDER_CANCELLED.

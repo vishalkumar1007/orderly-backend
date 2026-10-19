@@ -68,7 +68,7 @@ type AnalyticsResponse struct {
 	CancelledToday   int64   `json:"cancelled_today"`
 	// Fulfilment: of the orders that have FINISHED (completed or cancelled),
 	// how many were completed. Null until one has finished, so a quiet shop
-	// reads "—" instead of a misleading 0%.
+	// reads "-" instead of a misleading 0%.
 	CompletedOrders int64    `json:"completed_orders"`
 	CancelledOrders int64    `json:"cancelled_orders"`
 	FulfilmentRate  *float64 `json:"fulfilment_rate"`
@@ -152,7 +152,7 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 	// the column index; a plain integer would defeat that.
 	//
 	// Valid must be true: pgx sends an invalid Interval as NULL, `now() - NULL`
-	// is NULL, and every windowed query then returns no rows — the dashboard's
+	// is NULL, and every windowed query then returns no rows: the dashboard's
 	// charts, best sellers, prep times and rates all silently read zero.
 	span := pgtype.Interval{Microseconds: int64(days) * int64(24*time.Hour/time.Microsecond), Valid: true}
 
@@ -316,7 +316,7 @@ func paymentMix(rows []sqlc.TenantPaymentBreakdownRow) []PaymentPoint {
 }
 
 // fulfilmentRate is completed ÷ finished (completed + cancelled) as a
-// percentage, or nil while nothing has finished — an order still in the kitchen
+// percentage, or nil while nothing has finished: an order still in the kitchen
 // is neither a success nor a failure yet.
 func fulfilmentRate(completed, cancelled int64) *float64 {
 	finished := completed + cancelled

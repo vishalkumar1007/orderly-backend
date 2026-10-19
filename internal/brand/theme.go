@@ -65,9 +65,24 @@ func Merge(presetJSON, overridesJSON []byte) Tokens {
 	return base
 }
 
+// ColorModes are the console looks a person or business can choose. Kept in
+// one place: the console offers all of them, and a mode that any check drops
+// is silently replaced on the next load (Raw came back as Dark).
+var ColorModes = []string{"light", "soft", "mist", "dark", "graphite", "raw", "night", "midnight", "system"}
+
+// ValidColorMode reports whether mode is one of ColorModes.
+func ValidColorMode(mode string) bool {
+	for _, m := range ColorModes {
+		if m == mode {
+			return true
+		}
+	}
+	return false
+}
+
 // Payload is the theme object returned to clients.
 func Payload(presetID, presetName, mode string, presetJSON, overridesJSON []byte) map[string]any {
-	if mode != "light" && mode != "soft" && mode != "dark" && mode != "night" && mode != "system" {
+	if !ValidColorMode(mode) {
 		mode = "system"
 	}
 	name := presetName

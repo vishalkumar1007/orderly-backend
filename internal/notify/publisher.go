@@ -14,7 +14,7 @@ import (
 )
 
 // Publish writes one notification row per recipient. Best-effort: a failure
-// here never fails the request that triggered it — the same tolerance this
+// here never fails the request that triggered it: the same tolerance this
 // codebase already gives audit logging (`_ = insertAudit(...)`) and invite
 // email (reported via email_sent/email_error, never a hard failure). Errors
 // are logged so a systemic problem (bad DB, bad data shape) is still visible.
@@ -82,7 +82,7 @@ func UserIDs(recipients []Recipient) []uuid.UUID {
 }
 
 // RecipientsByPermission resolves a tenant's active staff who hold the given
-// permission — e.g. everyone who can work Selling, for a new-order event.
+// permission: e.g. everyone who can work Selling, for a new-order event.
 // This exact filter (ListTenantUsers + identity.Can) has no precedent
 // elsewhere in the codebase; it is the one new piece of recipient logic.
 func RecipientsByPermission(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, permission identity.Permission) ([]Recipient, error) {
@@ -109,7 +109,7 @@ func filterByPermission(rows []sqlc.ListTenantUsersRow, permission identity.Perm
 	return out
 }
 
-// RecipientsPlatform resolves every active platform/console user — used for
+// RecipientsPlatform resolves every active platform/console user: used for
 // events with no single tenant to scope to, e.g. a new business onboarding.
 func RecipientsPlatform(ctx context.Context, q *sqlc.Queries) ([]Recipient, error) {
 	rows, err := q.ListActivePlatformUsers(ctx)

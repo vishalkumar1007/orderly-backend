@@ -7,7 +7,7 @@
 -- `tenants.theme_*` is the business default: the owner sets it once and it is
 -- what a new colleague sees on their first sign-in, what the sign-in screen is
 -- painted with, and what the setup link inherits. It is shared, so changing it
--- changes the console for everybody who works there — which is exactly wrong
+-- changes the console for everybody who works there: which is exactly wrong
 -- for "I prefer dark mode".
 --
 -- This column is the personal layer on top of that. NULL means "whatever the

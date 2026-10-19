@@ -2,8 +2,8 @@
 // object storage, AI) is stored, resolved and consumed.
 //
 // The design has one rule that everything else follows: the *backend* decides
-// which configuration is effective. A tenant records a preference — PLATFORM or
-// ORGANIZATION — and the resolver turns that preference plus the stored rows
+// which configuration is effective. A tenant records a preference: PLATFORM or
+// ORGANIZATION: and the resolver turns that preference plus the stored rows
 // into a concrete Resolved value. Business code never reads the configuration
 // tables and never branches on the source itself.
 //
@@ -159,6 +159,9 @@ type MailMessage struct {
 	Body        string
 	ReplyTo     string
 	ContentType string // defaults to text/plain
+	// HTMLBody, when set, is sent alongside Body as multipart/alternative:
+	// mail clients show the HTML, and Body stays the plain-text version.
+	HTMLBody string
 }
 
 // EmailProvider sends mail over a concrete transport.

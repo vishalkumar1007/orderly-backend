@@ -332,7 +332,7 @@ func TestUpgradeSuggestionNeverPointsAtACheaperPlan(t *testing.T) {
 	status, body := env.doAs(http.MethodPost, "/api/v1/tenant/products", admin, product, tenantID)
 	env.mustStatus(http.StatusForbidden, status, "over the product limit on the priciest plan", body)
 	if got := errDetail(body, "required_plan"); got != nil {
-		t.Errorf("suggested %v as an upgrade from a ₹9,000,000 plan — every real plan is cheaper", got)
+		t.Errorf("suggested %v as an upgrade from a ₹9,000,000 plan: every real plan is cheaper", got)
 	}
 	if msg, _ := body["error"].(map[string]any)["message"].(string); strings.Contains(msg, "Upgrade to") {
 		t.Errorf("message %q tells the owner to upgrade to nothing", msg)

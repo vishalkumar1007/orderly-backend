@@ -231,7 +231,7 @@ func (h *Handler) createUserFor(w http.ResponseWriter, r *http.Request, req crea
 		notify.Contact{})
 
 	setupURL := h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
-	emailSent, emailErr := h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
+	emailSent, emailErr := h.deliverInvite(r.Context(), uuid.UUID(tenant.ID.Bytes), user.Email, tenant.Name, setupURL)
 
 	response.JSON(w, http.StatusCreated, map[string]any{
 		"user":        userJSON(viewOf(user)),
@@ -404,7 +404,7 @@ func (h *Handler) ResetTenantUserAccess(w http.ResponseWriter, r *http.Request) 
 	emailSent, emailErr := false, ""
 	if terr == nil {
 		setupURL = h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
-		emailSent, emailErr = h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
+		emailSent, emailErr = h.deliverInvite(r.Context(), uuid.UUID(tenant.ID.Bytes), user.Email, tenant.Name, setupURL)
 	}
 
 	response.JSON(w, http.StatusOK, map[string]any{
@@ -450,7 +450,7 @@ func (h *Handler) ResendTenantUserInvite(w http.ResponseWriter, r *http.Request)
 	emailSent, emailErr := false, ""
 	if tenant, terr := h.q.GetTenantByID(ctx, tid); terr == nil {
 		setupURL = h.tenantFrontendURL(tenant.Slug) + "/setup-password?token=" + inviteToken
-		emailSent, emailErr = h.deliverInvite(r.Context(), user.Email, tenant.Name, setupURL)
+		emailSent, emailErr = h.deliverInvite(r.Context(), uuid.UUID(tenant.ID.Bytes), user.Email, tenant.Name, setupURL)
 	}
 	response.JSON(w, http.StatusOK, map[string]any{
 		"user":        userJSON(viewOf(updated)),
@@ -460,7 +460,7 @@ func (h *Handler) ResendTenantUserInvite(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// ResetUserMFA turns off a locked-out user's two-factor authentication —
+// ResetUserMFA turns off a locked-out user's two-factor authentication:
 // support or a tenant admin unblocking someone who lost their device, never a
 // way to see or choose their secret. Mirrors ResetTenantUserAccess's shape:
 // same route pairing, same audit trail, no invite/email involved since the
@@ -517,8 +517,8 @@ func orphanedByRemoval(activeAdmins int64) bool {
 //
 // Two shapes reach here. The nested form, /admin/tenants/{id}/users/{userId},
 // names both and is checked for agreement. The flat form, /admin/users/{id},
-// names only the user — it is how the platform-wide IAM screen addresses
-// someone it found by searching across businesses — so the tenant is read off
+// names only the user: it is how the platform-wide IAM screen addresses
+// someone it found by searching across businesses: so the tenant is read off
 // the user rather than taken from the caller.
 func (h *Handler) parseUserRoute(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool) {
 	if strings.TrimSpace(chi.URLParam(r, "userId")) == "" {
@@ -534,7 +534,7 @@ func (h *Handler) parseUserRoute(w http.ResponseWriter, r *http.Request) (uuid.U
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid user id")
 		return uuid.Nil, uuid.Nil, false
 	}
-	// The user must actually belong to this tenant — never trust the pairing.
+	// The user must actually belong to this tenant: never trust the pairing.
 	user, err := h.q.GetUserByID(r.Context(), pgutil.UUID(userUUID))
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "user not found")

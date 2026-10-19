@@ -5,7 +5,7 @@ import "sort"
 /*
 Role permissions.
 
-The product defines three business roles — owner, manager, staff — and says
+The product defines three business roles, owner, manager, staff, and says
 access is permission-based rather than "manager gets everything the owner has".
 This file is the single place that decides what each role may reach; the HTTP
 layer asks it, and the IAM screen renders it, so the answer a user is shown and
@@ -48,7 +48,7 @@ const (
  *
  * The console is not a single-seat product. The owner can bring in people to
  * run it with them, and the only safe way to do that is to say exactly what
- * each of them may reach — sharing the owner's password is the alternative
+ * each of them may reach: sharing the owner's password is the alternative
  * these roles exist to remove.
  * ------------------------------------------------------------------ */
 
@@ -85,7 +85,7 @@ func PlatformPermissions() []PermissionInfo { return platformPermissions }
 //
 // Support is read-shaped on purpose: it exists so somebody can answer "what is
 // happening with this business" without being able to change the answer. The
-// read/write split is enforced per route, not here — this decides which screens
+// read/write split is enforced per route, not here: this decides which screens
 // are reachable at all.
 var platformRolePermissions = map[string]map[Permission]bool{
 	RoleSupport: set(
@@ -181,7 +181,7 @@ func Permissions() []PermissionInfo { return allPermissions }
 
 // rolePermissions is the authority on what each role may do.
 //
-// Staff get the two running screens and nothing else — they take orders, they
+// Staff get the two running screens and nothing else: they take orders, they
 // do not reprice the menu. A manager runs the shop day to day, including the
 // menu, customers and staff, but not the things that change the business
 // itself: storefront, payments, order workflow, integrations, access control.

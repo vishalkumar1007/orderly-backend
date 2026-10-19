@@ -33,7 +33,7 @@ make that safe, and neither was true when the draft lived in the browser:
 
 The draft document is the same shape the admin API already returns, so the
 screen edits, stores and publishes exactly what it renders. Every value still
-goes through the same validation and the same document parsers on the way in —
+goes through the same validation and the same document parsers on the way in:
 a draft is untrusted input like any other, and one that has been sitting in a
 table for a week is no more trustworthy than one that just arrived.
 */
@@ -432,7 +432,7 @@ func (a *AdminHandler) applyDraft(
 		// them immediately). Publishing a Studio draft must not overwrite them.
 	}
 
-	// Opening hours are live ops — same as store status. Ignore any hours
+	// Opening hours are live ops: same as store status. Ignore any hours
 	// still present on older draft documents.
 	_ = doc.Hours
 

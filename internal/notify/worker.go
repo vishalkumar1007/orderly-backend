@@ -35,7 +35,7 @@ func backoffFor(attempt int) time.Duration {
 }
 
 // StartWorker runs the EMAIL/SMS delivery loop until ctx is cancelled. One
-// goroutine, polling on a plain time.Ticker — this codebase has no queue
+// goroutine, polling on a plain time.Ticker: this codebase has no queue
 // broker anywhere, and Postgres (via ClaimDueDeliveries's SELECT ... FOR
 // UPDATE SKIP LOCKED) is already the only shared infrastructure every
 // deployment has, so that is what the queue is built on rather than adding
@@ -75,18 +75,15 @@ func deliverOne(ctx context.Context, q *sqlc.Queries, log *slog.Logger, cfg *con
 
 	var data map[string]any
 	_ = json.Unmarshal(d.Data, &data)
-	rendered := render(ctx, q, tenantID, d.EventCode, d.Channel, d.Subject, d.Body, data)
 	var sendErr error
 	var providerMessageID string
 
 	switch d.Channel {
 	case ChannelEmail:
-		sendErr = cfg.Notifications().Send(ctx, tenantID, configsvc.MailMessage{
-			To:      []string{d.Recipient},
-			Subject: rendered.Subject,
-			Body:    rendered.Body,
-		})
+		sendErr = cfg.Notifications().Send(ctx, tenantID, ComposeEmail(ctx, q, tenantID, d.EventCode, data,
+			EmailContent{Subject: d.Subject, Body: d.Body}, d.Recipient))
 	case ChannelSMS:
+		rendered := render(ctx, q, tenantID, d.EventCode, d.Channel, d.Subject, d.Body, data)
 		providerMessageID, sendErr = cfg.SMSService().Send(ctx, tenantID, d.Recipient, rendered.Body)
 	}
 

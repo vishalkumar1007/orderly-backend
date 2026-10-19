@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 -- The product defines three business roles: owner, manager and staff. Only two
--- existed, which left every shop with a cliff — a trusted person either ran
+-- existed, which left every shop with a cliff: a trusted person either ran
 -- orders and nothing else, or could rewrite the storefront and grant access.
 --
 -- MANAGER sits between them. What it may reach is decided in one place in Go

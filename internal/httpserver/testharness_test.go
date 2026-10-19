@@ -33,14 +33,14 @@ func seedOperatorStorageRow(t *testing.T, env *testEnv) {
 //
 // The configuration tests rewrite real tables on the developer's database. If
 // the harness ever stops restoring them, running `go test ./...` silently
-// destroys an operator's SMTP credentials — a failure mode that stays invisible
+// destroys an operator's SMTP credentials: a failure mode that stays invisible
 // until someone notices their mail has stopped working.
 func TestHarnessRestoresOperatorData(t *testing.T) {
 	// Phase 1: put an operator row in place using a throwaway environment.
 	seeder := newTestEnv(t)
 	seedOperatorStorageRow(t, seeder)
 	// The seeder's own restore puts back the pre-seed state, so put the row
-	// back afterwards — both for phase two and for the end of the test.
+	// back afterwards: both for phase two and for the end of the test.
 	seedOperatorStorageRow(t, seeder)
 	t.Cleanup(func() { seedOperatorStorageRow(t, seeder) })
 
@@ -76,7 +76,7 @@ func TestHarnessRestoresOperatorData(t *testing.T) {
 	}
 
 	// Run the restore the way cleanup would, then confirm the operator's row is
-	// back exactly as it was — values, secret and flags.
+	// back exactly as it was: values, secret and flags.
 	env.restoreConfigTables()
 
 	var bucket, secret, provider string

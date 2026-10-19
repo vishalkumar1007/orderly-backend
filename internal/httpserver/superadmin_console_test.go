@@ -169,7 +169,7 @@ func TestPlanUpdateMergesTermsRatherThanReplacingThem(t *testing.T) {
 	})
 	id, _ := created["id"].(string)
 
-	// A form that edited only the feature list must not blank the rest — this
+	// A form that edited only the feature list must not blank the rest: this
 	// is the failure the merge exists to prevent.
 	status, body := env.do(http.MethodPatch, "/api/v1/admin/plans/"+id, env.superAdmin(),
 		map[string]any{"features": []string{"One", "Two"}})
@@ -387,7 +387,7 @@ func TestPlatformBrandingRoundTripsAndValidates(t *testing.T) {
 		t.Errorf("default_currency = %v, want it upper-cased", general["default_currency"])
 	}
 
-	// A colour that is not a colour is refused, rather than silently dropped —
+	// A colour that is not a colour is refused, rather than silently dropped:
 	// otherwise the console shows a saved value the platform never stored.
 	status, body = env.do(http.MethodPatch, "/api/v1/admin/settings", env.superAdmin(), map[string]any{
 		"branding": map[string]any{"primary_color": "indigo"},

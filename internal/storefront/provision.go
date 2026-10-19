@@ -42,7 +42,7 @@ type Defaults struct {
 	// normalised through the same parsers the storefront reads with, so an
 	// unknown value becomes the safe default instead of a broken shop. The
 	// order state machine lives in the orders package and cannot be touched
-	// from here — only the behaviour around it.
+	// from here: only the behaviour around it.
 	Payments json.RawMessage
 	Workflow json.RawMessage
 }

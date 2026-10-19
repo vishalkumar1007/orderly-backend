@@ -20,7 +20,7 @@ import (
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
-// Status values. AVAILABLE is the only one a plain status update may target —
+// Status values. AVAILABLE is the only one a plain status update may target:
 // OCCUPIED/RESERVED are meant to be driven by the order/reservation flow that
 // uses the table, not set directly by staff, so the transition table below
 // deliberately only allows the housekeeping-style moves.

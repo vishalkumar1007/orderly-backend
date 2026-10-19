@@ -260,7 +260,7 @@ type CreateRoomTypeParams struct {
 
 // Hotel capability group: room types, rooms, reservations, folios/charges and
 // housekeeping. Reservation and room status are two separate state machines
-// (POC requirement) — never write both from one statement.
+// (POC requirement): never write both from one statement.
 func (q *Queries) CreateRoomType(ctx context.Context, arg CreateRoomTypeParams) (RoomType, error) {
 	row := q.db.QueryRow(ctx, createRoomType,
 		arg.TenantID,

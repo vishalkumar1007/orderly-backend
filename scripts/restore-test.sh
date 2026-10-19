@@ -34,7 +34,7 @@ fi
 
 scratch="orderly_restore_check_$(date -u +%Y%m%d%H%M%S)_$$"
 [[ "$scratch" != "$SOURCE_DB" ]] || fail "refusing to restore over the source database"
-cleanup() { echo "DROP DATABASE IF EXISTS \"$scratch\";" | psql_db postgres > /dev/null 2>&1 || echo "warn: could not drop $scratch — drop it by hand" >&2; }
+cleanup() { echo "DROP DATABASE IF EXISTS \"$scratch\";" | psql_db postgres > /dev/null 2>&1 || echo "warn: could not drop $scratch: drop it by hand" >&2; }
 trap cleanup EXIT
 
 echo "CREATE DATABASE \"$scratch\";" | psql_db postgres > /dev/null || fail "cannot create the scratch database (needs CREATEDB)"

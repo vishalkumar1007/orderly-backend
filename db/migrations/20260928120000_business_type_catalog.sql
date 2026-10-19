@@ -3,7 +3,7 @@
 
 -- The platform sells to five shapes of business, not to one cuisine. The
 -- original catalogue listed momo / manchurian / rolls / tea, which are all the
--- same operational shape — quick-service food — with different menus on top.
+-- same operational shape, quick-service food, with different menus on top.
 --
 -- Onboarding now picks the shape, because the shape is what drives real
 -- defaults: theme, storefront layout, product terminology, starter categories,
@@ -17,8 +17,8 @@ INSERT INTO tenant_types (code, label, active, sort_order) VALUES
 ON CONFLICT (code) DO UPDATE
     SET label = EXCLUDED.label, active = TRUE, sort_order = EXCLUDED.sort_order;
 
--- Cuisine codes stay valid on the tenants that already carry them — a
--- deactivated type is still a legal stored value and still renders — they are
+-- Cuisine codes stay valid on the tenants that already carry them: a
+-- deactivated type is still a legal stored value and still renders: they are
 -- simply no longer offered when onboarding a new business.
 UPDATE tenant_types
 SET active = FALSE, sort_order = 900

@@ -78,7 +78,7 @@ WHERE tenant_id IS NULL AND status = 'ACTIVE'
 
 // Recipient resolution for a platform-wide event. Tenant-wide recipient
 // resolution reuses the existing ListTenantUsers query (users.sql) instead of
-// a second copy — it already returns every column this needs.
+// a second copy: it already returns every column this needs.
 func (q *Queries) ListActivePlatformUsers(ctx context.Context) ([]User, error) {
 	rows, err := q.db.Query(ctx, listActivePlatformUsers)
 	if err != nil {

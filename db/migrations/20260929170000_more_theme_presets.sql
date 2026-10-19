@@ -4,7 +4,7 @@
 -- More to choose from.
 --
 -- Seven presets covered warm, green and pink but left the two requests a
--- console actually gets most often — "a normal blue" and "no colour at all" —
+-- console actually gets most often: "a normal blue" and "no colour at all":
 -- reachable only by typing a hex code, which is not choosing a theme so much as
 -- knowing one. These five fill the gaps: a plain blue, a violet between blue and
 -- the indigo default, a warm amber, a teal between green and cyan, and a slate
@@ -28,7 +28,7 @@ ON CONFLICT (id) DO NOTHING;
 -- +goose StatementBegin
 
 -- Only the rows nobody is using. A tenant's theme_preset_id is a foreign key,
--- so deleting a preset somebody chose would fail the migration outright —
+-- so deleting a preset somebody chose would fail the migration outright:
 -- and rolling back a catalogue must never take a shop's theme with it.
 DELETE FROM theme_presets
 WHERE id IN ('blue', 'violet', 'amber', 'teal', 'slate')

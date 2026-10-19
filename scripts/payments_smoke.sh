@@ -48,7 +48,7 @@ done
 [ -n "${OWNER_TOKEN:-}" ] || { echo "OWNER_TOKEN is required"; exit 2; }
 [ -n "${PRODUCT_ID:-}" ]  || { echo "PRODUCT_ID is required";  exit 2; }
 
-# jget <json> <dotted.path> — one value out of a JSON response ("" when absent).
+# jget <json> <dotted.path>: one value out of a JSON response ("" when absent).
 jget() {
   printf '%s' "$1" | python3 -c '
 import json, sys
@@ -72,7 +72,7 @@ else:
 ' "$2"
 }
 
-# call <host> <method> <path> [token] [body]  — prints the response body.
+# call <host> <method> <path> [token] [body] : prints the response body.
 call() {
   local host="$1" method="$2" path="$3" token="${4:-}" body="${5:-}"
   local args=(-sS -X "$method" -H "Host: $host" -H "Content-Type: application/json")

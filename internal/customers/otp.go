@@ -35,16 +35,16 @@ var (
 	ErrInvalidPhone    = errors.New("phone number is required")
 	ErrNoCode          = errors.New("no code was requested for this number")
 	ErrInvalid         = errors.New("that code is not correct")
-	ErrExpired         = errors.New("that code has expired — send a new one")
-	ErrTooManyAttempts = errors.New("too many incorrect attempts — send a new code")
-	ErrRateLimited     = errors.New("too many codes requested — try again in a few minutes")
+	ErrExpired         = errors.New("that code has expired: send a new one")
+	ErrTooManyAttempts = errors.New("too many incorrect attempts: send a new code")
+	ErrRateLimited     = errors.New("too many codes requested: try again in a few minutes")
 	ErrResendTooSoon   = errors.New("please wait before requesting another code")
 	ErrBlocked         = errors.New("this account is not available")
 )
 
 // NormalizePhone canonicalises a phone number into a customer identity. It
 // delegates to pkg/phone so the number a customer signs in with is exactly the
-// number stored against their guest order — the two must never drift apart.
+// number stored against their guest order: the two must never drift apart.
 func NormalizePhone(raw string) (string, error) {
 	return phone.Normalize(raw)
 }
@@ -152,7 +152,7 @@ func ActiveCode(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, phone 
 
 // Verify checks a submitted code against the stored digest and consumes it on
 // success. The attempt counter lives in the database and is incremented on
-// every failure — including the expired case — so a client cannot reset it by
+// every failure, including the expired case, so a client cannot reset it by
 // reloading the page.
 func Verify(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, phone, code string, now time.Time) error {
 	row, found, err := ActiveCode(ctx, q, tenantID, phone)

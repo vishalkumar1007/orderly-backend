@@ -60,14 +60,21 @@ func ruleJSON(r sqlc.NotificationRule) map[string]any {
 
 func templateJSON(t sqlc.NotificationTemplate) map[string]any {
 	return map[string]any{
-		"id":         pgutil.UUIDString(t.ID),
-		"event_code": t.EventCode,
-		"channel":    t.Channel,
-		"subject":    t.Subject,
-		"body":       t.Body,
-		"version":    t.Version,
-		"overridden": t.TenantID.Valid,
-		"updated_at": t.UpdatedAt.Time.Format(time.RFC3339),
+		"id":           pgutil.UUIDString(t.ID),
+		"event_code":   t.EventCode,
+		"channel":      t.Channel,
+		"subject":      t.Subject,
+		"body":         t.Body,
+		"heading":      t.Heading,
+		"preheader":    t.Preheader,
+		"button_label": t.ButtonLabel,
+		"button_url":   t.ButtonUrl,
+		"html_body":    t.HtmlBody,
+		"highlight":    t.Highlight,
+		"footnote":     t.Footnote,
+		"version":      t.Version,
+		"overridden":   t.TenantID.Valid,
+		"updated_at":   t.UpdatedAt.Time.Format(time.RFC3339),
 	}
 }
 
@@ -159,23 +166,33 @@ type fieldError struct{ msg string }
 func (e *fieldError) Error() string { return e.msg }
 
 type templateWriteRequest struct {
-	EventCode string `json:"event_code"`
-	Channel   string `json:"channel"`
-	Subject   string `json:"subject"`
-	Body      string `json:"body"`
+	EventCode   string `json:"event_code"`
+	Channel     string `json:"channel"`
+	Subject     string `json:"subject"`
+	Body        string `json:"body"`
+	Heading     string `json:"heading"`
+	Preheader   string `json:"preheader"`
+	ButtonLabel string `json:"button_label"`
+	ButtonURL   string `json:"button_url"`
+	HTMLBody    string `json:"html_body"`
+	Highlight   string `json:"highlight"`
+	Footnote    string `json:"footnote"`
 }
 
 type testSendRequest struct {
 	EventCode string `json:"event_code"`
 	Channel   string `json:"channel"`
 	To        string `json:"to"`
+	// Content, when given, is the unsaved draft to send instead of the saved
+	// template, so "send test" sends exactly what the editor shows.
+	Content *notify.EmailContent `json:"content,omitempty"`
 }
 
 /* ------------------------------------------------------------------ *
  * Catalog
  * ------------------------------------------------------------------ */
 
-// ListNotificationEvents returns the full catalog — used by the Super Admin
+// ListNotificationEvents returns the full catalog: used by the Super Admin
 // platform notification settings, which may configure any event.
 func (h *Handler) ListNotificationEvents(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.q.ListNotificationEvents(r.Context())
@@ -191,7 +208,7 @@ func (h *Handler) ListNotificationEvents(w http.ResponseWriter, r *http.Request)
 }
 
 // ListTenantNotificationEvents returns only the events this business's
-// enabled capabilities make relevant — a Food Shop never sees "Reservation
+// enabled capabilities make relevant: a Food Shop never sees "Reservation
 // confirmed." tenantctx already loaded the capability set for this request;
 // this is the one new reader of it, following HasCapability's documented
 // "nothing else should query tenant_capabilities per-request" by reusing the
@@ -445,6 +462,26 @@ func (h *Handler) PutTenantNotificationTemplate(w http.ResponseWriter, r *http.R
 	h.putTemplate(w, r, &tenantID)
 }
 
+// DeleteTenantNotificationTemplate drops the business's own wording for one
+// message, so the platform default applies again. Allowed without the
+// templates feature: a business that lost it on a downgrade can still go back.
+func (h *Handler) DeleteTenantNotificationTemplate(w http.ResponseWriter, r *http.Request) {
+	tenantID := mustTenantID(r)
+	eventCode := r.URL.Query().Get("event_code")
+	channel := strings.ToUpper(r.URL.Query().Get("channel"))
+	if eventCode == "" || channel == "" {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "event_code and channel are required")
+		return
+	}
+	if err := h.q.DeactivateTemplate(r.Context(), sqlc.DeactivateTemplateParams{
+		EventCode: eventCode, Channel: channel, TenantID: pgutil.UUID(tenantID),
+	}); err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to reset template")
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
 func (h *Handler) TestSendTenantNotificationTemplate(w http.ResponseWriter, r *http.Request) {
 	tenantID := mustTenantID(r)
 	h.testSendTemplate(w, r, &tenantID)
@@ -611,9 +648,24 @@ func (h *Handler) putTemplate(w http.ResponseWriter, r *http.Request, tenantID *
 		response.Error(w, http.StatusBadRequest, "invalid_request", "channel must be EMAIL or SMS")
 		return
 	}
-	if strings.TrimSpace(req.EventCode) == "" || strings.TrimSpace(req.Body) == "" {
-		response.Error(w, http.StatusBadRequest, "invalid_request", "event_code and body are required")
+	// A hand-written HTML email needs no plain body: its text version is derived.
+	if strings.TrimSpace(req.EventCode) == "" || (strings.TrimSpace(req.Body) == "" && strings.TrimSpace(req.HTMLBody) == "") {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "event_code and a body or html_body are required")
 		return
+	}
+	if len(req.HTMLBody) > 200<<10 {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "html_body must be under 200 KB")
+		return
+	}
+	if _, err := h.q.GetNotificationEvent(r.Context(), req.EventCode); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "unknown event_code")
+		return
+	}
+	if tenantID != nil {
+		if ok, err := h.q.TenantMayEditTemplate(r.Context(), req.EventCode); err != nil || !ok {
+			response.Error(w, http.StatusForbidden, "forbidden", "this message is managed by the platform")
+			return
+		}
 	}
 	tid := pgutil.NullUUID(tenantID)
 	if err := h.q.DeactivateTemplate(r.Context(), sqlc.DeactivateTemplateParams{
@@ -624,6 +676,8 @@ func (h *Handler) putTemplate(w http.ResponseWriter, r *http.Request, tenantID *
 	}
 	row, err := h.q.CreateTemplateVersion(r.Context(), sqlc.CreateTemplateVersionParams{
 		EventCode: req.EventCode, Channel: channel, Subject: req.Subject, Body: req.Body, TenantID: tid,
+		Heading: req.Heading, Preheader: req.Preheader, ButtonLabel: req.ButtonLabel, ButtonUrl: req.ButtonURL,
+		HtmlBody: req.HTMLBody, Highlight: req.Highlight, Footnote: req.Footnote,
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to save template")
@@ -634,7 +688,7 @@ func (h *Handler) putTemplate(w http.ResponseWriter, r *http.Request, tenantID *
 
 // testSendTemplate delivers a template's CURRENT saved content (or the
 // request's draft content, when sent before saving) directly through the
-// configured provider — synchronous, bypassing the delivery queue, exactly
+// configured provider: synchronous, bypassing the delivery queue, exactly
 // like the existing SMTP "send test email" action.
 func (h *Handler) testSendTemplate(w http.ResponseWriter, r *http.Request, tenantID *uuid.UUID) {
 	var req testSendRequest
@@ -647,7 +701,7 @@ func (h *Handler) testSendTemplate(w http.ResponseWriter, r *http.Request, tenan
 		response.Error(w, http.StatusBadRequest, "invalid_request", "to is required")
 		return
 	}
-	subject, body := notify.RenderSample(r.Context(), h.q, tenantID, req.EventCode, channel)
+	_, body := notify.RenderSample(r.Context(), h.q, tenantID, req.EventCode, channel)
 	if h.configs == nil {
 		response.Error(w, http.StatusServiceUnavailable, "not_configured", "no provider is configured")
 		return
@@ -655,8 +709,14 @@ func (h *Handler) testSendTemplate(w http.ResponseWriter, r *http.Request, tenan
 	to := strings.TrimSpace(req.To)
 	switch channel {
 	case "EMAIL":
+		content := notify.SavedContent(r.Context(), h.q, tenantID, req.EventCode)
+		if req.Content != nil {
+			content = *req.Content
+		}
+		subject, text, html := notify.PreviewEmail(r.Context(), h.q, req.EventCode, content,
+			notify.ResolveBranding(r.Context(), h.q, tenantID), false)
 		if err := h.configs.Notifications().Send(r.Context(), tenantID, configsvc.MailMessage{
-			To: []string{to}, Subject: subject, Body: body,
+			To: []string{to}, Subject: "[Test] " + subject, Body: text, HTMLBody: html,
 		}); err != nil {
 			response.Error(w, http.StatusBadRequest, "send_failed", configsvc.SafeErrorMessage(err))
 			return

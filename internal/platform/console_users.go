@@ -14,6 +14,7 @@ import (
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
@@ -76,7 +77,7 @@ func (h *Handler) ListConsoleUsers(w http.ResponseWriter, r *http.Request) {
 			"created_at":        row.CreatedAt.Time.Format(time.RFC3339),
 			"last_activity":     nil,
 			// The owner cannot be demoted or disabled, and nobody can change
-			// their own access — both would leave the console unreachable.
+			// their own access: both would leave the console unreachable.
 			"is_self":  uuid.UUID(row.ID.Bytes) == actor.ID,
 			"is_owner": row.Role == identity.RoleSuperAdmin,
 		}
@@ -340,19 +341,20 @@ func (h *Handler) consoleSetupURL(token string) string {
 }
 
 // deliverConsoleInvite sends the setup link, reporting rather than failing when
-// email is not configured — the console shows the link either way, so a
+// email is not configured: the console shows the link either way, so a
 // platform without SMTP can still bring someone on board.
 func (h *Handler) deliverConsoleInvite(ctx context.Context, to, setupURL string) (bool, string) {
 	if !h.configsEnabled() {
 		return false, "email service unavailable"
 	}
-	msg := configsvc.MailMessage{
-		To:      []string{to},
-		Subject: "You have been given access to the Orderly platform console",
-		Body: "You have been invited to the Orderly platform console.\r\n\r\n" +
-			"Open this link to choose a password and sign in:\r\n" + setupURL +
-			"\r\n\r\nIf you were not expecting this message, you can ignore it.\r\n",
-	}
+	msg := notify.ComposeEmail(ctx, h.q, nil, "CONSOLE_INVITE",
+		map[string]any{"setup_url": setupURL},
+		notify.EmailContent{
+			Subject: "You have been given access to the Orderly platform console",
+			Body: "You have been invited to the Orderly platform console.\r\n\r\n" +
+				"Open this link to choose a password and sign in:\r\n" + setupURL +
+				"\r\n\r\nIf you were not expecting this message, you can ignore it.\r\n",
+		}, to)
 	if err := h.notifications.SendPlatform(ctx, msg); err != nil {
 		return false, configsvc.SafeErrorMessage(err)
 	}

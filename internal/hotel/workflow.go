@@ -2,7 +2,7 @@
 // reservations, folios/charges and housekeeping.
 //
 // Reservation and room status are two separate state machines, deliberately
-// not merged (POC: "Reservation and room state machines remain separate") —
+// not merged (POC: "Reservation and room state machines remain separate"):
 // a room can go to CLEANING while its reservation is already CHECKED_OUT, and
 // a room can be OCCUPIED by a walk-in stay that never had a reservation at
 // all.

@@ -13,8 +13,8 @@ import (
 var nowUnixNano = func() int64 { return time.Now().UnixNano() }
 
 // TenantPosture is one tenant's configuration standing for one service, as seen
-// by a Super Admin. It deliberately carries no configuration values at all —
-// not even non-secret ones — because the audience is a cross-tenant overview
+// by a Super Admin. It deliberately carries no configuration values at all:
+// not even non-secret ones: because the audience is a cross-tenant overview
 // and a summary is all it needs.
 type TenantPosture struct {
 	TenantID   string `json:"tenant_id"`

@@ -17,7 +17,7 @@ These are the two guarantees the whole capability mechanism exists for:
 
 // TestCapabilityGatingBlocksIrrelevantModules covers the wall described in
 // business_type_capabilities: a RESTAURANT tenant has no ROOMS row and a
-// disabled SERVICES row, so both must 403 rather than 200-with-empty-data —
+// disabled SERVICES row, so both must 403 rather than 200-with-empty-data:
 // an empty 200 would leak that the module exists at all.
 func TestCapabilityGatingBlocksIrrelevantModules(t *testing.T) {
 	env := newTestEnv(t)
@@ -35,7 +35,7 @@ func TestCapabilityGatingBlocksIrrelevantModules(t *testing.T) {
 		}
 	}
 
-	// What RESTAURANT does have must still work — the gate is precise, not a
+	// What RESTAURANT does have must still work: the gate is precise, not a
 	// blanket lockout.
 	status, body := env.doAsTenant(http.MethodGet, "/api/v1/tenant/orders", owner, nil, tenantID)
 	env.mustStatus(http.StatusOK, status, "RESTAURANT reading its own orders", body)
@@ -70,7 +70,7 @@ func TestBarberTenantReachesBarberModulesNotFoodModules(t *testing.T) {
 // BARBER tenants, a service created under the first, and a direct attempt by
 // the second (same capability, same role, different business) to read,
 // modify and delete it by id. Every one of those must come back 404, not 403
-// and not 200 — a 404 means the row could not be found *for this tenant*,
+// and not 200: a 404 means the row could not be found *for this tenant*,
 // which is the tenant_id-scoped query doing its job, not an auth layer
 // deciding the caller may not look.
 func TestServicesAreIsolatedPerTenant(t *testing.T) {
@@ -104,7 +104,7 @@ func TestServicesAreIsolatedPerTenant(t *testing.T) {
 	}
 	// DeleteService is a tenant-scoped DELETE with no affected-rows check (same
 	// as DeleteCategory elsewhere in this codebase), so it reports 200 whether
-	// or not a row actually matched — the real assertion is the tenant A
+	// or not a row actually matched: the real assertion is the tenant A
 	// re-list below: the WHERE tenant_id=$2 clause must have matched nothing,
 	// so tenant A's row is untouched.
 	env.doAsTenant(http.MethodDelete, "/api/v1/tenant/services/"+serviceID, ownerB, nil, tenantB)

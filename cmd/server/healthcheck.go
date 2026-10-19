@@ -12,7 +12,7 @@ import (
 
 // runHealthcheck implements `server healthcheck`, the container's HEALTHCHECK.
 //
-// The runtime image is distroless — no shell, no curl — so the binary probes
+// The runtime image is distroless, no shell, no curl, so the binary probes
 // itself: GET /health/ready on the loopback address it listens on. Exit 0 when
 // the API answers 200, 1 otherwise, so Docker marks the container unhealthy
 // when the API (or its database) is down.

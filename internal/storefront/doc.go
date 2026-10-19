@@ -7,5 +7,5 @@
 // projection of the configuration (never tenant-private settings, never
 // payment secrets). Tenant admin handlers read and write the same rows behind
 // the tenant admin role, and the tenant is always resolved from the request
-// context — never from a client-supplied id.
+// context: never from a client-supplied id.
 package storefront

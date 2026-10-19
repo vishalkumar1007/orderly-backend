@@ -1,7 +1,7 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- Email OTP codes for staff/admin MFA — same shape as the existing customer
+-- Email OTP codes for staff/admin MFA: same shape as the existing customer
 -- phone-OTP table (customer_otp_codes), scoped by user_id instead of
 -- tenant_id+phone. Rate limiting (resend cooldown, attempt cap) is plain
 -- application-code checks against this table's rows, mirroring

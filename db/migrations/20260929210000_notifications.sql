@@ -3,7 +3,7 @@
 
 -- An in-app event feed, distinct from audit_logs (a write-only ledger with no
 -- reader or read state) and from email (configsvc/SMTP, invites only). One
--- row per recipient keeps read state a plain column instead of a join table —
+-- row per recipient keeps read state a plain column instead of a join table:
 -- staff counts per tenant are small, so this never needs to scale past a few
 -- hundred rows per recipient.
 CREATE TABLE notifications (

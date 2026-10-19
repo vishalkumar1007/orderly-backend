@@ -173,7 +173,7 @@ func (c *Catalog) LoadProduct(ctx context.Context, tenantID, productID uuid.UUID
 }
 
 // LoadFeatured reads products flagged as featured, falling back to the newest
-// products when a tenant has flagged none — a home page must never render an
+// products when a tenant has flagged none: a home page must never render an
 // empty shelf.
 func (c *Catalog) LoadFeatured(ctx context.Context, tenantID uuid.UUID, limit int32) ([]Product, error) {
 	rows, err := c.q.ListFeaturedProducts(ctx, sqlc.ListFeaturedProductsParams{

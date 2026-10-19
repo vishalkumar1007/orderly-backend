@@ -103,13 +103,13 @@ type createTenantRequest struct {
 	StoreStatus      string          `json:"store_status"`
 	StatusMessage    string          `json:"status_message"`
 	// MFAAllowed grants this one business the right to use two-factor
-	// authentication, set now or later from its own Configuration tab — not a
+	// authentication, set now or later from its own Configuration tab: not a
 	// platform-wide switch. See internal/auth.SetupMFA.
 	MFAAllowed bool `json:"mfa_allowed"`
 	// MFAPolicyMode/MFAAllowedMethods seed the business's initial MFA policy
 	// (OPTIONAL or REQUIRED) at creation time, only when MFAAllowed is also
 	// true. The business's own Tenant Admin owns and edits this policy from
-	// here on via PUT /api/v1/tenant/mfa-policy — omitted or empty leaves it
+	// here on via PUT /api/v1/tenant/mfa-policy: omitted or empty leaves it
 	// DISABLED, exactly as if the Super Admin had set nothing.
 	MFAPolicyMode     string   `json:"mfa_policy_mode"`
 	MFAAllowedMethods []string `json:"mfa_allowed_methods"`
@@ -121,7 +121,7 @@ type createTenantRequest struct {
 
 	// TermsAccepted records that the Super Admin performing onboarding
 	// confirmed the platform's terms on the business's behalf (POC: "Terms and
-	// Conditions acceptance"). Required — there is no implicit consent.
+	// Conditions acceptance"). Required: there is no implicit consent.
 	TermsAccepted bool `json:"terms_accepted"`
 
 	// CapabilityOverrides lets onboarding turn an *optional* module on or off
@@ -387,7 +387,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Storefront defaults — normalise with safe fallbacks.
+	// Storefront defaults: normalise with safe fallbacks.
 	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
 	if currency == "" {
 		currency = "INR"
@@ -544,7 +544,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 
 	base := h.tenantFrontendURL(tenant.Slug)
 	setupPath := "/setup-password?token=" + inviteToken
-	emailSent, emailErr := h.deliverInvite(r.Context(), admin.Email, tenant.Name, base+setupPath)
+	emailSent, emailErr := h.deliverInvite(r.Context(), uuid.UUID(tenant.ID.Bytes), admin.Email, tenant.Name, base+setupPath)
 	enriched, err := h.q.GetTenantWithPlanByID(r.Context(), tenant.ID)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "tenant created but failed to load")
@@ -1001,7 +1001,7 @@ func (h *Handler) ListSubscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTenantMFAPolicy is the Super Admin's read-only view of a business's own
-// MFA policy — day-to-day edits belong to that business's Tenant Admin
+// MFA policy: day-to-day edits belong to that business's Tenant Admin
 // (PUT /api/v1/tenant/mfa-policy), the same split already used for the
 // storefront template.
 func (h *Handler) GetTenantMFAPolicy(w http.ResponseWriter, r *http.Request) {
@@ -1067,7 +1067,7 @@ func (h *Handler) ResendTenantInvite(w http.ResponseWriter, r *http.Request) {
 	base := h.tenantFrontendURL(row.Tenant.Slug)
 	setupPath := "/setup-password?token=" + inviteToken
 	setupURL := base + setupPath
-	emailSent, emailErr := h.deliverInvite(ctx, updated.Email, row.Tenant.Name, setupURL)
+	emailSent, emailErr := h.deliverInvite(ctx, uuid.UUID(row.Tenant.ID.Bytes), updated.Email, row.Tenant.Name, setupURL)
 	response.JSON(w, http.StatusOK, map[string]any{
 		"admin_email":  updated.Email,
 		"invite_token": inviteToken,
@@ -1321,7 +1321,7 @@ func insertAuditResult(
 
 // issueLicense creates the tenant's enforcement gate (HLD §16), resolved from
 // its plan's license template. A missing template is a platform
-// configuration error, not a tenant error — every plan gets one seeded in
+// configuration error, not a tenant error: every plan gets one seeded in
 // db/migrations/20260929192000_licensing.sql.
 func (h *Handler) issueLicense(ctx context.Context, qtx *sqlc.Queries, tenantID, planID pgtype.UUID) error {
 	tmpl, err := qtx.GetLicenseTemplateByPlan(ctx, planID)
@@ -1342,7 +1342,7 @@ func (h *Handler) issueLicense(ctx context.Context, qtx *sqlc.Queries, tenantID,
 
 // recordTermsAcceptance stores the Super Admin's acceptance of the latest
 // published terms on the business's behalf (POC: "Terms and Conditions
-// acceptance"). Immutable once written — see
+// acceptance"). Immutable once written: see
 // db/migrations/20260929193000_terms_and_conditions.sql.
 func (h *Handler) recordTermsAcceptance(ctx context.Context, qtx *sqlc.Queries, tenantID, userID pgtype.UUID) error {
 	doc, err := qtx.GetLatestTermsDocument(ctx)
@@ -1359,7 +1359,7 @@ func (h *Handler) recordTermsAcceptance(ctx context.Context, qtx *sqlc.Queries, 
 // new tenant, applying a client override only where business_type_capabilities
 // marks that capability configurable for this business type. A Hotel tenant
 // can never end up with KITCHEN enabled regardless of what a client sends,
-// because there is no (HOTEL, KITCHEN) row for the override to match — the
+// because there is no (HOTEL, KITCHEN) row for the override to match: the
 // wall is the absence of the row, not this validation.
 func (h *Handler) seedCapabilities(ctx context.Context, qtx *sqlc.Queries, tenantID pgtype.UUID, businessType string, overrides map[string]bool) error {
 	rows, err := qtx.GetBusinessTypeCapabilities(ctx, businessType)
@@ -1386,7 +1386,7 @@ func (h *Handler) seedCapabilities(ctx context.Context, qtx *sqlc.Queries, tenan
 
 // seedBusinessTypeDefaults applies the starter content in
 // business_type_defaults (categories, services, room types) so a new tenant
-// is not a blank screen on day one — see
+// is not a blank screen on day one: see
 // db/migrations/20260929198000_onboarding_drafts_and_defaults.sql. A business
 // type with no default row (GENERAL) is left empty on purpose.
 func (h *Handler) seedBusinessTypeDefaults(ctx context.Context, qtx *sqlc.Queries, tenantID pgtype.UUID, businessType string) error {

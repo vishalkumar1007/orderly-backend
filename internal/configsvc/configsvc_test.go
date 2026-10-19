@@ -13,7 +13,7 @@ import (
 )
 
 /* ------------------------------------------------------------------ *
- * Redaction — the security boundary
+ * Redaction: the security boundary
  * ------------------------------------------------------------------ */
 
 // TestPublicViewNeverCarriesSecrets is the guardrail for the whole redaction
