@@ -1,13 +1,7 @@
 .PHONY: backup restore-test backup-selftest uptime-check run check check-integration migrate-up migrate-down migrate-status sqlc-generate tidy docker-up docker-down docker-reset wait-db up down down-v restart db-clear db-migrate fresh-run
 
 PG_CONTAINER := orderly-postgres
-# Host port for Postgres: the one our running container already uses, else the
-# first free port from 5432 (another project may hold 5432). Override: PG_PORT=…
-ifndef PG_PORT
-PG_PORT := $(shell p=$$(docker port $(PG_CONTAINER) 5432/tcp 2>/dev/null | head -1 | sed 's/.*://'); \
-	if [ -z "$$p" ]; then for p in 5432 5433 5434 5435 5436 5437 5438 5439 5440; do \
-	lsof -nP -iTCP:$$p -sTCP:LISTEN >/dev/null 2>&1 || break; done; fi; echo $$p)
-endif
+PG_PORT := 5432
 export PG_PORT
 DATABASE_URL ?= postgres://orderly:orderly@localhost:$(PG_PORT)/orderly?sslmode=disable
 MIGRATIONS_DIR := db/migrations
@@ -62,7 +56,12 @@ sqlc-generate:
 tidy:
 	go mod tidy
 
+# Postgres always uses 5432: stop any other container or process holding it first.
 docker-up:
+	@for c in $$(docker ps --filter publish=$(PG_PORT) --format '{{.Names}}' | grep -vx $(PG_CONTAINER)); do \
+		echo "Stopping container $$c (holds port $(PG_PORT))"; docker stop $$c >/dev/null; done
+	@pids=$$(lsof -nP -iTCP:$(PG_PORT) -sTCP:LISTEN 2>/dev/null | awk 'NR>1 && $$1 !~ /^com\.docke/ {print $$2}' | sort -u); \
+		if [ -n "$$pids" ]; then echo "Killing process $$pids (holds port $(PG_PORT))"; kill $$pids; sleep 1; fi
 	@echo "Postgres on localhost:$(PG_PORT)"
 	$(COMPOSE) up -d
 

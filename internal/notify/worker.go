@@ -83,6 +83,12 @@ func deliverOne(ctx context.Context, q *sqlc.Queries, log *slog.Logger, cfg *con
 		sendErr = cfg.Notifications().Send(ctx, tenantID, ComposeEmail(ctx, q, tenantID, d.EventCode, data,
 			EmailContent{Subject: d.Subject, Body: d.Body}, d.Recipient))
 	case ChannelSMS:
+		if data == nil {
+			data = map[string]any{}
+		}
+		if _, ok := data["business_name"]; !ok {
+			data["business_name"] = ResolveBranding(ctx, q, tenantID).SenderName
+		}
 		rendered := render(ctx, q, tenantID, d.EventCode, d.Channel, d.Subject, d.Body, data)
 		providerMessageID, sendErr = cfg.SMSService().Send(ctx, tenantID, d.Recipient, rendered.Body)
 	}
