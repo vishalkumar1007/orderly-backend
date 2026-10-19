@@ -54,7 +54,8 @@ func (p *s3Provider) TestConnection(ctx context.Context) error {
 	query := url.Values{}
 	query.Set("list-type", "2")
 	query.Set("max-keys", "1")
-	req, err := p.newRequest(ctx, http.MethodGet, "/", query, nil)
+	// An empty key targets the bucket itself; "/" would produce "/bucket//".
+	req, err := p.newRequest(ctx, http.MethodGet, "", query, nil)
 	if err != nil {
 		return err
 	}
@@ -143,9 +144,12 @@ func (p *s3Provider) PresignGet(ctx context.Context, key string, ttl time.Durati
 	canonicalQuery = q.Encode()
 
 	canonicalHeaders := "host:" + host + "\n"
-	stringToSign := strings.Join([]string{
+	canonicalRequest := strings.Join([]string{
 		"GET", canonicalURI, canonicalQuery, canonicalHeaders,
-		"host", strings.Join([]string{amzDate, scope, "UNSIGNED-PAYLOAD"}, "\n"),
+		"host", "UNSIGNED-PAYLOAD",
+	}, "\n")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, scope, sha256Hex([]byte(canonicalRequest)),
 	}, "\n")
 
 	signature := hex.EncodeToString(p.signingKey(dateStamp, stringToSign))

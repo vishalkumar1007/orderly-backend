@@ -1,16 +1,29 @@
 .PHONY: backup restore-test backup-selftest uptime-check run check check-integration migrate-up migrate-down migrate-status sqlc-generate tidy docker-up docker-down docker-reset wait-db up down down-v restart db-clear db-migrate fresh-run
 
-DATABASE_URL ?= postgres://orderly:orderly@localhost:5432/orderly?sslmode=disable
+PG_CONTAINER := orderly-postgres
+# Host port for Postgres: the one our running container already uses, else the
+# first free port from 5432 (another project may hold 5432). Override: PG_PORT=…
+ifndef PG_PORT
+PG_PORT := $(shell p=$$(docker port $(PG_CONTAINER) 5432/tcp 2>/dev/null | head -1 | sed 's/.*://'); \
+	if [ -z "$$p" ]; then for p in 5432 5433 5434 5435 5436 5437 5438 5439 5440; do \
+	lsof -nP -iTCP:$$p -sTCP:LISTEN >/dev/null 2>&1 || break; done; fi; echo $$p)
+endif
+export PG_PORT
+DATABASE_URL ?= postgres://orderly:orderly@localhost:$(PG_PORT)/orderly?sslmode=disable
 MIGRATIONS_DIR := db/migrations
 COMPOSE := docker compose -f docker/docker-compose.yml
-PG_CONTAINER := orderly-postgres
 
 GOOSE := go run github.com/pressly/goose/v3/cmd/goose@v3.24.1
 # Prefer a prebuilt binary: `go run` sqlc fails to compile pg_query on recent macOS SDKs.
 SQLC := $(shell if [ -x "$(CURDIR)/.tools/sqlc" ]; then echo "$(CURDIR)/.tools/sqlc"; elif command -v sqlc >/dev/null 2>&1; then command -v sqlc; else echo "go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.28.0"; fi)
 
+# API port: first free from 8080 (override: API_PORT=…). Written to .api-port so
+# the frontend's Vite proxy follows it. Env vars win over .env.
 run:
-	go run ./cmd/server
+	@p=$${API_PORT:-}; if [ -z "$$p" ]; then for p in 8080 8081 8082 8083 8084 8085 8086 8087 8088 8089 8090; do \
+		lsof -nP -iTCP:$$p -sTCP:LISTEN >/dev/null 2>&1 || break; done; fi; \
+	echo $$p > .api-port; echo "API on localhost:$$p"; \
+	DATABASE_URL="$(DATABASE_URL)" HTTP_ADDR=":$$p" go run ./cmd/server
 
 # Same gates as the GitHub Actions "Checks" job — run before push.
 # Clears DATABASE_URL / CONFIG_ENCRYPTION_KEY so a local .env does not force
@@ -50,6 +63,7 @@ tidy:
 	go mod tidy
 
 docker-up:
+	@echo "Postgres on localhost:$(PG_PORT)"
 	$(COMPOSE) up -d
 
 docker-down:
