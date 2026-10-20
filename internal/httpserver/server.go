@@ -17,27 +17,31 @@ import (
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/appointments"
+	"github.com/orderly/orderly-backend/internal/attendance"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/config"
 	"github.com/orderly/orderly-backend/internal/confighttp"
 	"github.com/orderly/orderly-backend/internal/configsvc"
-	"github.com/orderly/orderly-backend/internal/signin"
 	"github.com/orderly/orderly-backend/internal/customers"
 	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/internal/hotel"
 	"github.com/orderly/orderly-backend/internal/inventory"
+	"github.com/orderly/orderly-backend/internal/marketing"
 	"github.com/orderly/orderly-backend/internal/media"
 	"github.com/orderly/orderly-backend/internal/menu"
 	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/orders"
 	"github.com/orderly/orderly-backend/internal/payments"
 	"github.com/orderly/orderly-backend/internal/platform"
+	"github.com/orderly/orderly-backend/internal/promo"
 	"github.com/orderly/orderly-backend/internal/publicurl"
 	"github.com/orderly/orderly-backend/internal/secretbox"
+	"github.com/orderly/orderly-backend/internal/signin"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tables"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
+	"github.com/orderly/orderly-backend/pkg/netutil"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
@@ -62,6 +66,8 @@ type Server struct {
 	appointments  *appointments.Handler
 	hotel         *hotel.Handler
 	tables        *tables.Handler
+	marketing     *marketing.Handler
+	promo         *promo.Handler
 	configService *configsvc.Service
 }
 
@@ -119,6 +125,11 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 	s.customers.AttachSignIn(signIn)
 	s.orders.AttachSignIn(signIn)
 
+	// Marketing links and unsubscribe pages are served from the API origin;
+	// a link's destination is always the tenant's own storefront.
+	s.marketing = marketing.NewHandler(pool, configService, s.marketingURLs(), log)
+	s.promo = promo.NewHandler(pool, log)
+
 	// Image links saved before media URLs existed (expiring or plain-http
 	// storage links) are rewritten once, in the background, so they show
 	// again without anyone re-uploading.
@@ -132,6 +143,20 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 		}
 	}()
 	return s
+}
+
+// marketingURLs is the public routing the marketing engine puts in messages.
+func (s *Server) marketingURLs() marketing.URLs {
+	return marketing.URLs{
+		APIOrigin: publicurl.APIOrigin(s.cfg.BaseDomain, s.cfg.AppEnv, s.cfg.HTTPAddr),
+		StoreURL:  s.publicStoreURL,
+	}
+}
+
+// StartMarketingWorker runs the campaign lifecycle (materialise, deliver,
+// finish) until ctx is cancelled. Call it in a goroutine.
+func (s *Server) StartMarketingWorker(ctx context.Context) {
+	marketing.NewWorker(sqlc.New(s.pool), s.configService, s.marketingURLs(), s.log).Start(ctx, 10*time.Second)
 }
 
 // publicStoreURL builds the customer-facing address for a tenant slug. The
@@ -181,8 +206,10 @@ func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(netutil.Middleware)
 	r.Use(s.requestLogger)
 	r.Use(middleware.Recoverer)
+	r.Use(middleware.Compress(5))
 	r.Use(middleware.Timeout(60 * time.Second))
 	r.Use(cors.Handler(cors.Options{
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
@@ -198,6 +225,16 @@ func (s *Server) Router() http.Handler {
 	r.With(wrap(s.payLimits.webhook)).Post("/api/v1/webhooks/payments/{provider}", s.payments.Webhook)
 
 	r.Get("/health", s.handleHealth)
+
+	// Marketing: trackable-link redirect and unsubscribe. No tenant host and
+	// no session: the code / recipient id is the credential and names the
+	// tenant. Mounted outside /api/v1/public because that group requires a
+	// tenant host, and these are opened from an email or SMS.
+	r.Get("/api/v1/go/{code}", s.marketing.Go)
+	r.Get("/api/v1/marketing/unsubscribe/{id}", s.marketing.Unsubscribe)
+	// Meta (WhatsApp) webhook: verify handshake, then signed deliveries.
+	r.Get("/api/v1/webhooks/meta", s.marketing.WebhookVerify)
+	r.Post("/api/v1/webhooks/meta", s.marketing.Webhook)
 	r.Get("/health/ready", s.handleReady)
 
 	r.Route("/api/v1", func(api chi.Router) {
@@ -533,6 +570,7 @@ func (s *Server) Router() http.Handler {
 			tr.With(canMenu, reqCatalog).Get("/products", s.menu.ListProducts)
 			tr.With(canMenu, reqCatalog).Post("/products", s.menu.CreateProduct)
 			tr.With(canMenu, reqCatalog).Post("/products/reorder", s.menu.ReorderProducts)
+			tr.With(canMenu, reqCatalog).Post("/products/bulk", s.menu.BulkProducts)
 			tr.With(canMenu, reqCatalog).Get("/products/{id}", s.menu.GetProduct)
 			tr.With(canMenu, reqCatalog).Post("/products/{id}/duplicate", s.menu.DuplicateProduct)
 			tr.With(canMenu, reqCatalog).Patch("/products/{id}", s.menu.UpdateProduct)
@@ -566,10 +604,29 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStaff, reqStaff).Post("/users/{userId}/reset-access", s.admin.ShopResetUserAccess)
 			tr.With(canStaff, reqStaff).Post("/users/{userId}/resend-invite", s.admin.ShopResendUserInvite)
 			tr.With(canStaff, reqStaff).Post("/users/{userId}/reset-mfa", s.admin.ShopResetUserMFA)
+			tr.With(canStaff, reqStaff).Get("/users/{userId}/logins", s.admin.ShopUserLogins)
+			tr.With(canStaff, reqStaff).Get("/users/{userId}/sessions", s.admin.ShopUserSessions)
+			tr.With(canStaff, reqStaff).Delete("/users/{userId}/sessions", s.admin.ShopSignOutUser)
+			tr.With(canStaff, reqStaff).Get("/users/{userId}/stats", s.admin.ShopUserStats)
+
+			// Attendance: a plan feature the shop also switches on. Every role
+			// punches for themselves; the timesheet and settings need "staff".
+			{
+				att := attendance.NewHandler(s.pool)
+				reqAttendance := entitlement.RequireFeature(sqlc.New(s.pool), entitlement.FeatureAttendance)
+				tr.With(reqAttendance).Get("/attendance/me", att.Me)
+				tr.With(reqAttendance).Post("/attendance/punch-in", att.PunchIn)
+				tr.With(reqAttendance).Post("/attendance/punch-out", att.PunchOut)
+				tr.With(canStaff, reqStaff, reqAttendance).Get("/attendance", att.List)
+				tr.With(canStaff, reqStaff, reqAttendance).Patch("/attendance/{id}", att.Edit)
+				tr.With(canStaff, reqStaff, reqAttendance).Get("/attendance/settings", att.GetSettings)
+				tr.With(canStaff, reqStaff, reqAttendance).Put("/attendance/settings", att.PutSettings)
+			}
 
 			tr.With(canCustomers, reqCustomers).Get("/customers", s.customers.ShopListCustomers)
 			tr.With(canCustomers, reqCustomers).Get("/customers/guest", s.customers.ShopGetGuestCustomer)
 			tr.With(canCustomers, reqCustomers).Get("/customers/{id}", s.customers.ShopGetCustomer)
+			tr.With(canCustomers, reqCustomers).Get("/customers/{id}/activity", s.customers.ShopCustomerActivity)
 			tr.With(canCustomers, reqCustomers).Post("/customers/{id}/block", s.customers.ShopSetCustomerBlocked)
 
 			/* ---------- Barber Shop: services, appointments, queue ---------- */
@@ -645,6 +702,61 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStorefront).Put("/storefront/hours", s.shop.PutOpeningHours)
 			tr.With(canStorefront).Get("/storefront/preview", s.shop.PreviewMenu)
 			tr.With(canStorefront).Get("/storefront/qr", s.shop.QRCode)
+
+			// Marketing: owner-only (storefront permission) and the plan has to
+			// include MARKETING. SMS campaigns are additionally checked against
+			// NOTIFY_SMS inside the module, at schedule time and again when the
+			// worker starts the campaign.
+			tr.Group(func(mr chi.Router) {
+				mr.Use(canStorefront, entitlement.RequireFeature(sqlc.New(s.pool), entitlement.FeatureMarketing))
+				mr.Get("/marketing/overview", s.marketing.Overview)
+				mr.Post("/marketing/audience/preview", s.marketing.PreviewAudience)
+				mr.Get("/marketing/consent", s.marketing.ConsentSummary)
+				mr.Post("/marketing/consent", s.marketing.SetConsent)
+				mr.Post("/marketing/consent/grant-all", s.marketing.GrantAll)
+				mr.Get("/marketing/links", s.marketing.ListLinks)
+				mr.Post("/marketing/links", s.marketing.CreateLink)
+				mr.Delete("/marketing/links/{id}", s.marketing.DeleteLink)
+				mr.Get("/marketing/links/{id}/qr", s.marketing.LinkQR)
+				mr.Get("/marketing/campaigns", s.marketing.ListCampaigns)
+				mr.Post("/marketing/campaigns", s.marketing.CreateCampaign)
+				mr.Get("/marketing/campaigns/{id}", s.marketing.GetCampaign)
+				mr.Patch("/marketing/campaigns/{id}", s.marketing.UpdateCampaign)
+				mr.Delete("/marketing/campaigns/{id}", s.marketing.DeleteCampaign)
+				mr.Post("/marketing/campaigns/{id}/validate", s.marketing.Validate)
+				mr.Post("/marketing/campaigns/{id}/schedule", s.marketing.Schedule)
+				mr.Post("/marketing/campaigns/{id}/unschedule", s.marketing.Transition("unschedule"))
+				mr.Post("/marketing/campaigns/{id}/pause", s.marketing.Transition("pause"))
+				mr.Post("/marketing/campaigns/{id}/resume", s.marketing.Transition("resume"))
+				mr.Post("/marketing/campaigns/{id}/cancel", s.marketing.Transition("cancel"))
+				mr.Post("/marketing/campaigns/{id}/test-send", s.marketing.TestSend)
+
+				// Offers and loyalty (internal/promo). Redemption and earning
+				// happen in the order flow; this is configuration and reporting.
+				mr.Get("/marketing/offers", s.promo.ListPromotions)
+				mr.Post("/marketing/offers", s.promo.CreatePromotion)
+				mr.Patch("/marketing/offers/{id}", s.promo.UpdatePromotion)
+				mr.Delete("/marketing/offers/{id}", s.promo.DeletePromotion)
+				mr.Post("/marketing/offers/validate", s.promo.ValidatePromotion)
+				mr.Get("/marketing/loyalty", s.promo.GetLoyalty)
+				mr.Put("/marketing/loyalty", s.promo.PutLoyalty)
+				mr.Post("/marketing/loyalty/adjust", s.promo.AdjustLoyalty)
+
+				// Automations: rules the worker evaluates on a schedule.
+				mr.Get("/marketing/automations", s.marketing.ListRules)
+				mr.Post("/marketing/automations", s.marketing.CreateRule)
+				mr.Patch("/marketing/automations/{id}", s.marketing.UpdateRule)
+				mr.Delete("/marketing/automations/{id}", s.marketing.DeleteRule)
+				mr.Post("/marketing/automations/{id}/enable", s.marketing.SetRuleEnabled(true))
+				mr.Post("/marketing/automations/{id}/disable", s.marketing.SetRuleEnabled(false))
+
+				// Social planner: drafts, schedule, publish through Meta.
+				mr.Get("/marketing/social", s.marketing.ListPosts)
+				mr.Post("/marketing/social", s.marketing.CreatePost)
+				mr.Patch("/marketing/social/{id}", s.marketing.UpdatePost)
+				mr.Delete("/marketing/social/{id}", s.marketing.DeletePost)
+				mr.Post("/marketing/social/{id}/publish", s.marketing.PublishPost)
+			})
 
 			// Route aliases for /customize. Shop clients dial the shared API host
 			// with X-Tenant-Slug; MatchHostTenant keeps JWT tenant_id aligned.

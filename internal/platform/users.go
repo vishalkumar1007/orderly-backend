@@ -63,13 +63,14 @@ type userView struct {
 	MfaEnabled      bool
 	CreatedAt       pgtype.Timestamptz
 	LastActivity    pgtype.Timestamptz
+	LastLoginAt     pgtype.Timestamptz
 }
 
 func viewOf(u sqlc.User) userView {
 	return userView{
 		ID: u.ID, TenantID: u.TenantID, Name: u.Name, Email: u.Email, Phone: u.Phone,
 		Role: u.Role, Status: u.Status, MustSetPassword: u.MustSetPassword, MfaEnabled: u.MfaEnabled,
-		CreatedAt: u.CreatedAt,
+		CreatedAt: u.CreatedAt, LastLoginAt: u.LastLoginAt,
 	}
 }
 
@@ -77,7 +78,7 @@ func viewOfRow(u sqlc.ListTenantUsersRow) userView {
 	v := viewOf(sqlc.User{
 		ID: u.ID, TenantID: u.TenantID, Name: u.Name, Email: u.Email, Phone: u.Phone,
 		Role: u.Role, Status: u.Status, MustSetPassword: u.MustSetPassword, MfaEnabled: u.MfaEnabled,
-		CreatedAt: u.CreatedAt,
+		CreatedAt: u.CreatedAt, LastLoginAt: u.LastLoginAt,
 	})
 	if t, ok := u.LastActivity.(time.Time); ok {
 		v.LastActivity = pgtype.Timestamptz{Time: t, Valid: true}
@@ -103,6 +104,10 @@ func userJSON(u userView) map[string]any {
 	}
 	if u.LastActivity.Valid {
 		out["last_activity"] = u.LastActivity.Time.Format(time.RFC3339)
+	}
+	out["last_login_at"] = nil
+	if u.LastLoginAt.Valid {
+		out["last_login_at"] = u.LastLoginAt.Time.Format(time.RFC3339)
 	}
 	return out
 }

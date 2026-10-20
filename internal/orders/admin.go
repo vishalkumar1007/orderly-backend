@@ -66,14 +66,9 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	if sf == nil {
 		sf = &storefront.Storefront{}
 	}
-	viewer := h.Viewer()
 	out := make([]map[string]any, 0, len(rows))
 	counts := map[string]int{}
-	for _, row := range rows {
-		view, err := viewer.hydrate(r.Context(), row, *sf)
-		if err != nil {
-			continue
-		}
+	for _, view := range h.Viewer().hydrateMany(r.Context(), pgutil.UUID(tenantID), rows, *sf) {
 		counts[view.Status]++
 		out = append(out, view.StaffBoard())
 	}

@@ -115,7 +115,7 @@ const createConsoleUser = `-- name: CreateConsoleUser :one
 INSERT INTO users (tenant_id, name, email, phone, password_hash, role, status, must_set_password, invite_token_hash)
 VALUES (NULL, $1, $2, $3, $4,
         $5, 'ACTIVE', TRUE, $6)
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type CreateConsoleUserParams struct {
@@ -152,6 +152,7 @@ func (q *Queries) CreateConsoleUser(ctx context.Context, arg CreateConsoleUserPa
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }

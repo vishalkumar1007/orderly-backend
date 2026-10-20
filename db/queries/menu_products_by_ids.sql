@@ -5,4 +5,5 @@
 SELECT * FROM products
 WHERE tenant_id = sqlc.arg(tenant_id)
   AND id = ANY(sqlc.arg(ids)::uuid[])
-  AND is_available = TRUE;
+  AND is_available = TRUE
+  AND archived_at IS NULL;

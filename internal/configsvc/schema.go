@@ -22,6 +22,8 @@ var secretFields = map[ServiceType][]string{
 	// key_secret first: it drives HasSecret. webhook_secret authenticates
 	// gateway callbacks and is checked separately by payment readiness.
 	ServicePayments: {"key_secret", "webhook_secret"},
+	// access_token first: it drives HasSecret. app_secret verifies webhooks.
+	ServiceMeta: {"access_token", "app_secret"},
 }
 
 // SecretKeys returns the secret field names for a service.
@@ -204,6 +206,50 @@ func (c SMSConfig) Validate() error {
 	}
 	if !strings.HasPrefix(c.FromNumber, "+") {
 		return fmt.Errorf("%w: from_number must be in E.164 format, e.g. +14155551234", ErrInvalidRequest)
+	}
+	return nil
+}
+
+/* ------------------------------------------------------------------ *
+ * Meta
+ * ------------------------------------------------------------------ */
+
+// MetaConfig is the non-secret half of a Meta configuration. The ids are
+// public identifiers; only access_token and app_secret are sealed. Each id is
+// optional: a shop may use WhatsApp without a Page, or publish without
+// WhatsApp. verify_token is the shared string Meta echoes when it subscribes
+// the webhook; it is not a credential.
+type MetaConfig struct {
+	Provider        string `json:"provider"`
+	APIVersion      string `json:"api_version"`
+	PhoneNumberID   string `json:"phone_number_id"`
+	PageID          string `json:"page_id"`
+	InstagramUserID string `json:"instagram_user_id"`
+	VerifyToken     string `json:"verify_token"`
+}
+
+func (c *MetaConfig) applyDefaults() {
+	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
+	c.APIVersion = strings.TrimSpace(c.APIVersion)
+	c.PhoneNumberID = strings.TrimSpace(c.PhoneNumberID)
+	c.PageID = strings.TrimSpace(c.PageID)
+	c.InstagramUserID = strings.TrimSpace(c.InstagramUserID)
+	c.VerifyToken = strings.TrimSpace(c.VerifyToken)
+	if c.Provider == "" {
+		c.Provider = ProviderMeta
+	}
+	if c.APIVersion == "" {
+		c.APIVersion = "v21.0"
+	}
+}
+
+// Validate checks a Meta configuration is usable: at least one capability id.
+func (c MetaConfig) Validate() error {
+	if c.PhoneNumberID == "" && c.PageID == "" && c.InstagramUserID == "" {
+		return fmt.Errorf("%w: enter a WhatsApp phone number id, a Facebook page id or an Instagram account id", ErrInvalidRequest)
+	}
+	if !strings.HasPrefix(c.APIVersion, "v") {
+		return fmt.Errorf("%w: api_version must look like v21.0", ErrInvalidRequest)
 	}
 	return nil
 }

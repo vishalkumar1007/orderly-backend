@@ -77,9 +77,13 @@ type AnalyticsResponse struct {
 	// OrdersByDay is always one point per day. OrdersByPeriod is the same data
 	// grouped by Granularity; its `day` is the first day of each bucket
 	// (Monday for weeks, the 1st for months).
-	OrdersByDay    []DayPoint  `json:"orders_by_day"`
-	OrdersByPeriod []DayPoint  `json:"orders_by_period"`
-	OrdersByHour   []HourPoint `json:"orders_by_hour"`
+	OrdersByDay    []DayPoint `json:"orders_by_day"`
+	OrdersByPeriod []DayPoint `json:"orders_by_period"`
+	// OrdersPrevByDay is the window immediately before the selected one. It is
+	// the same length as OrdersByDay and pairs with it by index; each `day` is
+	// that earlier calendar date, so a tooltip can name the period it compares.
+	OrdersPrevByDay []DayPoint  `json:"orders_prev_by_day"`
+	OrdersByHour    []HourPoint `json:"orders_by_hour"`
 	// Orders per weekday (0 = Monday) and hour, on the shop's clock.
 	OrdersByWeekdayHour []WeekHourPoint `json:"orders_by_weekday_hour"`
 	// The shop's timezone, which every day and hour above is in.
@@ -90,6 +94,16 @@ type AnalyticsResponse struct {
 	TopCategories        []CategoryPoint `json:"top_categories"`
 	PaymentMix           []PaymentPoint  `json:"payment_mix"`
 	StatusBreakdown      []StatusPoint   `json:"status_breakdown"`
+
+	// Customers in the window. Only orders with an identified customer count,
+	// so a phone-in order with no customer attached does not invent loyalty.
+	CustomersTotal     int64 `json:"customers_total"`
+	CustomersNew       int64 `json:"customers_new"`
+	CustomersReturning int64 `json:"customers_returning"`
+	CustomersActive    int64 `json:"customers_active"`
+	// RepeatCustomerRate is the share of active customers who ordered more
+	// than once in the window. Null until one customer has ordered.
+	RepeatCustomerRate *float64 `json:"repeat_customer_rate"`
 }
 
 // CategoryPoint is a line on the best-selling categories list.
@@ -120,6 +134,8 @@ type DayPoint struct {
 type HourPoint struct {
 	Hour       int     `json:"hour"`
 	OrderCount float64 `json:"order_count"`
+	// Revenue is the average money taken in that hour on one day.
+	Revenue float64 `json:"revenue"`
 }
 
 // ProductPoint is a line on the best-sellers list.
@@ -185,6 +201,17 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prevByDay, err := h.q.TenantOrdersByDayPrevious(ctx, sqlc.TenantOrdersByDayPreviousParams{
+		TenantID: tenant,
+		Days:     span,
+		Back:     span,
+		Tz:       tz,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load the previous period")
+		return
+	}
+
 	byHour, err := h.q.TenantOrdersByHour(ctx, sqlc.TenantOrdersByHourParams{
 		TenantID: tenant,
 		Days:     span,
@@ -192,6 +219,15 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load hourly orders")
+		return
+	}
+
+	customers, err := h.q.TenantCustomerSummary(ctx, sqlc.TenantCustomerSummaryParams{
+		TenantID: tenant,
+		Days:     span,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load customer summary")
 		return
 	}
 
@@ -292,6 +328,7 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 
 		OrdersByDay:          daily,
 		OrdersByPeriod:       bucketPoints(daily, granularity),
+		OrdersPrevByDay:      fillDayGapsPrevious(prevByDay, days, loc),
 		OrdersByHour:         averageByHour(byHour, days),
 		OrdersByWeekdayHour:  weekHourPoints(weekHours),
 		Timezone:             tz,
@@ -300,6 +337,12 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		TopCategories:        topCategories(categories),
 		PaymentMix:           paymentMix(payments),
 		StatusBreakdown:      statusBreakdown(status),
+
+		CustomersTotal:     customers.Total,
+		CustomersNew:       customers.NewCustomers,
+		CustomersReturning: customers.ReturningCustomers,
+		CustomersActive:    customers.ActiveCustomers,
+		RepeatCustomerRate: repeatCustomerRate(customers.RepeatCustomers, customers.ActiveCustomers),
 	}
 
 	response.JSON(w, http.StatusOK, out)
@@ -405,6 +448,11 @@ func round1(v float64) float64 {
 	return math.Round(v*10) / 10
 }
 
+// round2 keeps money at paise when it has been divided across days.
+func round2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
 // fillDayGaps returns one point per day in the window.
 //
 // The SQL only returns days that have orders, which makes a quiet week look
@@ -453,21 +501,70 @@ func weekHourPoints(rows []sqlc.TenantOrdersByWeekdayHourRow) []WeekHourPoint {
 	return out
 }
 
+// fillDayGapsPrevious returns one point per day for the window immediately
+// before the selected one. The current and previous windows are the same
+// length, so the dashboard pairs their points by index to draw a comparison.
+func fillDayGapsPrevious(rows []sqlc.TenantOrdersByDayPreviousRow, days int, loc *time.Location) []DayPoint {
+	byDay := make(map[string]DayPoint, len(rows))
+	for _, r := range rows {
+		key := r.Day.Time.Format("2006-01-02")
+		byDay[key] = DayPoint{
+			Day:        key,
+			OrderCount: r.OrderCount,
+			Revenue:    parseMoney(r.Revenue),
+		}
+	}
+
+	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	// The current window starts `days - 1` days ago, so the previous one ends
+	// the day before that and reaches back one full window.
+	start := today.AddDate(0, 0, -(2*days - 1))
+
+	out := make([]DayPoint, 0, days)
+	for i := 0; i < days; i++ {
+		key := start.AddDate(0, 0, i).Format("2006-01-02")
+		if p, ok := byDay[key]; ok {
+			out = append(out, p)
+			continue
+		}
+		out = append(out, DayPoint{Day: key})
+	}
+	return out
+}
+
 // averageByHour returns all 24 hours with a per-day average, so the shape of a
 // trading day is comparable across windows of different lengths.
 func averageByHour(rows []sqlc.TenantOrdersByHourRow, days int) []HourPoint {
 	counts := make(map[int]float64, len(rows))
+	revenue := make(map[int]float64, len(rows))
 	for _, r := range rows {
 		counts[int(r.HourOfDay)] = float64(r.OrderCount)
+		revenue[int(r.HourOfDay)] = parseMoney(r.Revenue)
 	}
 	if days < 1 {
 		days = 1
 	}
 	out := make([]HourPoint, 0, 24)
 	for h := 0; h < 24; h++ {
-		out = append(out, HourPoint{Hour: h, OrderCount: counts[h] / float64(days)})
+		out = append(out, HourPoint{
+			Hour:       h,
+			OrderCount: counts[h] / float64(days),
+			Revenue:    round2(revenue[h] / float64(days)),
+		})
 	}
 	return out
+}
+
+// repeatCustomerRate is the share of active customers who ordered more than
+// once. Null until somebody ordered, so a quiet window reads "-" rather than a
+// misleading 0%.
+func repeatCustomerRate(repeat, active int64) *float64 {
+	if active <= 0 {
+		return nil
+	}
+	v := round1(float64(repeat) / float64(active) * 100)
+	return &v
 }
 
 func topProducts(rows []sqlc.TenantTopProductsRow) []ProductPoint {

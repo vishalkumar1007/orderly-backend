@@ -104,7 +104,7 @@ INSERT INTO users (
 ) VALUES (
     NULL, $1, $2, '', $3, 'SUPER_ADMIN', 'ACTIVE', FALSE, NULL
 )
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type CreateSuperAdminParams struct {
@@ -131,6 +131,7 @@ func (q *Queries) CreateSuperAdmin(ctx context.Context, arg CreateSuperAdminPara
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -141,7 +142,7 @@ INSERT INTO users (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type CreateUserParams struct {
@@ -184,6 +185,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -209,7 +211,7 @@ func (q *Queries) DeleteRefreshTokensByUser(ctx context.Context, userID pgtype.U
 }
 
 const getRefreshTokenByHash = `-- name: GetRefreshTokenByHash :one
-SELECT id, user_id, token_hash, expires_at, created_at FROM refresh_tokens
+SELECT id, user_id, token_hash, expires_at, created_at, ip, user_agent FROM refresh_tokens
 WHERE token_hash = $1
 LIMIT 1
 `
@@ -223,12 +225,14 @@ func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (
 		&i.TokenHash,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.Ip,
+		&i.UserAgent,
 	)
 	return i, err
 }
 
 const getTenantAdminForTenant = `-- name: GetTenantAdminForTenant :one
-SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled FROM users
+SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at FROM users
 WHERE tenant_id = $1 AND role = 'TENANT_ADMIN'
 ORDER BY created_at ASC
 LIMIT 1
@@ -252,12 +256,13 @@ func (q *Queries) GetTenantAdminForTenant(ctx context.Context, tenantID pgtype.U
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled FROM users
+SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at FROM users
 WHERE email = $1
 LIMIT 1
 `
@@ -280,12 +285,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled FROM users
+SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at FROM users
 WHERE id = $1
 LIMIT 1
 `
@@ -308,12 +314,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const getUserByInviteTokenHash = `-- name: GetUserByInviteTokenHash :one
-SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled FROM users
+SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at FROM users
 WHERE invite_token_hash = $1
 LIMIT 1
 `
@@ -336,6 +343,7 @@ func (q *Queries) GetUserByInviteTokenHash(ctx context.Context, inviteTokenHash 
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -355,19 +363,27 @@ func (q *Queries) HasSuperAdmin(ctx context.Context) (bool, error) {
 }
 
 const insertRefreshToken = `-- name: InsertRefreshToken :one
-INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-VALUES ($1, $2, $3)
-RETURNING id, user_id, token_hash, expires_at, created_at
+INSERT INTO refresh_tokens (user_id, token_hash, expires_at, ip, user_agent)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, user_id, token_hash, expires_at, created_at, ip, user_agent
 `
 
 type InsertRefreshTokenParams struct {
 	UserID    pgtype.UUID        `json:"user_id"`
 	TokenHash string             `json:"token_hash"`
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	Ip        string             `json:"ip"`
+	UserAgent string             `json:"user_agent"`
 }
 
 func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (RefreshToken, error) {
-	row := q.db.QueryRow(ctx, insertRefreshToken, arg.UserID, arg.TokenHash, arg.ExpiresAt)
+	row := q.db.QueryRow(ctx, insertRefreshToken,
+		arg.UserID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+		arg.Ip,
+		arg.UserAgent,
+	)
 	var i RefreshToken
 	err := row.Scan(
 		&i.ID,
@@ -375,12 +391,14 @@ func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshToken
 		&i.TokenHash,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.Ip,
+		&i.UserAgent,
 	)
 	return i, err
 }
 
 const listTenantAdmins = `-- name: ListTenantAdmins :many
-SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled FROM users
+SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at FROM users
 WHERE tenant_id = $1 AND role = 'TENANT_ADMIN'
 ORDER BY created_at ASC
 `
@@ -409,6 +427,7 @@ func (q *Queries) ListTenantAdmins(ctx context.Context, tenantID pgtype.UUID) ([
 			&i.InviteTokenHash,
 			&i.ConsoleTheme,
 			&i.MfaEnabled,
+			&i.LastLoginAt,
 		); err != nil {
 			return nil, err
 		}
@@ -422,7 +441,7 @@ func (q *Queries) ListTenantAdmins(ctx context.Context, tenantID pgtype.UUID) ([
 
 const listTenantUsers = `-- name: ListTenantUsers :many
 SELECT
-    u.id, u.tenant_id, u.name, u.email, u.phone, u.password_hash, u.role, u.status, u.created_at, u.updated_at, u.must_set_password, u.invite_token_hash, u.console_theme, u.mfa_enabled,
+    u.id, u.tenant_id, u.name, u.email, u.phone, u.password_hash, u.role, u.status, u.created_at, u.updated_at, u.must_set_password, u.invite_token_hash, u.console_theme, u.mfa_enabled, u.last_login_at,
     (SELECT MAX(rt.created_at) FROM refresh_tokens rt WHERE rt.user_id = u.id) AS last_activity
 FROM users u
 WHERE u.tenant_id = $1
@@ -444,6 +463,7 @@ type ListTenantUsersRow struct {
 	InviteTokenHash pgtype.Text        `json:"invite_token_hash"`
 	ConsoleTheme    []byte             `json:"console_theme"`
 	MfaEnabled      bool               `json:"mfa_enabled"`
+	LastLoginAt     pgtype.Timestamptz `json:"last_login_at"`
 	LastActivity    interface{}        `json:"last_activity"`
 }
 
@@ -471,7 +491,98 @@ func (q *Queries) ListTenantUsers(ctx context.Context, tenantID pgtype.UUID) ([]
 			&i.InviteTokenHash,
 			&i.ConsoleTheme,
 			&i.MfaEnabled,
+			&i.LastLoginAt,
 			&i.LastActivity,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserLogins = `-- name: ListUserLogins :many
+SELECT action, result, metadata, created_at
+FROM audit_logs
+WHERE tenant_id = $1 AND user_id = $2
+  AND action IN ('tenant.login', 'mfa.verify')
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListUserLoginsParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	UserID   pgtype.UUID `json:"user_id"`
+	RowLimit int32       `json:"row_limit"`
+}
+
+type ListUserLoginsRow struct {
+	Action    string             `json:"action"`
+	Result    string             `json:"result"`
+	Metadata  []byte             `json:"metadata"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListUserLogins(ctx context.Context, arg ListUserLoginsParams) ([]ListUserLoginsRow, error) {
+	rows, err := q.db.Query(ctx, listUserLogins, arg.TenantID, arg.UserID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserLoginsRow{}
+	for rows.Next() {
+		var i ListUserLoginsRow
+		if err := rows.Scan(
+			&i.Action,
+			&i.Result,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserSessions = `-- name: ListUserSessions :many
+SELECT id, ip, user_agent, created_at, expires_at
+FROM refresh_tokens
+WHERE user_id = $1 AND expires_at > now()
+ORDER BY created_at DESC
+`
+
+type ListUserSessionsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Ip        string             `json:"ip"`
+	UserAgent string             `json:"user_agent"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+// Each live refresh token is one signed-in device. Rotation replaces the row,
+// so created_at is when that device was last active.
+func (q *Queries) ListUserSessions(ctx context.Context, userID pgtype.UUID) ([]ListUserSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listUserSessions, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserSessionsRow{}
+	for rows.Next() {
+		var i ListUserSessionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Ip,
+			&i.UserAgent,
+			&i.CreatedAt,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -490,7 +601,7 @@ SET
     invite_token_hash = $1,
     updated_at = now()
 WHERE id = $2
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type ResetUserAccessParams struct {
@@ -518,6 +629,7 @@ func (q *Queries) ResetUserAccess(ctx context.Context, arg ResetUserAccessParams
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -526,7 +638,7 @@ const setUserConsoleTheme = `-- name: SetUserConsoleTheme :one
 UPDATE users
 SET console_theme = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type SetUserConsoleThemeParams struct {
@@ -554,8 +666,18 @@ func (q *Queries) SetUserConsoleTheme(ctx context.Context, arg SetUserConsoleThe
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
+}
+
+const setUserLastLogin = `-- name: SetUserLastLogin :exec
+UPDATE users SET last_login_at = now() WHERE id = $1
+`
+
+func (q *Queries) SetUserLastLogin(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, setUserLastLogin, id)
+	return err
 }
 
 const setUserPassword = `-- name: SetUserPassword :one
@@ -566,7 +688,7 @@ SET
     invite_token_hash = NULL,
     updated_at = now()
 WHERE id = $1
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type SetUserPasswordParams struct {
@@ -592,6 +714,7 @@ func (q *Queries) SetUserPassword(ctx context.Context, arg SetUserPasswordParams
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -604,7 +727,7 @@ SET
     invite_token_hash = NULL,
     updated_at = now()
 WHERE id = $1
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type SetUserPasswordWithCurrentParams struct {
@@ -630,6 +753,7 @@ func (q *Queries) SetUserPasswordWithCurrent(ctx context.Context, arg SetUserPas
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -638,7 +762,7 @@ const setUserRole = `-- name: SetUserRole :one
 UPDATE users
 SET role = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type SetUserRoleParams struct {
@@ -664,6 +788,7 @@ func (q *Queries) SetUserRole(ctx context.Context, arg SetUserRoleParams) (User,
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -672,7 +797,7 @@ const setUserStatus = `-- name: SetUserStatus :one
 UPDATE users
 SET status = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type SetUserStatusParams struct {
@@ -698,6 +823,7 @@ func (q *Queries) SetUserStatus(ctx context.Context, arg SetUserStatusParams) (U
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -709,7 +835,7 @@ SET
     must_set_password = TRUE,
     updated_at = now()
 WHERE id = $1
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type UpdateUserInviteTokenParams struct {
@@ -735,6 +861,7 @@ func (q *Queries) UpdateUserInviteToken(ctx context.Context, arg UpdateUserInvit
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -746,7 +873,7 @@ SET
     phone = COALESCE($2, phone),
     updated_at = now()
 WHERE id = $3
-RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled
+RETURNING id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at
 `
 
 type UpdateUserProfileParams struct {
@@ -773,6 +900,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.InviteTokenHash,
 		&i.ConsoleTheme,
 		&i.MfaEnabled,
+		&i.LastLoginAt,
 	)
 	return i, err
 }

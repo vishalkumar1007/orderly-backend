@@ -16,10 +16,13 @@ import (
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/config"
+	"github.com/orderly/orderly-backend/internal/marketing"
 	"github.com/orderly/orderly-backend/internal/orders"
+	"github.com/orderly/orderly-backend/internal/promo"
 	"github.com/orderly/orderly-backend/internal/signin"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
+	"github.com/orderly/orderly-backend/pkg/netutil"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
@@ -233,6 +236,7 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := Verify(r.Context(), h.q, tenantID, id.value, strings.TrimSpace(req.Code), time.Now()); err != nil {
+		h.recordLogin(r, tenantID, pgtype.UUID{}, id, "FAILURE")
 		status, code := http.StatusBadRequest, "invalid_code"
 		switch {
 		case errors.Is(err, ErrNoCode):
@@ -261,9 +265,11 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if customer.IsBlocked {
+		h.recordLogin(r, tenantID, customer.ID, id, "DENIED")
 		response.Error(w, http.StatusForbidden, "account_blocked", ErrBlocked.Error())
 		return
 	}
+	h.recordLogin(r, tenantID, customer.ID, id, "SUCCESS")
 
 	phone := customer.Phone.String
 	pair, err := h.auth.IssueCustomerTokens(uuid.UUID(customer.ID.Bytes), tenantID, customer.Name, phone)
@@ -287,6 +293,26 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 		},
 		"store_name": storeName,
 	})
+}
+
+// recordLogin keeps the sign-in history shown on the shop's customer profile.
+// Best effort: a failed write must never block a sign-in.
+func (h *Handler) recordLogin(r *http.Request, tenantID uuid.UUID, customerID pgtype.UUID, id signInID, result string) {
+	method := "PHONE"
+	if id.method == storefront.LoginMethodEmail {
+		method = "EMAIL"
+	}
+	if err := h.q.InsertCustomerLoginEvent(r.Context(), sqlc.InsertCustomerLoginEventParams{
+		TenantID:   pgutil.UUID(tenantID),
+		CustomerID: customerID,
+		Identifier: id.value,
+		Method:     method,
+		Result:     result,
+		Ip:         netutil.ClientIP(r),
+		UserAgent:  netutil.UserAgent(r),
+	}); err != nil {
+		h.log.Warn("record customer login", "err", err)
+	}
 }
 
 func (h *Handler) storeName(r *http.Request, tenantID uuid.UUID) string {
@@ -346,6 +372,8 @@ func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
 		"active_orders": active,
 		"recent_orders": past,
 		"total_orders":  len(total),
+		"marketing":     h.consentView(r, principal.TenantID, principal.ID),
+		"loyalty":       promo.BalanceFor(r.Context(), h.q, principal.TenantID, principal.ID),
 		"benefits": []string{
 			"Faster checkout with your details already filled in",
 			"Order history and live tracking from your profile",
@@ -361,13 +389,45 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		Name *string `json:"name"`
+		// Marketing consent per channel: {"EMAIL": true, "SMS": false}. Only
+		// the channels named change; the customer, not the shop, is the source.
+		Marketing map[string]bool `json:"marketing"`
 	}
 	if err := decode(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json body")
 		return
 	}
-	name := strings.TrimSpace(req.Name)
+	for ch, granted := range req.Marketing {
+		ch = strings.ToUpper(strings.TrimSpace(ch))
+		if ch != marketing.ChannelEmail && ch != marketing.ChannelSMS && ch != marketing.ChannelWhatsApp {
+			response.Error(w, http.StatusBadRequest, "invalid_request", "unknown marketing channel")
+			return
+		}
+		status := "REVOKED"
+		if granted {
+			status = "GRANTED"
+		}
+		if err := h.q.UpsertConsent(r.Context(), sqlc.UpsertConsentParams{
+			TenantID: pgutil.UUID(principal.TenantID), CustomerID: pgutil.UUID(principal.ID), Channel: ch, Status: status, Source: "CUSTOMER",
+		}); err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "We could not save your preferences")
+			return
+		}
+	}
+	if req.Name == nil {
+		row, err := h.q.GetCustomerByID(r.Context(), sqlc.GetCustomerByIDParams{ID: pgutil.UUID(principal.ID), TenantID: pgutil.UUID(principal.TenantID)})
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "We could not load your details")
+			return
+		}
+		response.JSON(w, http.StatusOK, map[string]any{
+			"customer":  map[string]any{"id": pgutil.UUIDString(row.ID), "name": row.Name, "phone": MaskPhone(row.Phone.String), "phone_full": row.Phone.String},
+			"marketing": h.consentView(r, principal.TenantID, principal.ID),
+		})
+		return
+	}
+	name := strings.TrimSpace(*req.Name)
 	if len([]rune(name)) < 2 || len([]rune(name)) > 80 {
 		response.Error(w, http.StatusBadRequest, "invalid_name", "Name must be 2 to 80 characters")
 		return
@@ -458,4 +518,18 @@ func formatTime(t pgtype.Timestamptz) any {
 		return nil
 	}
 	return t.Time.Format(time.RFC3339)
+}
+
+// consentView is the customer's own marketing preferences, one flag per
+// channel, UNKNOWN reading as false.
+func (h *Handler) consentView(r *http.Request, tenantID, customerID uuid.UUID) map[string]bool {
+	out := map[string]bool{marketing.ChannelEmail: false, marketing.ChannelSMS: false, marketing.ChannelWhatsApp: false}
+	rows, err := h.q.ListConsentsForCustomer(r.Context(), sqlc.ListConsentsForCustomerParams{TenantID: pgutil.UUID(tenantID), CustomerID: pgutil.UUID(customerID)})
+	if err != nil {
+		return out
+	}
+	for _, row := range rows {
+		out[row.Channel] = row.Status == "GRANTED"
+	}
+	return out
 }

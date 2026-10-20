@@ -16,9 +16,12 @@ import (
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/inventory"
+	"github.com/orderly/orderly-backend/internal/marketing"
 	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/payments"
+	"github.com/orderly/orderly-backend/internal/promo"
 	"github.com/orderly/orderly-backend/internal/storefront"
+	"github.com/orderly/orderly-backend/pkg/identity"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 )
 
@@ -79,6 +82,12 @@ type CreateRequest struct {
 	// one per checkout session and reuses it on retry.
 	ClientToken string          `json:"client_token"`
 	Items       []RequestedLine `json:"items"`
+	// Marketing: an offer code, points to spend (signed-in customers), whether
+	// the customer ticked the marketing opt-in, and where they came from.
+	CouponCode     string                `json:"coupon_code"`
+	RedeemPoints   int32                 `json:"redeem_points"`
+	MarketingOptIn bool                  `json:"marketing_opt_in"`
+	Attribution    marketing.Attribution `json:"attribution"`
 }
 
 // CreateResult is what the checkout step needs to route the customer next.
@@ -231,6 +240,28 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		source = "COUNTER"
 	}
 
+	// Offers and points, inside the transaction so the offer row and the
+	// points account are locked while this order is priced.
+	var customerPtr *uuid.UUID
+	if customerID.Valid {
+		id := uuid.UUID(customerID.Bytes)
+		customerPtr = &id
+	}
+	promoCtx := promo.Context{TenantID: tenantID, Phone: phone, CustomerID: customerPtr, Subtotal: totals.Subtotal}
+	applied, prob := promo.Prepare(ctx, qtx, req.CouponCode, promoCtx)
+	if prob != nil {
+		return CreateResult{}, &validationError{Code: prob.Code, Message: prob.Message, Status: 400}
+	}
+	redemption, prob := promo.PrepareRedeem(ctx, qtx, tenantID, customerPtr, req.RedeemPoints, totals.Subtotal-applied.Discount)
+	if prob != nil {
+		return CreateResult{}, &validationError{Code: prob.Code, Message: prob.Message, Status: 400}
+	}
+	totals = totals.WithDiscount(applied.Discount + redemption.Discount)
+	if totals.Total <= 0 && applied.Discount+redemption.Discount == 0 {
+		return CreateResult{}, badRequest("empty_total", "This order has no value: please review your cart")
+	}
+	linkID, campaignID := marketing.ResolveAttribution(ctx, h.q, tenantID, req.Attribution)
+
 	number, err := qtx.NextOrderNumber(ctx, pgutil.UUID(tenantID))
 	if err != nil {
 		return CreateResult{}, err
@@ -323,16 +354,32 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		return CreateResult{}, err
 	}
 
+	if err := promo.Record(ctx, qtx, applied, promoCtx, order.ID); err != nil {
+		return CreateResult{}, err
+	}
+	if err := promo.RecordRedeem(ctx, qtx, tenantID, redemption, order.ID); err != nil {
+		return CreateResult{}, err
+	}
+	if applied.PromotionID.Valid || redemption.Points > 0 || linkID.Valid || campaignID.Valid {
+		if err := qtx.SetOrderMarketing(ctx, sqlc.SetOrderMarketingParams{
+			CampaignID: campaignID, LinkID: linkID, PromotionID: applied.PromotionID, CouponCode: applied.Code,
+			LoyaltyPointsUsed: redemption.Points, ID: order.ID, TenantID: pgutil.UUID(tenantID),
+		}); err != nil {
+			return CreateResult{}, err
+		}
+	}
+
 	historyActor := "customer"
 	if bypassStoreClosed {
 		historyActor = "staff"
 	}
 	if _, err := qtx.AppendOrderStatusHistory(ctx, sqlc.AppendOrderStatusHistoryParams{
-		TenantID:   pgutil.UUID(tenantID),
-		OrderID:    order.ID,
-		FromStatus: "",
-		ToStatus:   StatusPending,
-		Actor:      historyActor,
+		TenantID:    pgutil.UUID(tenantID),
+		OrderID:     order.ID,
+		FromStatus:  "",
+		ToStatus:    StatusPending,
+		Actor:       historyActor,
+		ActorUserID: staffActorID(ctx, historyActor),
 	}); err != nil {
 		return CreateResult{}, err
 	}
@@ -366,6 +413,9 @@ func (h *Handler) placeOrder(ctx context.Context, tenantID uuid.UUID, sf *storef
 		return CreateResult{}, err
 	}
 	inventory.Notify(ctx, notify.Deps{Q: h.q, Log: h.log}, tenantID, stockAlerts)
+	if req.MarketingOptIn && !bypassStoreClosed {
+		h.recordOptIn(ctx, tenantID, customerID, name, phone, email)
+	}
 
 	notify.Dispatch(ctx, notify.Deps{Q: h.q, Log: h.log}, &tenantID, notify.TypeOrderPlaced,
 		fmt.Sprintf("New order #%d", number),
@@ -536,6 +586,11 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 		updated, err = qtx.StampOrderReady(ctx, sqlc.StampOrderReadyParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: from})
 	case StatusCompleted:
 		updated, err = qtx.StampOrderCompleted(ctx, sqlc.StampOrderCompletedParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: from})
+		if err == nil {
+			// Points are earned in the completion transaction; the ledger's
+			// unique index makes a retried completion a no-op.
+			_, err = promo.EarnForOrder(ctx, qtx, tenantID, updated)
+		}
 	case StatusCancelled:
 		updated, err = qtx.StampOrderCancelled(ctx, sqlc.StampOrderCancelledParams{ID: order.ID, TenantID: order.TenantID, CancelReason: reason, ExpectedStatus: from})
 	default:
@@ -551,11 +606,12 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 		return OrderView{}, err
 	}
 	if _, err := qtx.AppendOrderStatusHistory(ctx, sqlc.AppendOrderStatusHistoryParams{
-		TenantID:   order.TenantID,
-		OrderID:    order.ID,
-		FromStatus: order.Status,
-		ToStatus:   to,
-		Actor:      actor,
+		TenantID:    order.TenantID,
+		OrderID:     order.ID,
+		FromStatus:  order.Status,
+		ToStatus:    to,
+		Actor:       actor,
+		ActorUserID: staffActorID(ctx, actor),
 	}); err != nil {
 		return OrderView{}, err
 	}
@@ -581,6 +637,9 @@ func (h *Handler) Move(ctx context.Context, tenantID uuid.UUID, order sqlc.Order
 		autoCompleted = true
 		final, err := qtx.StampOrderCompleted(ctx, sqlc.StampOrderCompletedParams{ID: order.ID, TenantID: order.TenantID, ExpectedStatus: StatusReady})
 		if err != nil {
+			return OrderView{}, err
+		}
+		if _, err := promo.EarnForOrder(ctx, qtx, tenantID, final); err != nil {
 			return OrderView{}, err
 		}
 		if _, err := qtx.AppendOrderStatusHistory(ctx, sqlc.AppendOrderStatusHistoryParams{
@@ -741,4 +800,52 @@ func stockError(err error) error {
 		return &validationError{Code: "out_of_stock", Message: short.Error(), Status: 409}
 	}
 	return err
+}
+
+// recordOptIn stores checkout marketing consent, after the order committed so
+// a consent failure can never fail an order. A guest who opts in becomes a
+// customer record keyed by phone: consent needs someone to attach to.
+func (h *Handler) recordOptIn(ctx context.Context, tenantID uuid.UUID, customerID pgtype.UUID, name, phone, email string) {
+	if !customerID.Valid {
+		c, err := h.q.UpsertCustomerByPhone(ctx, sqlc.UpsertCustomerByPhoneParams{
+			TenantID: pgutil.UUID(tenantID), Name: name, Phone: pgutil.Text(phone),
+		})
+		if err != nil {
+			h.log.Warn("orders: opt-in customer upsert", "error", err)
+			return
+		}
+		customerID = c.ID
+	}
+	if email != "" {
+		_ = h.q.SetCustomerEmailIfEmpty(ctx, sqlc.SetCustomerEmailIfEmptyParams{Email: pgutil.Text(email), ID: customerID, TenantID: pgutil.UUID(tenantID)})
+	}
+	channels := []string{marketing.ChannelSMS, marketing.ChannelWhatsApp}
+	// Email consent only means something if the customer record has an email
+	// to send to (the checkout address may belong to another customer).
+	if c, err := h.q.GetCustomerByID(ctx, sqlc.GetCustomerByIDParams{ID: customerID, TenantID: pgutil.UUID(tenantID)}); err == nil && c.Email.Valid && c.Email.String != "" {
+		channels = append(channels, marketing.ChannelEmail)
+	}
+	for _, ch := range channels {
+		// Never overwrite an explicit revocation with a checkout tick.
+		if st, err := h.q.GetConsent(ctx, sqlc.GetConsentParams{TenantID: pgutil.UUID(tenantID), CustomerID: customerID, Channel: ch}); err == nil && st == "REVOKED" {
+			continue
+		}
+		if err := h.q.UpsertConsent(ctx, sqlc.UpsertConsentParams{
+			TenantID: pgutil.UUID(tenantID), CustomerID: customerID, Channel: ch, Status: "GRANTED", Source: "CUSTOMER",
+		}); err != nil {
+			h.log.Warn("orders: record consent", "error", err)
+		}
+	}
+}
+
+// staffActorID is the signed-in staff member behind a "staff" status change,
+// kept so the console can count orders handled per person.
+func staffActorID(ctx context.Context, actor string) pgtype.UUID {
+	if actor != "staff" {
+		return pgtype.UUID{}
+	}
+	if u, ok := identity.UserFromContext(ctx); ok {
+		return pgutil.UUID(u.ID)
+	}
+	return pgtype.UUID{}
 }

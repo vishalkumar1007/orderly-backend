@@ -51,14 +51,58 @@ LIMIT sqlc.arg(row_limit);
 -- name: TenantOrdersByHour :many
 -- Orders by hour of day on the shop's own clock, averaged over the window in
 -- Go, so a single quiet Tuesday does not read as a permanently quiet hour.
+-- Revenue travels with the count so the rhythm chart can show what an hour is
+-- worth, not just how busy it was.
 SELECT
     EXTRACT(HOUR FROM created_at AT TIME ZONE sqlc.arg(tz)::text)::int AS hour_of_day,
-    COUNT(*)::bigint AS order_count
+    COUNT(*)::bigint AS order_count,
+    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
 FROM orders
 WHERE tenant_id = sqlc.arg(tenant_id)
     AND created_at >= now() - sqlc.arg(days)::interval
 GROUP BY 1
 ORDER BY 1 ASC;
+
+-- name: TenantOrdersByDayPrevious :many
+-- The window immediately before the selected one, bucketed by the same shop
+-- clock. The dashboard pairs these points with the current window by index so
+-- "up on last period" is drawn from real data rather than inferred.
+SELECT
+    (created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day,
+    COUNT(*)::bigint AS order_count,
+    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
+FROM orders
+WHERE tenant_id = sqlc.arg(tenant_id)
+    AND created_at >= now() - sqlc.arg(days)::interval - sqlc.arg(back)::interval
+    AND created_at < now() - sqlc.arg(back)::interval
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: TenantCustomerSummary :one
+-- Who the window's orders belonged to. Only identified customers count: a
+-- takeaway order with no customer attached says nothing about loyalty.
+WITH active AS (
+    SELECT o.customer_id, COUNT(*)::bigint AS order_count
+    FROM orders o
+    WHERE o.tenant_id = sqlc.arg(tenant_id)
+        AND o.customer_id IS NOT NULL
+        AND o.status <> 'CANCELLED'
+        AND o.created_at >= now() - sqlc.arg(days)::interval
+    GROUP BY o.customer_id
+)
+SELECT
+    (SELECT COUNT(*)::bigint FROM customers c
+      WHERE c.tenant_id = sqlc.arg(tenant_id)) AS total,
+    -- New and returning split the customers who ordered in the window, so the
+    -- two always add up to ActiveCustomers.
+    (SELECT COUNT(*)::bigint FROM active a
+      JOIN customers c ON c.id = a.customer_id
+      WHERE c.created_at >= now() - sqlc.arg(days)::interval) AS new_customers,
+    (SELECT COUNT(*)::bigint FROM active a
+      JOIN customers c ON c.id = a.customer_id
+      WHERE c.created_at < now() - sqlc.arg(days)::interval) AS returning_customers,
+    (SELECT COUNT(*)::bigint FROM active) AS active_customers,
+    (SELECT COUNT(*)::bigint FROM active WHERE order_count > 1) AS repeat_customers;
 
 -- name: TenantPeriodSummary :one
 -- Headline figures plus the previous equivalent period, so the UI can show a

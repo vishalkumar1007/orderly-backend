@@ -33,10 +33,13 @@ const (
 	ServiceAI       ServiceType = "AI"
 	ServiceSMS      ServiceType = "SMS"
 	ServicePayments ServiceType = "PAYMENTS"
+	// Meta: WhatsApp Business Platform, Facebook Page and Instagram publishing
+	// behind one access token. Used by marketing campaigns and the social planner.
+	ServiceMeta ServiceType = "META"
 )
 
 // AllServices is the canonical ordering used by every listing endpoint.
-var AllServices = []ServiceType{ServiceSMTP, ServiceStorage, ServiceAI, ServiceSMS, ServicePayments}
+var AllServices = []ServiceType{ServiceSMTP, ServiceStorage, ServiceAI, ServiceSMS, ServicePayments, ServiceMeta}
 
 // ParseServiceType validates a service segment from a URL.
 func ParseServiceType(v string) (ServiceType, error) {
@@ -51,6 +54,8 @@ func ParseServiceType(v string) (ServiceType, error) {
 		return ServiceSMS, nil
 	case ServicePayments:
 		return ServicePayments, nil
+	case ServiceMeta:
+		return ServiceMeta, nil
 	}
 	return "", fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, v)
 }
@@ -68,6 +73,8 @@ func (s ServiceType) Label() string {
 		return "SMS"
 	case ServicePayments:
 		return "Payments"
+	case ServiceMeta:
+		return "Meta (WhatsApp, Facebook, Instagram)"
 	}
 	return string(s)
 }

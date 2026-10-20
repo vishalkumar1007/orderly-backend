@@ -33,6 +33,11 @@ const (
 	// Email and in-app notifications are baseline for every plan; these two are not.
 	FeatureNotifySMS       = "NOTIFY_SMS"
 	FeatureNotifyTemplates = "NOTIFY_TEMPLATES"
+	// Marketing: campaigns, consent, trackable links (internal/marketing).
+	// SMS campaigns additionally need FeatureNotifySMS.
+	FeatureMarketing = "MARKETING"
+	// Staff punch in / punch out (internal/attendance).
+	FeatureAttendance = "ATTENDANCE"
 )
 
 // Feature is one row of the plan matrix the Super Admin edits.
@@ -48,6 +53,8 @@ var Catalog = []Feature{
 	{FeatureInventory, "Inventory"},
 	{FeatureNotifySMS, "SMS notifications"},
 	{FeatureNotifyTemplates, "Custom message templates"},
+	{FeatureMarketing, "Marketing campaigns"},
+	{FeatureAttendance, "Staff attendance"},
 }
 
 func label(code string) string {

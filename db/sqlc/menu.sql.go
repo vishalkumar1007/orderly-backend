@@ -11,10 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const archiveProducts = `-- name: ArchiveProducts :execrows
+UPDATE products
+SET archived_at = now(), is_available = FALSE, is_featured = FALSE, is_popular = FALSE, updated_at = now()
+WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND archived_at IS NULL
+`
+
+type ArchiveProductsParams struct {
+	TenantID pgtype.UUID   `json:"tenant_id"`
+	Ids      []pgtype.UUID `json:"ids"`
+}
+
+// Archived products leave the catalogue and the storefront but keep their
+// order history.
+func (q *Queries) ArchiveProducts(ctx context.Context, arg ArchiveProductsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveProducts, arg.TenantID, arg.Ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countProductsInCategory = `-- name: CountProductsInCategory :one
 SELECT COUNT(*)::bigint AS count
 FROM products
-WHERE tenant_id = $1 AND category_id = $2
+WHERE tenant_id = $1 AND category_id = $2 AND archived_at IS NULL
 `
 
 type CountProductsInCategoryParams struct {
@@ -22,6 +43,8 @@ type CountProductsInCategoryParams struct {
 	CategoryID pgtype.UUID `json:"category_id"`
 }
 
+// Archived products do not count: the owner cannot see them. They still block
+// the delete (past orders), which DeleteCategory reports.
 func (q *Queries) CountProductsInCategory(ctx context.Context, arg CountProductsInCategoryParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countProductsInCategory, arg.TenantID, arg.CategoryID)
 	var count int64
@@ -32,7 +55,7 @@ func (q *Queries) CountProductsInCategory(ctx context.Context, arg CountProducts
 const countTenantProducts = `-- name: CountTenantProducts :one
 SELECT COUNT(*)::bigint
 FROM products
-WHERE tenant_id = $1
+WHERE tenant_id = $1 AND archived_at IS NULL
 `
 
 // Products in use against the plan's max_products.
@@ -89,7 +112,7 @@ INSERT INTO products (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons
+RETURNING id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at
 `
 
 type CreateProductParams struct {
@@ -142,6 +165,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		&i.IsPopular,
 		&i.AllowSpecialInstructions,
 		&i.Addons,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -205,7 +229,7 @@ func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams
 }
 
 const getProductByID = `-- name: GetProductByID :one
-SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons FROM products
+SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at FROM products
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -235,6 +259,7 @@ func (q *Queries) GetProductByID(ctx context.Context, arg GetProductByIDParams) 
 		&i.IsPopular,
 		&i.AllowSpecialInstructions,
 		&i.Addons,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -276,8 +301,8 @@ func (q *Queries) ListActiveMenuCategories(ctx context.Context, tenantID pgtype.
 }
 
 const listAvailableProductsByTenant = `-- name: ListAvailableProductsByTenant :many
-SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons FROM products
-WHERE tenant_id = $1 AND is_available = TRUE
+SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at FROM products
+WHERE tenant_id = $1 AND is_available = TRUE AND archived_at IS NULL
 ORDER BY sort_order ASC, name ASC
 `
 
@@ -307,6 +332,7 @@ func (q *Queries) ListAvailableProductsByTenant(ctx context.Context, tenantID pg
 			&i.IsPopular,
 			&i.AllowSpecialInstructions,
 			&i.Addons,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -355,9 +381,10 @@ func (q *Queries) ListCategoriesByTenant(ctx context.Context, tenantID pgtype.UU
 }
 
 const listFeaturedProducts = `-- name: ListFeaturedProducts :many
-SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons FROM products
+SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at FROM products
 WHERE tenant_id = $1
   AND is_available = TRUE
+  AND archived_at IS NULL
   AND is_featured = TRUE
 ORDER BY sort_order ASC, name ASC
 LIMIT $2
@@ -396,6 +423,7 @@ func (q *Queries) ListFeaturedProducts(ctx context.Context, arg ListFeaturedProd
 			&i.IsPopular,
 			&i.AllowSpecialInstructions,
 			&i.Addons,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -408,9 +436,10 @@ func (q *Queries) ListFeaturedProducts(ctx context.Context, arg ListFeaturedProd
 }
 
 const listPopularProducts = `-- name: ListPopularProducts :many
-SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons FROM products
+SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at FROM products
 WHERE tenant_id = $1
   AND is_available = TRUE
+  AND archived_at IS NULL
   AND is_popular = TRUE
 ORDER BY sort_order ASC, name ASC
 LIMIT $2
@@ -447,6 +476,7 @@ func (q *Queries) ListPopularProducts(ctx context.Context, arg ListPopularProduc
 			&i.IsPopular,
 			&i.AllowSpecialInstructions,
 			&i.Addons,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -459,8 +489,8 @@ func (q *Queries) ListPopularProducts(ctx context.Context, arg ListPopularProduc
 }
 
 const listProductsByTenant = `-- name: ListProductsByTenant :many
-SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons FROM products
-WHERE tenant_id = $1
+SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at FROM products
+WHERE tenant_id = $1 AND archived_at IS NULL
 ORDER BY sort_order ASC, name ASC
 `
 
@@ -490,6 +520,7 @@ func (q *Queries) ListProductsByTenant(ctx context.Context, tenantID pgtype.UUID
 			&i.IsPopular,
 			&i.AllowSpecialInstructions,
 			&i.Addons,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -499,6 +530,26 @@ func (q *Queries) ListProductsByTenant(ctx context.Context, tenantID pgtype.UUID
 		return nil, err
 	}
 	return items, nil
+}
+
+const moveProductsByIDs = `-- name: MoveProductsByIDs :execrows
+UPDATE products
+SET category_id = $1, updated_at = now()
+WHERE tenant_id = $2 AND id = ANY($3::uuid[]) AND archived_at IS NULL
+`
+
+type MoveProductsByIDsParams struct {
+	CategoryID pgtype.UUID   `json:"category_id"`
+	TenantID   pgtype.UUID   `json:"tenant_id"`
+	Ids        []pgtype.UUID `json:"ids"`
+}
+
+func (q *Queries) MoveProductsByIDs(ctx context.Context, arg MoveProductsByIDsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, moveProductsByIDs, arg.CategoryID, arg.TenantID, arg.Ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const moveProductsToCategory = `-- name: MoveProductsToCategory :exec
@@ -516,6 +567,61 @@ type MoveProductsToCategoryParams struct {
 func (q *Queries) MoveProductsToCategory(ctx context.Context, arg MoveProductsToCategoryParams) error {
 	_, err := q.db.Exec(ctx, moveProductsToCategory, arg.TenantID, arg.CategoryID, arg.CategoryID_2)
 	return err
+}
+
+const reorderCategories = `-- name: ReorderCategories :exec
+UPDATE categories c
+SET sort_order = o.ord - 1, updated_at = now()
+FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE c.id = o.id AND c.tenant_id = $1
+`
+
+type ReorderCategoriesParams struct {
+	TenantID pgtype.UUID   `json:"tenant_id"`
+	Ids      []pgtype.UUID `json:"ids"`
+}
+
+func (q *Queries) ReorderCategories(ctx context.Context, arg ReorderCategoriesParams) error {
+	_, err := q.db.Exec(ctx, reorderCategories, arg.TenantID, arg.Ids)
+	return err
+}
+
+const reorderProducts = `-- name: ReorderProducts :exec
+UPDATE products p
+SET sort_order = o.ord - 1, updated_at = now()
+FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE p.id = o.id AND p.tenant_id = $1
+`
+
+type ReorderProductsParams struct {
+	TenantID pgtype.UUID   `json:"tenant_id"`
+	Ids      []pgtype.UUID `json:"ids"`
+}
+
+// One statement for the whole list: position in the array is the sort order.
+func (q *Queries) ReorderProducts(ctx context.Context, arg ReorderProductsParams) error {
+	_, err := q.db.Exec(ctx, reorderProducts, arg.TenantID, arg.Ids)
+	return err
+}
+
+const setProductsAvailable = `-- name: SetProductsAvailable :execrows
+UPDATE products
+SET is_available = $1, updated_at = now()
+WHERE tenant_id = $2 AND id = ANY($3::uuid[]) AND archived_at IS NULL
+`
+
+type SetProductsAvailableParams struct {
+	IsAvailable bool          `json:"is_available"`
+	TenantID    pgtype.UUID   `json:"tenant_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+func (q *Queries) SetProductsAvailable(ctx context.Context, arg SetProductsAvailableParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setProductsAvailable, arg.IsAvailable, arg.TenantID, arg.Ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const tenantHasActiveCategory = `-- name: TenantHasActiveCategory :one
@@ -536,7 +642,7 @@ func (q *Queries) TenantHasActiveCategory(ctx context.Context, tenantID pgtype.U
 const tenantHasAvailableProduct = `-- name: TenantHasAvailableProduct :one
 SELECT EXISTS(
     SELECT 1 FROM products
-    WHERE tenant_id = $1 AND is_available = true
+    WHERE tenant_id = $1 AND is_available = true AND archived_at IS NULL
 )
 `
 
@@ -595,23 +701,6 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 	return i, err
 }
 
-const updateCategorySortOrder = `-- name: UpdateCategorySortOrder :exec
-UPDATE categories
-SET sort_order = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
-`
-
-type UpdateCategorySortOrderParams struct {
-	ID        pgtype.UUID `json:"id"`
-	TenantID  pgtype.UUID `json:"tenant_id"`
-	SortOrder int32       `json:"sort_order"`
-}
-
-func (q *Queries) UpdateCategorySortOrder(ctx context.Context, arg UpdateCategorySortOrderParams) error {
-	_, err := q.db.Exec(ctx, updateCategorySortOrder, arg.ID, arg.TenantID, arg.SortOrder)
-	return err
-}
-
 const updateProduct = `-- name: UpdateProduct :one
 UPDATE products
 SET
@@ -629,7 +718,7 @@ SET
     addons = COALESCE($12::jsonb, addons),
     updated_at = now()
 WHERE id = $13 AND tenant_id = $14
-RETURNING id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons
+RETURNING id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at
 `
 
 type UpdateProductParams struct {
@@ -684,23 +773,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.IsPopular,
 		&i.AllowSpecialInstructions,
 		&i.Addons,
+		&i.ArchivedAt,
 	)
 	return i, err
-}
-
-const updateProductSortOrder = `-- name: UpdateProductSortOrder :exec
-UPDATE products
-SET sort_order = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2
-`
-
-type UpdateProductSortOrderParams struct {
-	ID        pgtype.UUID `json:"id"`
-	TenantID  pgtype.UUID `json:"tenant_id"`
-	SortOrder int32       `json:"sort_order"`
-}
-
-func (q *Queries) UpdateProductSortOrder(ctx context.Context, arg UpdateProductSortOrderParams) error {
-	_, err := q.db.Exec(ctx, updateProductSortOrder, arg.ID, arg.TenantID, arg.SortOrder)
-	return err
 }

@@ -150,6 +150,7 @@ func (h *Handler) providerComponents(ctx context.Context) []healthComponent {
 		configsvc.ServiceAI:       {"AI", "The AI provider"},
 		configsvc.ServiceSMS:      {"SMS", "Outbound SMS"},
 		configsvc.ServicePayments: {"Payments", "The payment gateway"},
+		configsvc.ServiceMeta:     {"Meta", "WhatsApp, Facebook and Instagram"},
 	}
 
 	out := make([]healthComponent, 0, len(configsvc.AllServices))

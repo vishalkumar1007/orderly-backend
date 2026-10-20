@@ -55,6 +55,18 @@ func (f *Factory) SMS(r *Resolved) (SMSProvider, error) {
 	return nil, fmt.Errorf("unsupported sms provider %q", r.Provider)
 }
 
+// Meta builds a MetaProvider.
+func (f *Factory) Meta(r *Resolved) (MetaProvider, error) {
+	if r == nil {
+		return nil, ErrUnavailable
+	}
+	switch r.Provider {
+	case ProviderMeta, "":
+		return newMetaProvider(r), nil
+	}
+	return nil, fmt.Errorf("unsupported meta provider %q", r.Provider)
+}
+
 // AI builds an AIProvider.
 func (f *Factory) AI(r *Resolved) (AIProvider, error) {
 	if r == nil {
@@ -155,6 +167,17 @@ func normalizeWriteRequest(service ServiceType, provider string, config map[stri
 		}
 		_ = mergeBack(cfg, pay)
 
+	case ServiceMeta:
+		resolvedProvider = ProviderMeta
+		cfg["provider"] = ProviderMeta
+		meta := metaFrom(cfg)
+		meta.applyDefaults()
+		meta.Provider = ProviderMeta
+		if err := meta.Validate(); err != nil {
+			return WriteRequest{}, err
+		}
+		_ = mergeBack(cfg, meta)
+
 	default:
 		return WriteRequest{}, fmt.Errorf("%w: unknown service %q", ErrInvalidRequest, service)
 	}
@@ -197,6 +220,17 @@ func smsFrom(cfg map[string]any) SMSConfig {
 		Provider:   asString(cfg["provider"]),
 		AccountSID: asString(cfg["account_sid"]),
 		FromNumber: asString(cfg["from_number"]),
+	}
+}
+
+func metaFrom(cfg map[string]any) MetaConfig {
+	return MetaConfig{
+		Provider:        asString(cfg["provider"]),
+		APIVersion:      asString(cfg["api_version"]),
+		PhoneNumberID:   asString(cfg["phone_number_id"]),
+		PageID:          asString(cfg["page_id"]),
+		InstagramUserID: asString(cfg["instagram_user_id"]),
+		VerifyToken:     asString(cfg["verify_token"]),
 	}
 }
 
@@ -331,6 +365,16 @@ func (f *Factory) runConnectionTest(ctx context.Context, r *Resolved) (TestOutco
 			return TestOutcome{OK: false, Message: "Could not verify Twilio credentials", Detail: SafeErrorMessage(err)}, nil
 		}
 		return TestOutcome{OK: true, Message: "Twilio credentials verified"}, nil
+
+	case ServiceMeta:
+		p, err := f.Meta(r)
+		if err != nil {
+			return TestOutcome{}, err
+		}
+		if err := p.TestConnection(ctx); err != nil {
+			return TestOutcome{OK: false, Message: "Could not verify the Meta access token", Detail: SafeErrorMessage(err)}, nil
+		}
+		return TestOutcome{OK: true, Message: "Meta access token verified"}, nil
 
 	case ServicePayments:
 		if err := CheckRazorpay(ctx, razorpayBaseURL, r.String("key_id"), r.Secret("key_secret")); err != nil {

@@ -515,6 +515,17 @@ func (e *testEnv) removeTestTenants() {
 			`DELETE FROM subscriptions WHERE tenant_id = $1`,
 			`DELETE FROM products WHERE tenant_id = $1`,
 			`DELETE FROM categories WHERE tenant_id = $1`,
+			// Marketing rows reference customers and the tenant (RESTRICT), so
+			// they go before both. Recipients and events cascade from campaigns.
+			`DELETE FROM automation_rules WHERE tenant_id = $1`,
+			`DELETE FROM social_posts WHERE tenant_id = $1`,
+			`DELETE FROM marketing_campaigns WHERE tenant_id = $1`,
+			`DELETE FROM marketing_events WHERE tenant_id = $1`,
+			`DELETE FROM marketing_links WHERE tenant_id = $1`,
+			`DELETE FROM marketing_consents WHERE tenant_id = $1`,
+			`DELETE FROM promotions WHERE tenant_id = $1`,
+			`DELETE FROM loyalty_accounts WHERE tenant_id = $1`,
+			`DELETE FROM loyalty_programs WHERE tenant_id = $1`,
 			// Bookings hold customers (ON DELETE RESTRICT), so they go first.
 			`DELETE FROM queue_entries WHERE tenant_id = $1`,
 			`DELETE FROM appointments WHERE tenant_id = $1`,

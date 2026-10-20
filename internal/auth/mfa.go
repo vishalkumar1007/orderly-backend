@@ -446,16 +446,16 @@ func (s *Service) VerifyMFALogin(ctx context.Context, challengeToken, method, co
 		return TokenPair{}, UserResponse{}, verr
 	}
 	if !ok {
-		s.auditLogin(ctx, user.Email, "mfa.verify", auditDenied)
+		s.auditLoginFor(ctx, user.TenantID, &user, user.Email, "mfa.verify", auditDenied)
 		return TokenPair{}, UserResponse{}, ErrInvalidMFACode
 	}
 
 	pair, err := s.issueTokens(ctx, user, true)
 	if err != nil {
-		s.auditLogin(ctx, user.Email, "mfa.verify", auditFailure)
+		s.auditLoginFor(ctx, user.TenantID, &user, user.Email, "mfa.verify", auditFailure)
 		return TokenPair{}, UserResponse{}, err
 	}
-	s.auditLogin(ctx, user.Email, "mfa.verify", auditSuccess)
+	s.auditLoginFor(ctx, user.TenantID, &user, user.Email, "mfa.verify", auditSuccess)
 	return pair, toUserResponse(user), nil
 }
 

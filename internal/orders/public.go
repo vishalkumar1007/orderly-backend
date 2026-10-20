@@ -15,6 +15,7 @@ import (
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/inventory"
+	"github.com/orderly/orderly-backend/internal/promo"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
@@ -185,7 +186,10 @@ func (h *Handler) PublicQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Items []RequestedLine `json:"items"`
+		Items        []RequestedLine `json:"items"`
+		CouponCode   string          `json:"coupon_code"`
+		RedeemPoints int32           `json:"redeem_points"`
+		Phone        string          `json:"customer_phone"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json body")
@@ -208,7 +212,48 @@ func (h *Handler) PublicQuote(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, &validationError{Code: costErr.Code, Message: costErr.Message, Status: 400})
 		return
 	}
-	response.JSON(w, http.StatusOK, map[string]any{"totals": totals})
+	out := map[string]any{}
+	var customerID *uuid.UUID
+	if p, ok := auth.CustomerFromContext(r.Context()); ok && p.TenantID == tenant.ID {
+		id := p.ID
+		customerID = &id
+	}
+	// Offer: priced here for the cart screen, re-validated under lock when
+	// the order is placed. A bad code is a message, not a failed quote.
+	discount := 0.0
+	if code := strings.TrimSpace(req.CouponCode); code != "" {
+		applied, prob := promo.Quote(r.Context(), h.q, code, promo.Context{
+			TenantID: tenant.ID, Phone: normalisePhoneInput(req.Phone), CustomerID: customerID, Subtotal: totals.Subtotal,
+		})
+		if prob != nil {
+			out["offer"] = map[string]any{"valid": false, "code": prob.Code, "message": prob.Message}
+		} else {
+			out["offer"] = map[string]any{"valid": true, "code": applied.Code, "discount": applied.Discount, "message": applied.Message}
+			discount += applied.Discount
+		}
+	}
+	// Points: what a signed-in customer could spend, and what they asked to.
+	if customerID != nil {
+		bal := promo.BalanceFor(r.Context(), h.q, tenant.ID, *customerID)
+		if bal.Enabled {
+			prog := promo.LoadProgram(r.Context(), h.q, tenant.ID)
+			max := prog.MaxRedeemable(bal.Points, totals.Subtotal-discount)
+			use := req.RedeemPoints
+			if use > max {
+				use = max
+			}
+			if use < 0 {
+				use = 0
+			}
+			out["loyalty"] = map[string]any{
+				"points": bal.Points, "max_points": max, "point_value": prog.PointValue, "min_redeem_points": prog.MinRedeemPoints,
+				"redeem_points": use, "discount": float64(use) * prog.PointValue,
+			}
+			discount += float64(use) * prog.PointValue
+		}
+	}
+	out["totals"] = totals.WithDiscount(discount)
+	response.JSON(w, http.StatusOK, out)
 }
 
 // PublicCreateOrder places a customer order. Prices are always recomputed on
@@ -324,16 +369,12 @@ func (h *Handler) PublicLookupOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sf, _ := h.store.Load(r.Context(), tenant.ID)
+	store := storefront.Storefront{}
+	if sf != nil {
+		store = *sf
+	}
 	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		store := storefront.Storefront{}
-		if sf != nil {
-			store = *sf
-		}
-		view, err := h.Viewer().hydrate(r.Context(), row, store)
-		if err != nil {
-			continue
-		}
+	for _, view := range h.Viewer().hydrateMany(r.Context(), pgutil.UUID(tenant.ID), rows, store) {
 		out = append(out, view.Summary())
 	}
 	response.JSON(w, http.StatusOK, map[string]any{"orders": out})

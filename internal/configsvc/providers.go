@@ -31,6 +31,15 @@ const (
 	ProviderSMTP = "smtp"
 )
 
+// Meta provider identifier: one Graph API token covers WhatsApp Cloud API,
+// Facebook Pages and Instagram publishing.
+const ProviderMeta = "meta"
+
+// MetaProviders is the catalogue the Super Admin UI renders.
+var MetaProviders = []ProviderInfo{
+	{Value: ProviderMeta, Label: "Meta Graph API", BaseURL: metaGraphBaseURL},
+}
+
 // SMS provider identifiers.
 const (
 	ProviderTwilio = "twilio"
@@ -98,6 +107,8 @@ func ProvidersFor(service ServiceType) []ProviderInfo {
 		return SMSProviders
 	case ServicePayments:
 		return PaymentProviders
+	case ServiceMeta:
+		return MetaProviders
 	}
 	return nil
 }

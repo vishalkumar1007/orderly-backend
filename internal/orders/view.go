@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/orderly/orderly-backend/db/sqlc"
 	"github.com/orderly/orderly-backend/internal/storefront"
@@ -411,15 +412,7 @@ func (v *Viewer) CustomerOrders(ctx context.Context, tenantID, customerID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	out := make([]OrderView, 0, len(rows))
-	for _, row := range rows {
-		view, err := v.hydrate(ctx, row, storefront.Storefront{})
-		if err != nil {
-			continue
-		}
-		out = append(out, view)
-	}
-	return out, nil
+	return v.hydrateMany(ctx, pgutil.UUID(tenantID), rows, storefront.Storefront{}), nil
 }
 
 // ErrOrderNotFound is returned when an order does not exist for this tenant, or
@@ -429,15 +422,55 @@ var ErrOrderNotFound = errors.New("order not found")
 // hydrate fills an order row with its items, payment, history and store detail.
 func (v *Viewer) hydrate(ctx context.Context, row sqlc.Order, sf storefront.Storefront) (OrderView, error) {
 	items, _ := v.q.ListOrderItemsByOrder(ctx, row.ID)
-	pay, err := v.q.GetPaymentByOrderID(ctx, sqlc.GetPaymentByOrderIDParams{
+	var pay *sqlc.Payment
+	if p, err := v.q.GetPaymentByOrderID(ctx, sqlc.GetPaymentByOrderIDParams{
 		OrderID:  row.ID,
 		TenantID: row.TenantID,
-	})
+	}); err == nil {
+		pay = &p
+	}
 	history, _ := v.q.ListOrderStatusHistory(ctx, sqlc.ListOrderStatusHistoryParams{
 		OrderID:  row.ID,
 		TenantID: row.TenantID,
 	})
+	return v.assemble(ctx, row, sf, items, pay, history), nil
+}
 
+// hydrateMany is hydrate for a list: three queries in total, not three per order.
+func (v *Viewer) hydrateMany(ctx context.Context, tenantID pgtype.UUID, rows []sqlc.Order, sf storefront.Storefront) []OrderView {
+	if len(rows) == 0 {
+		return nil
+	}
+	ids := make([]pgtype.UUID, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+	items := map[pgtype.UUID][]sqlc.OrderItem{}
+	if all, err := v.q.ListOrderItemsByOrderIDs(ctx, ids); err == nil {
+		for _, it := range all {
+			items[it.OrderID] = append(items[it.OrderID], it)
+		}
+	}
+	pays := map[pgtype.UUID]*sqlc.Payment{}
+	if all, err := v.q.ListPaymentsByOrderIDs(ctx, sqlc.ListPaymentsByOrderIDsParams{TenantID: tenantID, OrderIds: ids}); err == nil {
+		for i := range all {
+			pays[all[i].OrderID] = &all[i]
+		}
+	}
+	history := map[pgtype.UUID][]sqlc.OrderStatusHistory{}
+	if all, err := v.q.ListStatusHistoryByOrderIDs(ctx, sqlc.ListStatusHistoryByOrderIDsParams{TenantID: tenantID, OrderIds: ids}); err == nil {
+		for _, h := range all {
+			history[h.OrderID] = append(history[h.OrderID], h)
+		}
+	}
+	out := make([]OrderView, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, v.assemble(ctx, row, sf, items[row.ID], pays[row.ID], history[row.ID]))
+	}
+	return out
+}
+
+func (v *Viewer) assemble(ctx context.Context, row sqlc.Order, sf storefront.Storefront, items []sqlc.OrderItem, pay *sqlc.Payment, history []sqlc.OrderStatusHistory) OrderView {
 	view := OrderView{
 		ID:            pgutil.UUIDString(row.ID),
 		OrderNumber:   row.OrderNumber,
@@ -470,7 +503,7 @@ func (v *Viewer) hydrate(ctx context.Context, row sqlc.Order, sf storefront.Stor
 			Notes:     it.Notes,
 		})
 	}
-	if err == nil && pay.ID.Valid {
+	if pay != nil && pay.ID.Valid {
 		p := &PaymentView{
 			ID:            pgutil.UUIDString(pay.ID),
 			Method:        pay.Method,
@@ -483,7 +516,7 @@ func (v *Viewer) hydrate(ctx context.Context, row sqlc.Order, sf storefront.Stor
 			t := pay.PaidAt.Time
 			p.PaidAt = &t
 		}
-		fillPaymentExtras(ctx, v.q, p, pay)
+		fillPaymentExtras(ctx, v.q, p, *pay)
 		view.Payment = p
 	}
 	for _, h := range history {
@@ -495,7 +528,7 @@ func (v *Viewer) hydrate(ctx context.Context, row sqlc.Order, sf storefront.Stor
 	if len(view.History) == 0 {
 		view.History = append(view.History, HistoryEntry{To: row.Status, At: row.CreatedAt.Time})
 	}
-	return view, nil
+	return view
 }
 
 // ParseOrderNumber converts the URL segment into an order number.

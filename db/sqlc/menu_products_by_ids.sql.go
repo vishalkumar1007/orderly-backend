@@ -12,10 +12,11 @@ import (
 )
 
 const getProductsByIDs = `-- name: GetProductsByIDs :many
-SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons FROM products
+SELECT id, tenant_id, category_id, name, description, price, image_url, sort_order, is_available, created_at, updated_at, is_vegetarian, is_featured, is_popular, allow_special_instructions, addons, archived_at FROM products
 WHERE tenant_id = $1
   AND id = ANY($2::uuid[])
   AND is_available = TRUE
+  AND archived_at IS NULL
 `
 
 type GetProductsByIDsParams struct {
@@ -52,6 +53,7 @@ func (q *Queries) GetProductsByIDs(ctx context.Context, arg GetProductsByIDsPara
 			&i.IsPopular,
 			&i.AllowSpecialInstructions,
 			&i.Addons,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}

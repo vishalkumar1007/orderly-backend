@@ -12,17 +12,18 @@ import (
 )
 
 const appendOrderStatusHistory = `-- name: AppendOrderStatusHistory :one
-INSERT INTO order_status_history (tenant_id, order_id, from_status, to_status, actor)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, tenant_id, order_id, from_status, to_status, actor, created_at
+INSERT INTO order_status_history (tenant_id, order_id, from_status, to_status, actor, actor_user_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, tenant_id, order_id, from_status, to_status, actor, created_at, actor_user_id
 `
 
 type AppendOrderStatusHistoryParams struct {
-	TenantID   pgtype.UUID `json:"tenant_id"`
-	OrderID    pgtype.UUID `json:"order_id"`
-	FromStatus string      `json:"from_status"`
-	ToStatus   string      `json:"to_status"`
-	Actor      string      `json:"actor"`
+	TenantID    pgtype.UUID `json:"tenant_id"`
+	OrderID     pgtype.UUID `json:"order_id"`
+	FromStatus  string      `json:"from_status"`
+	ToStatus    string      `json:"to_status"`
+	Actor       string      `json:"actor"`
+	ActorUserID pgtype.UUID `json:"actor_user_id"`
 }
 
 func (q *Queries) AppendOrderStatusHistory(ctx context.Context, arg AppendOrderStatusHistoryParams) (OrderStatusHistory, error) {
@@ -32,6 +33,7 @@ func (q *Queries) AppendOrderStatusHistory(ctx context.Context, arg AppendOrderS
 		arg.FromStatus,
 		arg.ToStatus,
 		arg.Actor,
+		arg.ActorUserID,
 	)
 	var i OrderStatusHistory
 	err := row.Scan(
@@ -42,6 +44,7 @@ func (q *Queries) AppendOrderStatusHistory(ctx context.Context, arg AppendOrderS
 		&i.ToStatus,
 		&i.Actor,
 		&i.CreatedAt,
+		&i.ActorUserID,
 	)
 	return i, err
 }
@@ -95,7 +98,7 @@ INSERT INTO orders (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type CreateOrderParams struct {
@@ -167,6 +170,11 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -332,7 +340,7 @@ func (q *Queries) GetLatestPaymentRefund(ctx context.Context, paymentID pgtype.U
 }
 
 const getOrderByClientToken = `-- name: GetOrderByClientToken :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE tenant_id = $1 AND client_token = $2
 LIMIT 1
 `
@@ -375,12 +383,17 @@ func (q *Queries) GetOrderByClientToken(ctx context.Context, arg GetOrderByClien
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -421,12 +434,17 @@ func (q *Queries) GetOrderByID(ctx context.Context, arg GetOrderByIDParams) (Ord
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
 
 const getOrderByTenantAndNumber = `-- name: GetOrderByTenantAndNumber :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE tenant_id = $1 AND order_number = $2
 LIMIT 1
 `
@@ -467,12 +485,17 @@ func (q *Queries) GetOrderByTenantAndNumber(ctx context.Context, arg GetOrderByT
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
 
 const getOrderByTenantNumberAndPhone = `-- name: GetOrderByTenantNumberAndPhone :one
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE tenant_id = $1 AND order_number = $2 AND customer_phone = $3
 LIMIT 1
 `
@@ -516,6 +539,11 @@ func (q *Queries) GetOrderByTenantNumberAndPhone(ctx context.Context, arg GetOrd
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -563,6 +591,7 @@ func (q *Queries) GetPaymentByID(ctx context.Context, arg GetPaymentByIDParams) 
 const getPaymentByOrderID = `-- name: GetPaymentByOrderID :one
 SELECT id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
 WHERE order_id = $1 AND tenant_id = $2
+ORDER BY created_at DESC
 LIMIT 1
 `
 
@@ -917,7 +946,7 @@ func (q *Queries) ListExpiredPendingPayments(ctx context.Context, limit int32) (
 
 const listOrderHistory = `-- name: ListOrderHistory :many
 SELECT
-    o.id, o.tenant_id, o.customer_id, o.order_number, o.status, o.order_type, o.subtotal, o.tax, o.discount, o.total, o.customer_name, o.customer_phone, o.created_at, o.updated_at, o.customer_email, o.notes, o.estimated_ready_at, o.accepted_at, o.preparing_at, o.ready_at, o.completed_at, o.cancelled_at, o.cancel_reason, o.source, o.client_token, o.packaging_fee, o.table_id,
+    o.id, o.tenant_id, o.customer_id, o.order_number, o.status, o.order_type, o.subtotal, o.tax, o.discount, o.total, o.customer_name, o.customer_phone, o.created_at, o.updated_at, o.customer_email, o.notes, o.estimated_ready_at, o.accepted_at, o.preparing_at, o.ready_at, o.completed_at, o.cancelled_at, o.cancel_reason, o.source, o.client_token, o.packaging_fee, o.table_id, o.marketing_campaign_id, o.marketing_link_id, o.promotion_id, o.coupon_code, o.loyalty_points_used,
     (SELECT COUNT(*)::bigint FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
     -- Coalesced because the join is optional: an order with no payment row
     -- yields NULL, which the generated scanner would refuse for a column the
@@ -957,36 +986,41 @@ type ListOrderHistoryParams struct {
 }
 
 type ListOrderHistoryRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	TenantID         pgtype.UUID        `json:"tenant_id"`
-	CustomerID       pgtype.UUID        `json:"customer_id"`
-	OrderNumber      int32              `json:"order_number"`
-	Status           string             `json:"status"`
-	OrderType        string             `json:"order_type"`
-	Subtotal         pgtype.Numeric     `json:"subtotal"`
-	Tax              pgtype.Numeric     `json:"tax"`
-	Discount         pgtype.Numeric     `json:"discount"`
-	Total            pgtype.Numeric     `json:"total"`
-	CustomerName     string             `json:"customer_name"`
-	CustomerPhone    string             `json:"customer_phone"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	CustomerEmail    string             `json:"customer_email"`
-	Notes            string             `json:"notes"`
-	EstimatedReadyAt pgtype.Timestamptz `json:"estimated_ready_at"`
-	AcceptedAt       pgtype.Timestamptz `json:"accepted_at"`
-	PreparingAt      pgtype.Timestamptz `json:"preparing_at"`
-	ReadyAt          pgtype.Timestamptz `json:"ready_at"`
-	CompletedAt      pgtype.Timestamptz `json:"completed_at"`
-	CancelledAt      pgtype.Timestamptz `json:"cancelled_at"`
-	CancelReason     string             `json:"cancel_reason"`
-	Source           string             `json:"source"`
-	ClientToken      string             `json:"client_token"`
-	PackagingFee     pgtype.Numeric     `json:"packaging_fee"`
-	TableID          pgtype.UUID        `json:"table_id"`
-	ItemCount        int64              `json:"item_count"`
-	PaymentStatus    string             `json:"payment_status"`
-	PaymentMethod    string             `json:"payment_method"`
+	ID                  pgtype.UUID        `json:"id"`
+	TenantID            pgtype.UUID        `json:"tenant_id"`
+	CustomerID          pgtype.UUID        `json:"customer_id"`
+	OrderNumber         int32              `json:"order_number"`
+	Status              string             `json:"status"`
+	OrderType           string             `json:"order_type"`
+	Subtotal            pgtype.Numeric     `json:"subtotal"`
+	Tax                 pgtype.Numeric     `json:"tax"`
+	Discount            pgtype.Numeric     `json:"discount"`
+	Total               pgtype.Numeric     `json:"total"`
+	CustomerName        string             `json:"customer_name"`
+	CustomerPhone       string             `json:"customer_phone"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	CustomerEmail       string             `json:"customer_email"`
+	Notes               string             `json:"notes"`
+	EstimatedReadyAt    pgtype.Timestamptz `json:"estimated_ready_at"`
+	AcceptedAt          pgtype.Timestamptz `json:"accepted_at"`
+	PreparingAt         pgtype.Timestamptz `json:"preparing_at"`
+	ReadyAt             pgtype.Timestamptz `json:"ready_at"`
+	CompletedAt         pgtype.Timestamptz `json:"completed_at"`
+	CancelledAt         pgtype.Timestamptz `json:"cancelled_at"`
+	CancelReason        string             `json:"cancel_reason"`
+	Source              string             `json:"source"`
+	ClientToken         string             `json:"client_token"`
+	PackagingFee        pgtype.Numeric     `json:"packaging_fee"`
+	TableID             pgtype.UUID        `json:"table_id"`
+	MarketingCampaignID pgtype.UUID        `json:"marketing_campaign_id"`
+	MarketingLinkID     pgtype.UUID        `json:"marketing_link_id"`
+	PromotionID         pgtype.UUID        `json:"promotion_id"`
+	CouponCode          string             `json:"coupon_code"`
+	LoyaltyPointsUsed   int32              `json:"loyalty_points_used"`
+	ItemCount           int64              `json:"item_count"`
+	PaymentStatus       string             `json:"payment_status"`
+	PaymentMethod       string             `json:"payment_method"`
 }
 
 // Order history for the tenant console. Unlike the Selling board: which shows
@@ -1041,6 +1075,11 @@ func (q *Queries) ListOrderHistory(ctx context.Context, arg ListOrderHistoryPara
 			&i.ClientToken,
 			&i.PackagingFee,
 			&i.TableID,
+			&i.MarketingCampaignID,
+			&i.MarketingLinkID,
+			&i.PromotionID,
+			&i.CouponCode,
+			&i.LoyaltyPointsUsed,
 			&i.ItemCount,
 			&i.PaymentStatus,
 			&i.PaymentMethod,
@@ -1125,8 +1164,47 @@ func (q *Queries) ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID
 	return items, nil
 }
 
+const listOrderItemsByOrderIDs = `-- name: ListOrderItemsByOrderIDs :many
+SELECT id, tenant_id, order_id, product_id, product_name_snapshot, unit_price, quantity, subtotal, created_at, addons, notes FROM order_items
+WHERE order_id = ANY($1::uuid[])
+ORDER BY order_id, created_at ASC
+`
+
+// Batched lookups for order lists: one query per kind instead of one per order.
+func (q *Queries) ListOrderItemsByOrderIDs(ctx context.Context, orderIds []pgtype.UUID) ([]OrderItem, error) {
+	rows, err := q.db.Query(ctx, listOrderItemsByOrderIDs, orderIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrderItem{}
+	for rows.Next() {
+		var i OrderItem
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.ProductID,
+			&i.ProductNameSnapshot,
+			&i.UnitPrice,
+			&i.Quantity,
+			&i.Subtotal,
+			&i.CreatedAt,
+			&i.Addons,
+			&i.Notes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrderStatusHistory = `-- name: ListOrderStatusHistory :many
-SELECT id, tenant_id, order_id, from_status, to_status, actor, created_at FROM order_status_history
+SELECT id, tenant_id, order_id, from_status, to_status, actor, created_at, actor_user_id FROM order_status_history
 WHERE order_id = $1 AND tenant_id = $2
 ORDER BY created_at ASC
 `
@@ -1153,6 +1231,7 @@ func (q *Queries) ListOrderStatusHistory(ctx context.Context, arg ListOrderStatu
 			&i.ToStatus,
 			&i.Actor,
 			&i.CreatedAt,
+			&i.ActorUserID,
 		); err != nil {
 			return nil, err
 		}
@@ -1165,7 +1244,7 @@ func (q *Queries) ListOrderStatusHistory(ctx context.Context, arg ListOrderStatu
 }
 
 const listOrdersByTenant = `-- name: ListOrdersByTenant :many
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -1213,6 +1292,11 @@ func (q *Queries) ListOrdersByTenant(ctx context.Context, arg ListOrdersByTenant
 			&i.ClientToken,
 			&i.PackagingFee,
 			&i.TableID,
+			&i.MarketingCampaignID,
+			&i.MarketingLinkID,
+			&i.PromotionID,
+			&i.CouponCode,
+			&i.LoyaltyPointsUsed,
 		); err != nil {
 			return nil, err
 		}
@@ -1225,7 +1309,7 @@ func (q *Queries) ListOrdersByTenant(ctx context.Context, arg ListOrdersByTenant
 }
 
 const listOrdersByTenantAndPhone = `-- name: ListOrdersByTenantAndPhone :many
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE tenant_id = $1 AND customer_phone = $2
 ORDER BY created_at DESC
 LIMIT $3
@@ -1276,6 +1360,65 @@ func (q *Queries) ListOrdersByTenantAndPhone(ctx context.Context, arg ListOrders
 			&i.ClientToken,
 			&i.PackagingFee,
 			&i.TableID,
+			&i.MarketingCampaignID,
+			&i.MarketingLinkID,
+			&i.PromotionID,
+			&i.CouponCode,
+			&i.LoyaltyPointsUsed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPaymentsByOrderIDs = `-- name: ListPaymentsByOrderIDs :many
+SELECT DISTINCT ON (order_id) id, tenant_id, order_id, amount, method, status, provider, provider_reference, paid_at, created_at, updated_at, failure_reason, attempt_count, payable_type, payable_id, purpose, provider_order_id, provider_payment_id, mode, currency, expires_at FROM payments
+WHERE tenant_id = $1 AND order_id = ANY($2::uuid[])
+ORDER BY order_id, created_at DESC
+`
+
+type ListPaymentsByOrderIDsParams struct {
+	TenantID pgtype.UUID   `json:"tenant_id"`
+	OrderIds []pgtype.UUID `json:"order_ids"`
+}
+
+// Latest payment per order, same pick as GetPaymentByOrderID.
+func (q *Queries) ListPaymentsByOrderIDs(ctx context.Context, arg ListPaymentsByOrderIDsParams) ([]Payment, error) {
+	rows, err := q.db.Query(ctx, listPaymentsByOrderIDs, arg.TenantID, arg.OrderIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Payment{}
+	for rows.Next() {
+		var i Payment
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.Amount,
+			&i.Method,
+			&i.Status,
+			&i.Provider,
+			&i.ProviderReference,
+			&i.PaidAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FailureReason,
+			&i.AttemptCount,
+			&i.PayableType,
+			&i.PayableID,
+			&i.Purpose,
+			&i.ProviderOrderID,
+			&i.ProviderPaymentID,
+			&i.Mode,
+			&i.Currency,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1318,6 +1461,46 @@ func (q *Queries) ListStaleUnsentRefunds(ctx context.Context, limit int32) ([]Pa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ProviderPaymentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStatusHistoryByOrderIDs = `-- name: ListStatusHistoryByOrderIDs :many
+SELECT id, tenant_id, order_id, from_status, to_status, actor, created_at, actor_user_id FROM order_status_history
+WHERE tenant_id = $1 AND order_id = ANY($2::uuid[])
+ORDER BY order_id, created_at ASC
+`
+
+type ListStatusHistoryByOrderIDsParams struct {
+	TenantID pgtype.UUID   `json:"tenant_id"`
+	OrderIds []pgtype.UUID `json:"order_ids"`
+}
+
+func (q *Queries) ListStatusHistoryByOrderIDs(ctx context.Context, arg ListStatusHistoryByOrderIDsParams) ([]OrderStatusHistory, error) {
+	rows, err := q.db.Query(ctx, listStatusHistoryByOrderIDs, arg.TenantID, arg.OrderIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrderStatusHistory{}
+	for rows.Next() {
+		var i OrderStatusHistory
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.FromStatus,
+			&i.ToStatus,
+			&i.Actor,
+			&i.CreatedAt,
+			&i.ActorUserID,
 		); err != nil {
 			return nil, err
 		}
@@ -1854,7 +2037,7 @@ const stampOrderAccepted = `-- name: StampOrderAccepted :one
 UPDATE orders
 SET status = 'ACCEPTED', accepted_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $3
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type StampOrderAcceptedParams struct {
@@ -1902,6 +2085,11 @@ func (q *Queries) StampOrderAccepted(ctx context.Context, arg StampOrderAccepted
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -1910,7 +2098,7 @@ const stampOrderCancelled = `-- name: StampOrderCancelled :one
 UPDATE orders
 SET status = 'CANCELLED', cancelled_at = now(), cancel_reason = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $4
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type StampOrderCancelledParams struct {
@@ -1956,6 +2144,11 @@ func (q *Queries) StampOrderCancelled(ctx context.Context, arg StampOrderCancell
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -1964,7 +2157,7 @@ const stampOrderCompleted = `-- name: StampOrderCompleted :one
 UPDATE orders
 SET status = 'COMPLETED', completed_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $3
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type StampOrderCompletedParams struct {
@@ -2004,6 +2197,11 @@ func (q *Queries) StampOrderCompleted(ctx context.Context, arg StampOrderComplet
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -2012,7 +2210,7 @@ const stampOrderPreparing = `-- name: StampOrderPreparing :one
 UPDATE orders
 SET status = 'PREPARING', preparing_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $3
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type StampOrderPreparingParams struct {
@@ -2052,6 +2250,11 @@ func (q *Queries) StampOrderPreparing(ctx context.Context, arg StampOrderPrepari
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -2060,7 +2263,7 @@ const stampOrderReady = `-- name: StampOrderReady :one
 UPDATE orders
 SET status = 'READY', ready_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $3
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type StampOrderReadyParams struct {
@@ -2100,6 +2303,11 @@ func (q *Queries) StampOrderReady(ctx context.Context, arg StampOrderReadyParams
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }
@@ -2199,7 +2407,7 @@ const updateOrderStatus = `-- name: UpdateOrderStatus :one
 UPDATE orders
 SET status = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id
+RETURNING id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used
 `
 
 type UpdateOrderStatusParams struct {
@@ -2239,6 +2447,11 @@ func (q *Queries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusPa
 		&i.ClientToken,
 		&i.PackagingFee,
 		&i.TableID,
+		&i.MarketingCampaignID,
+		&i.MarketingLinkID,
+		&i.PromotionID,
+		&i.CouponCode,
+		&i.LoyaltyPointsUsed,
 	)
 	return i, err
 }

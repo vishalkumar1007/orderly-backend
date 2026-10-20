@@ -19,7 +19,7 @@ SELECT
 FROM products p
 JOIN categories c ON c.id = p.category_id
 LEFT JOIN inventory_items i ON i.product_id = p.id AND i.tenant_id = p.tenant_id
-WHERE p.tenant_id = sqlc.arg(tenant_id)
+WHERE p.tenant_id = sqlc.arg(tenant_id) AND p.archived_at IS NULL
 ORDER BY c.sort_order ASC, c.name ASC, p.sort_order ASC, p.name ASC;
 
 -- name: GetInventoryItemByProduct :one
@@ -106,7 +106,7 @@ FOR UPDATE;
 
 -- name: SetProductAvailable :exec
 UPDATE products SET is_available = sqlc.arg(is_available), updated_at = now()
-WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id);
+WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id) AND archived_at IS NULL;
 
 -- name: ListOrderLines :many
 SELECT product_id, SUM(quantity)::int AS quantity

@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +17,12 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
 
-	cfg.MaxConns = 10
+	// The admin console polls orders and loads several panels at once; 10 was
+	// too few under a couple of open tabs. DB_MAX_CONNS overrides.
+	cfg.MaxConns = 25
+	if n, err := strconv.Atoi(os.Getenv("DB_MAX_CONNS")); err == nil && n > 0 {
+		cfg.MaxConns = int32(n)
+	}
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
 	cfg.HealthCheckPeriod = time.Minute

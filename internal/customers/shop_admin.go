@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,117 +33,91 @@ func tsOrNil(t pgtype.Timestamptz) any {
 	return t.Time.Format(time.RFC3339)
 }
 
-func anyTimeOrNil(v any) any {
-	switch t := v.(type) {
-	case time.Time:
-		return t.Format(time.RFC3339)
-	case pgtype.Timestamptz:
-		return tsOrNil(t)
-	case *time.Time:
-		if t == nil {
-			return nil
-		}
-		return t.Format(time.RFC3339)
-	default:
-		return nil
-	}
-}
-
-func anyString(v any) string {
-	switch s := v.(type) {
-	case string:
-		return s
-	case []byte:
-		return string(s)
-	default:
-		return ""
-	}
-}
-
-// ShopListCustomers returns known customers plus guest order phones for the
-// shop CRM screen.
+// ShopListCustomers returns one page of registered customers and guest order
+// phones for the shop CRM screen. Search and paging run in SQL.
 func (h *Handler) ShopListCustomers(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := shopTenantID(r)
 	if !ok {
 		response.Error(w, http.StatusForbidden, "forbidden", "tenant required")
 		return
 	}
-	ctx := r.Context()
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-
-	rows, err := h.q.ListCustomersByTenant(ctx, sqlc.ListCustomersByTenantParams{
+	qs := r.URL.Query()
+	limit := clampInt(qs.Get("limit"), 50, 1, 200)
+	offset := clampInt(qs.Get("offset"), 0, 0, 1_000_000)
+	rows, err := h.q.ListShopCustomers(r.Context(), sqlc.ListShopCustomersParams{
 		TenantID:    pgutil.UUID(tenantID),
-		LimitCount:  200,
-		OffsetCount: 0,
+		Q:           strings.TrimSpace(qs.Get("q")),
+		LimitCount:  int32(limit),
+		OffsetCount: int32(offset),
 	})
 	if err != nil {
 		h.log.Error("list customers", "err", err, "tenant_id", tenantID)
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load customers")
 		return
 	}
-	guests, err := h.q.ListGuestCustomersFromOrders(ctx, sqlc.ListGuestCustomersFromOrdersParams{
-		TenantID:   pgutil.UUID(tenantID),
-		LimitCount: 200,
-	})
-	if err != nil {
-		h.log.Error("list guest customers", "err", err, "tenant_id", tenantID)
-		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load guest customers")
-		return
-	}
-
-	out := make([]map[string]any, 0, len(rows)+len(guests))
+	out := make([]map[string]any, 0, len(rows))
+	var total, registered int64
 	for _, row := range rows {
-		phone := ""
-		if row.Phone.Valid {
-			phone = row.Phone.String
+		total, registered = row.TotalCount, row.RegisteredCount
+		var id any
+		if row.ID.Valid {
+			id = pgutil.UUIDString(row.ID)
 		}
-		item := map[string]any{
-			"id":            pgutil.UUIDString(row.ID),
-			"kind":          "registered",
+		out = append(out, map[string]any{
+			"id":            id,
+			"kind":          row.Kind,
 			"name":          row.Name,
-			"phone":         phone,
+			"phone":         row.Phone,
+			"email":         row.Email,
 			"is_blocked":    row.IsBlocked,
 			"last_login_at": tsOrNil(row.LastLoginAt),
 			"created_at":    tsOrNil(row.CreatedAt),
 			"order_count":   row.OrderCount,
 			"total_spend":   row.TotalSpend,
-			"last_order_at": anyTimeOrNil(row.LastOrderAt),
-		}
-		if q == "" || matchCustomer(q, row.Name, phone) {
-			out = append(out, item)
-		}
+			"last_order_at": tsOrNil(row.LastOrderAt),
+		})
 	}
-	for _, g := range guests {
-		name := anyString(g.Name)
-		item := map[string]any{
-			"id":            nil,
-			"kind":          "guest",
-			"name":          name,
-			"phone":         g.Phone,
-			"is_blocked":    false,
-			"last_login_at": nil,
-			"created_at":    anyTimeOrNil(g.FirstSeenAt),
-			"order_count":   g.OrderCount,
-			"total_spend":   g.TotalSpend,
-			"last_order_at": anyTimeOrNil(g.LastOrderAt),
-		}
-		if q == "" || matchCustomer(q, name, g.Phone) {
-			out = append(out, item)
-		}
-	}
-
 	response.JSON(w, http.StatusOK, map[string]any{
 		"customers": out,
 		"counts": map[string]any{
-			"registered": len(rows),
-			"guest":      len(guests),
-			"total":      len(out),
+			"registered": registered,
+			"guest":      total - registered,
+			"total":      total,
 		},
+		"has_more": int64(offset+len(rows)) < total,
 	})
 }
 
-func matchCustomer(q, name, phone string) bool {
-	return strings.Contains(strings.ToLower(name), q) || strings.Contains(strings.ToLower(phone), q)
+func clampInt(raw string, def, lo, hi int) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return max(lo, min(hi, n))
+}
+
+// customerStats is the money summary on a profile, over every order, not
+// just the recent ones listed.
+func (h *Handler) customerStats(ctx context.Context, tenantID uuid.UUID, customerID *uuid.UUID, phone string) map[string]any {
+	params := sqlc.CustomerOrderStatsParams{TenantID: pgutil.UUID(tenantID), Phone: phone}
+	if customerID != nil {
+		params.CustomerID = pgutil.UUID(*customerID)
+	}
+	st, err := h.q.CustomerOrderStats(ctx, params)
+	if err != nil {
+		return map[string]any{"order_count": 0, "total_spend": 0.0, "average_order": 0.0}
+	}
+	avg := 0.0
+	if st.OrderCount > 0 {
+		avg = st.TotalSpend / float64(st.OrderCount)
+	}
+	return map[string]any{
+		"order_count":    st.OrderCount,
+		"total_spend":    st.TotalSpend,
+		"average_order":  avg,
+		"first_order_at": tsOrNil(st.FirstOrderAt),
+		"last_order_at":  tsOrNil(st.LastOrderAt),
+	}
 }
 
 // ShopGetCustomer returns one registered customer plus recent orders.
@@ -172,21 +147,22 @@ func (h *Handler) ShopGetCustomer(w http.ResponseWriter, r *http.Request) {
 		phone = cust.Phone.String
 	}
 
-	ordersOut := h.shopOrdersFor(ctx, tenantID, &id, phone)
-
+	stats := h.customerStats(ctx, tenantID, &id, phone)
 	response.JSON(w, http.StatusOK, map[string]any{
 		"customer": map[string]any{
 			"id":            pgutil.UUIDString(cust.ID),
 			"kind":          "registered",
 			"name":          cust.Name,
 			"phone":         phone,
+			"email":         cust.Email.String,
 			"is_blocked":    cust.IsBlocked,
 			"last_login_at": tsOrNil(cust.LastLoginAt),
 			"created_at":    tsOrNil(cust.CreatedAt),
-			"order_count":   len(ordersOut),
-			"total_spend":   sumOrderTotals(ordersOut),
+			"order_count":   stats["order_count"],
+			"total_spend":   stats["total_spend"],
 		},
-		"orders": ordersOut,
+		"stats":  stats,
+		"orders": h.shopOrdersFor(ctx, tenantID, &id, phone),
 	})
 }
 
@@ -203,6 +179,7 @@ func (h *Handler) ShopGetGuestCustomer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ordersOut := h.shopOrdersFor(r.Context(), tenantID, nil, phone)
+	stats := h.customerStats(r.Context(), tenantID, nil, phone)
 	name := ""
 	if len(ordersOut) > 0 {
 		if n, ok := ordersOut[0]["customer_name"].(string); ok {
@@ -217,9 +194,10 @@ func (h *Handler) ShopGetGuestCustomer(w http.ResponseWriter, r *http.Request) {
 			"phone":         phone,
 			"is_blocked":    false,
 			"last_login_at": nil,
-			"order_count":   len(ordersOut),
-			"total_spend":   sumOrderTotals(ordersOut),
+			"order_count":   stats["order_count"],
+			"total_spend":   stats["total_spend"],
 		},
+		"stats":  stats,
 		"orders": ordersOut,
 	})
 }
@@ -252,6 +230,18 @@ func (h *Handler) ShopSetCustomerBlocked(w http.ResponseWriter, r *http.Request)
 		response.Error(w, http.StatusNotFound, "not_found", "customer not found")
 		return
 	}
+	action := "customer.unblocked"
+	if req.Blocked {
+		action = "customer.blocked"
+	}
+	var actorID pgtype.UUID
+	if u, ok := identity.UserFromContext(r.Context()); ok {
+		actorID = pgutil.UUID(u.ID)
+	}
+	_, _ = h.q.InsertAuditLog(r.Context(), sqlc.InsertAuditLogParams{
+		TenantID: pgutil.UUID(tenantID), UserID: actorID, Action: action,
+		EntityType: "customer", EntityID: cust.ID, Metadata: []byte("{}"), Result: "SUCCESS",
+	})
 	phone := ""
 	if cust.Phone.Valid {
 		phone = cust.Phone.String
@@ -302,12 +292,57 @@ func (h *Handler) shopOrdersFor(ctx context.Context, tenantID uuid.UUID, custome
 	return out
 }
 
-func sumOrderTotals(orders []map[string]any) float64 {
-	var sum float64
-	for _, o := range orders {
-		if v, ok := o["total"].(float64); ok {
-			sum += v
+// ShopCustomerActivity is the profile timeline, newest first, paged by time.
+func (h *Handler) ShopCustomerActivity(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := shopTenantID(r)
+	if !ok {
+		response.Error(w, http.StatusForbidden, "forbidden", "tenant required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid customer id")
+		return
+	}
+	cust, err := h.q.GetCustomerByID(r.Context(), sqlc.GetCustomerByIDParams{
+		ID: pgutil.UUID(id), TenantID: pgutil.UUID(tenantID),
+	})
+	if err != nil {
+		response.Error(w, http.StatusNotFound, "not_found", "customer not found")
+		return
+	}
+	before := time.Now().Add(time.Minute)
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			before = t
 		}
 	}
-	return sum
+	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 100)
+	rows, err := h.q.CustomerActivity(r.Context(), sqlc.CustomerActivityParams{
+		TenantID:   pgutil.UUID(tenantID),
+		CustomerID: cust.ID,
+		Phone:      cust.Phone.String,
+		Before:     pgtype.Timestamptz{Time: before, Valid: true},
+		LimitCount: int32(limit),
+	})
+	if err != nil {
+		h.log.Error("customer activity", "err", err, "tenant_id", tenantID)
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load activity")
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"kind":   row.Kind,
+			"status": row.Status,
+			"ref":    row.Ref,
+			"amount": row.Amount,
+			"detail": row.Detail,
+			"at":     row.At.Time.Format(time.RFC3339Nano),
+		})
+	}
+	response.JSON(w, http.StatusOK, map[string]any{
+		"events":   out,
+		"has_more": len(rows) == limit,
+	})
 }

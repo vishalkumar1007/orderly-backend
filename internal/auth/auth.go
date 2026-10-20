@@ -27,6 +27,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/secretbox"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/identity"
+	"github.com/orderly/orderly-backend/pkg/netutil"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
@@ -217,17 +218,35 @@ const (
 // auditLogin records an authentication attempt. Only the email is captured:
 // never a password: and the row is platform-scoped (no tenant).
 func (s *Service) auditLogin(ctx context.Context, email, action, result string) {
+	s.auditLoginFor(ctx, pgtype.UUID{}, nil, email, action, result)
+}
+
+// auditLoginFor is auditLogin for a known shop and, when it is theirs, user:
+// the row then shows in that shop's staff login history. A successful sign-in
+// also stamps users.last_login_at.
+func (s *Service) auditLoginFor(ctx context.Context, tenantID pgtype.UUID, user *sqlc.User, email, action, result string) {
 	addr := strings.ToLower(strings.TrimSpace(email))
 	if addr == "" || len(addr) > 254 {
 		return
 	}
-	meta, _ := json.Marshal(map[string]string{"email": addr})
+	c := netutil.ClientFrom(ctx)
+	meta, _ := json.Marshal(map[string]string{"email": addr, "ip": c.IP, "user_agent": c.UserAgent})
+	var userID pgtype.UUID
+	if user != nil && user.TenantID.Valid && user.TenantID == tenantID {
+		userID = user.ID
+	}
 	_, _ = s.q.InsertAuditLog(ctx, sqlc.InsertAuditLogParams{
+		TenantID:   tenantID,
+		UserID:     userID,
 		Action:     action,
 		EntityType: "user",
+		EntityID:   userID,
 		Metadata:   meta,
 		Result:     result,
 	})
+	if result == auditSuccess && userID.Valid {
+		_ = s.q.SetUserLastLogin(ctx, userID)
+	}
 }
 
 func (s *Service) AdminLogin(ctx context.Context, email, password string) (TokenPair, UserResponse, error) {
@@ -261,25 +280,26 @@ func (s *Service) AdminLogin(ctx context.Context, email, password string) (Token
 }
 
 func (s *Service) TenantLogin(ctx context.Context, email, password string, hostTenantID uuid.UUID) (TokenPair, UserResponse, error) {
+	host := pgutil.UUID(hostTenantID)
 	user, err := s.authenticateUser(ctx, email, password)
 	if err != nil {
-		s.auditLogin(ctx, email, "tenant.login", auditFailure)
+		s.auditLoginFor(ctx, host, nil, email, "tenant.login", auditFailure)
 		s.notifyLoginFailed(ctx, hostTenantID, email)
 		return TokenPair{}, UserResponse{}, err
 	}
-	if user.Role != identity.RoleTenantAdmin && user.Role != identity.RoleStaff {
-		s.auditLogin(ctx, email, "tenant.login", auditDenied)
+	if !identity.IsBusinessRole(user.Role) {
+		s.auditLoginFor(ctx, host, &user, email, "tenant.login", auditDenied)
 		s.notifyLoginFailed(ctx, hostTenantID, email)
 		return TokenPair{}, UserResponse{}, ErrInvalidCredentials
 	}
 	if !user.TenantID.Valid || uuid.UUID(user.TenantID.Bytes) != hostTenantID {
 		// Cross-tenant attempt: a valid account on the wrong subdomain.
-		s.auditLogin(ctx, email, "tenant.login", auditDenied)
+		s.auditLoginFor(ctx, host, &user, email, "tenant.login", auditDenied)
 		s.notifyLoginFailed(ctx, hostTenantID, email)
 		return TokenPair{}, UserResponse{}, ErrInvalidCredentials
 	}
 	if user.MustSetPassword {
-		s.auditLogin(ctx, email, "tenant.login", auditDenied)
+		s.auditLoginFor(ctx, host, &user, email, "tenant.login", auditDenied)
 		return TokenPair{}, toUserResponse(user), ErrMustSetPassword
 	}
 	pair, err := s.completeLoginMFA(ctx, user)
@@ -287,10 +307,10 @@ func (s *Service) TenantLogin(ctx context.Context, email, password string, hostT
 		if isMFAFlowError(err) {
 			return TokenPair{}, UserResponse{}, err
 		}
-		s.auditLogin(ctx, email, "tenant.login", auditFailure)
+		s.auditLoginFor(ctx, host, &user, email, "tenant.login", auditFailure)
 		return TokenPair{}, UserResponse{}, err
 	}
-	s.auditLogin(ctx, email, "tenant.login", auditSuccess)
+	s.auditLoginFor(ctx, host, &user, email, "tenant.login", auditSuccess)
 	return pair, toUserResponse(user), nil
 }
 
@@ -565,9 +585,11 @@ func (s *Service) issueTokens(ctx context.Context, user sqlc.User, mfaVerified b
 	if err != nil {
 		return TokenPair{}, err
 	}
+	client := netutil.ClientFrom(ctx)
 	_, err = s.q.InsertRefreshToken(ctx, sqlc.InsertRefreshTokenParams{
 		UserID: user.ID, TokenHash: hashToken(refresh),
 		ExpiresAt: pgtypeTimestamptz(now.Add(s.cfg.RefreshTokenTTL)),
+		Ip:        client.IP, UserAgent: client.UserAgent,
 	})
 	if err != nil {
 		return TokenPair{}, err

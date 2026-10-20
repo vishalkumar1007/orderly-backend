@@ -239,7 +239,7 @@ SELECT
 FROM products p
 JOIN categories c ON c.id = p.category_id
 LEFT JOIN inventory_items i ON i.product_id = p.id AND i.tenant_id = p.tenant_id
-WHERE p.tenant_id = $1
+WHERE p.tenant_id = $1 AND p.archived_at IS NULL
 ORDER BY c.sort_order ASC, c.name ASC, p.sort_order ASC, p.name ASC
 `
 
@@ -614,7 +614,7 @@ func (q *Queries) SetInventoryQuantity(ctx context.Context, arg SetInventoryQuan
 
 const setProductAvailable = `-- name: SetProductAvailable :exec
 UPDATE products SET is_available = $1, updated_at = now()
-WHERE id = $2 AND tenant_id = $3
+WHERE id = $2 AND tenant_id = $3 AND archived_at IS NULL
 `
 
 type SetProductAvailableParams struct {

@@ -116,7 +116,8 @@ func TestAnalyticsKeepsEveryFieldTheDashboardReads(t *testing.T) {
 		"orders_prev_30d", "revenue_prev_30d", "pending_orders", "preparing_orders", "ready_orders", "completed_today",
 		"avg_order_value_30d", "products_available", "products_unavailable", "median_prep_minutes", "avg_prep_minutes",
 		"avg_accept_minutes", "completion_rate", "cancellation_rate", "cancelled_today", "orders_by_day",
-		"orders_by_hour", "top_products", "top_categories", "payment_mix", "status_breakdown",
+		"orders_prev_by_day", "orders_by_hour", "top_products", "top_categories", "payment_mix", "status_breakdown",
+		"customers_total", "customers_new", "customers_returning", "customers_active", "repeat_customer_rate",
 	} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("analytics response lost %q: the dashboard reads it", key)
@@ -127,6 +128,14 @@ func TestAnalyticsKeepsEveryFieldTheDashboardReads(t *testing.T) {
 	}
 	if got := len(points(t, body, "orders_by_day")); got != 30 {
 		t.Errorf("orders_by_day has %d points, want one per day (30)", got)
+	}
+	if got := len(points(t, body, "orders_prev_by_day")); got != 30 {
+		t.Errorf("orders_prev_by_day has %d points, want one per day (30) so the chart can pair by index", got)
+	}
+	for _, p := range points(t, body, "orders_by_hour") {
+		if _, ok := p["revenue"]; !ok {
+			t.Fatalf("orders_by_hour lost its revenue: %v", p)
+		}
 	}
 }
 
@@ -244,6 +253,109 @@ func TestAnalyticsForAShopWithNoHistory(t *testing.T) {
 	}
 	if n := len(points(t, body, "top_products_by_revenue")); n != 0 {
 		t.Errorf("an empty shop lists %d best sellers", n)
+	}
+}
+
+// seedCustomer writes a customer with a known join date.
+func seedCustomer(t *testing.T, env *testEnv, tenantID uuid.UUID, name, phone string, daysAgo int) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := env.server.pool.QueryRow(tctx(),
+		`INSERT INTO customers (tenant_id, name, phone, created_at)
+		 VALUES ($1, $2, $3, now() - make_interval(days => $4))
+		 RETURNING id`, tenantID, name, phone, daysAgo).Scan(&id); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	return id
+}
+
+// seedCustomerOrder writes one order attached to an identified customer.
+func seedCustomerOrder(t *testing.T, env *testEnv, tenantID, customerID uuid.UUID, daysAgo int, status string) {
+	t.Helper()
+	historicOrderNumber[tenantID]++
+	if _, err := env.server.pool.Exec(tctx(),
+		`INSERT INTO orders (tenant_id, customer_id, order_number, status, subtotal, total, customer_name, customer_phone, created_at)
+		 VALUES ($1, $2, $3, $4, 100, 100, 'Member', '9000000001',
+		         date_trunc('day', now() AT TIME ZONE 'utc') + interval '12 hours' - make_interval(days => $5))`,
+		tenantID, customerID, historicOrderNumber[tenantID], status, daysAgo); err != nil {
+		t.Fatalf("seed customer order: %v", err)
+	}
+}
+
+// The comparison series is the window before the selected one, the same length
+// as the current series so the chart can pair the two by index.
+func TestPreviousPeriodSeriesAlignsWithTheWindow(t *testing.T) {
+	env := newTestEnv(t)
+	shop := analyticsShop(t, env)
+	// One order 35 days back, inside the 30 days before the default window.
+	seedHistoricOrder(t, env, shop.tenantID, 35, "COMPLETED", historicLine{uuid.MustParse(shop.productID), "Veg Momo", 120, 2})
+
+	month := shop.analytics(t, "?window=30d")
+	prev := points(t, month, "orders_prev_by_day")
+	if len(prev) != 30 {
+		t.Fatalf("previous series has %d points, want one per day (30)", len(prev))
+	}
+	orders, revenue := sumPoints(prev)
+	if orders != 1 || revenue != 240 {
+		t.Errorf("previous 30 days hold %v orders / ₹%v, want 1 / ₹240", orders, revenue)
+	}
+	if currOrders, _ := sumPoints(points(t, month, "orders_by_day")); currOrders != 5 {
+		t.Errorf("current series changed to %v orders, want 5: the comparison must not leak into it", currOrders)
+	}
+
+	// A 7-day window looks back 7 to 14 days, where the pasta order sits.
+	week := shop.analytics(t, "?window=7d")
+	if wOrders, wRevenue := sumPoints(points(t, week, "orders_prev_by_day")); wOrders != 1 || wRevenue != 1600 {
+		t.Errorf("previous 7 days hold %v orders / ₹%v, want 1 / ₹1600", wOrders, wRevenue)
+	}
+}
+
+func TestCustomerSummaryCountsIdentifiedCustomers(t *testing.T) {
+	env := newTestEnv(t)
+	shop := newShop(t, env)
+	repeat := seedCustomer(t, env, shop.tenantID, "Repeat", "9000000010", 20)
+	fresh := seedCustomer(t, env, shop.tenantID, "Fresh", "9000000011", 2)
+	regular := seedCustomer(t, env, shop.tenantID, "Regular", "9000000012", 45)
+
+	seedCustomerOrder(t, env, shop.tenantID, repeat, 10, "COMPLETED")
+	seedCustomerOrder(t, env, shop.tenantID, repeat, 2, "COMPLETED")
+	seedCustomerOrder(t, env, shop.tenantID, fresh, 1, "COMPLETED")
+	seedCustomerOrder(t, env, shop.tenantID, regular, 5, "COMPLETED")
+
+	body := shop.analytics(t, "?window=30d")
+	if body["customers_total"] != float64(3) {
+		t.Errorf("customers_total = %v, want 3", body["customers_total"])
+	}
+	if body["customers_new"] != float64(2) || body["customers_returning"] != float64(1) {
+		t.Errorf("new/returning = %v/%v, want 2/1", body["customers_new"], body["customers_returning"])
+	}
+	if body["customers_active"] != float64(3) {
+		t.Errorf("customers_active = %v, want 3", body["customers_active"])
+	}
+	if body["repeat_customer_rate"] != float64(33.3) {
+		t.Errorf("repeat_customer_rate = %v, want 33.3 (1 of 3 ordered twice)", body["repeat_customer_rate"])
+	}
+
+	// A shop whose orders carry no customer reads "-", not a misleading 0%.
+	quiet := newShop(t, env)
+	seedHistoricOrder(t, env, quiet.tenantID, 1, "COMPLETED", historicLine{uuid.MustParse(quiet.productID), "Veg Momo", 120, 1})
+	if q := quiet.analytics(t, ""); q["repeat_customer_rate"] != nil {
+		t.Errorf("repeat_customer_rate = %v with nobody identified, want null", q["repeat_customer_rate"])
+	}
+}
+
+func TestHourlyRevenueIsTheWindowsAveragePerDay(t *testing.T) {
+	env := newTestEnv(t)
+	shop := analyticsShop(t, env)
+	body := shop.analytics(t, "?window=30d")
+
+	var hours float64
+	for _, p := range points(t, body, "orders_by_hour") {
+		hours += p["revenue"].(float64)
+	}
+	_, total := sumPoints(points(t, body, "orders_by_day"))
+	if diff := hours - total/30; diff > 0.5 || diff < -0.5 {
+		t.Errorf("hourly revenue sums to ₹%.2f, want the daily average ₹%.2f", hours, total/30)
 	}
 }
 

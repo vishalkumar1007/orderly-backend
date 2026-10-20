@@ -22,6 +22,122 @@ func (q *Queries) CountCustomersByTenant(ctx context.Context, tenantID pgtype.UU
 	return column_1, err
 }
 
+const customerActivity = `-- name: CustomerActivity :many
+SELECT kind, status, ref, amount, detail, at FROM (
+    SELECT 'login'::text AS kind, e.result::text AS status, e.method::text AS ref,
+           0::float8 AS amount, (e.ip || ' ' || e.user_agent)::text AS detail, e.created_at::timestamptz AS at
+    FROM customer_login_events e
+    WHERE e.tenant_id = $1 AND e.customer_id = $2::uuid
+    UNION ALL
+    SELECT 'order', o.status, o.order_number::text, o.total::float8, o.order_type, o.created_at
+    FROM orders o
+    WHERE o.tenant_id = $1
+      AND (o.customer_id = $2::uuid OR ($3::text <> '' AND o.customer_phone = $3::text))
+    UNION ALL
+    SELECT 'appointment', a.status, COALESCE(s.name, ''), 0, a.scheduled_at::text, a.created_at
+    FROM appointments a LEFT JOIN services s ON s.id = a.service_id
+    WHERE a.tenant_id = $1 AND a.customer_id = $2::uuid
+    UNION ALL
+    SELECT 'stay', rv.status, rv.check_in_date::text, 0, rv.check_out_date::text, rv.created_at
+    FROM reservations rv
+    WHERE rv.tenant_id = $1 AND rv.customer_id = $2::uuid
+    UNION ALL
+    SELECT 'admin', l.action, COALESCE(u.name, ''), 0, '', l.created_at
+    FROM audit_logs l LEFT JOIN users u ON u.id = l.user_id
+    WHERE l.tenant_id = $1 AND l.entity_type = 'customer' AND l.entity_id = $2::uuid
+) t
+WHERE t.at < $4::timestamptz
+ORDER BY t.at DESC
+LIMIT $5
+`
+
+type CustomerActivityParams struct {
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	CustomerID pgtype.UUID        `json:"customer_id"`
+	Phone      string             `json:"phone"`
+	Before     pgtype.Timestamptz `json:"before"`
+	LimitCount int32              `json:"limit_count"`
+}
+
+type CustomerActivityRow struct {
+	Kind   string             `json:"kind"`
+	Status string             `json:"status"`
+	Ref    string             `json:"ref"`
+	Amount float64            `json:"amount"`
+	Detail string             `json:"detail"`
+	At     pgtype.Timestamptz `json:"at"`
+}
+
+// Customer profile timeline: sign-ins, orders, bookings, stays and shop
+// actions, newest first. Empty kinds cost nothing for shops without them.
+func (q *Queries) CustomerActivity(ctx context.Context, arg CustomerActivityParams) ([]CustomerActivityRow, error) {
+	rows, err := q.db.Query(ctx, customerActivity,
+		arg.TenantID,
+		arg.CustomerID,
+		arg.Phone,
+		arg.Before,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CustomerActivityRow{}
+	for rows.Next() {
+		var i CustomerActivityRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.Status,
+			&i.Ref,
+			&i.Amount,
+			&i.Detail,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const customerOrderStats = `-- name: CustomerOrderStats :one
+SELECT COUNT(*)::bigint AS order_count,
+       COALESCE(SUM(total), 0)::float8 AS total_spend,
+       MIN(created_at)::timestamptz AS first_order_at,
+       MAX(created_at)::timestamptz AS last_order_at
+FROM orders
+WHERE tenant_id = $1
+  AND (customer_id = $2::uuid OR ($3::text <> '' AND customer_phone = $3::text))
+`
+
+type CustomerOrderStatsParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	CustomerID pgtype.UUID `json:"customer_id"`
+	Phone      string      `json:"phone"`
+}
+
+type CustomerOrderStatsRow struct {
+	OrderCount   int64              `json:"order_count"`
+	TotalSpend   float64            `json:"total_spend"`
+	FirstOrderAt pgtype.Timestamptz `json:"first_order_at"`
+	LastOrderAt  pgtype.Timestamptz `json:"last_order_at"`
+}
+
+func (q *Queries) CustomerOrderStats(ctx context.Context, arg CustomerOrderStatsParams) (CustomerOrderStatsRow, error) {
+	row := q.db.QueryRow(ctx, customerOrderStats, arg.TenantID, arg.CustomerID, arg.Phone)
+	var i CustomerOrderStatsRow
+	err := row.Scan(
+		&i.OrderCount,
+		&i.TotalSpend,
+		&i.FirstOrderAt,
+		&i.LastOrderAt,
+	)
+	return i, err
+}
+
 const getCustomerByID = `-- name: GetCustomerByID :one
 SELECT id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email FROM customers
 WHERE id = $1 AND tenant_id = $2
@@ -78,8 +194,36 @@ func (q *Queries) GetCustomerByPhone(ctx context.Context, arg GetCustomerByPhone
 	return i, err
 }
 
+const insertCustomerLoginEvent = `-- name: InsertCustomerLoginEvent :exec
+INSERT INTO customer_login_events (tenant_id, customer_id, identifier, method, result, ip, user_agent)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertCustomerLoginEventParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	CustomerID pgtype.UUID `json:"customer_id"`
+	Identifier string      `json:"identifier"`
+	Method     string      `json:"method"`
+	Result     string      `json:"result"`
+	Ip         string      `json:"ip"`
+	UserAgent  string      `json:"user_agent"`
+}
+
+func (q *Queries) InsertCustomerLoginEvent(ctx context.Context, arg InsertCustomerLoginEventParams) error {
+	_, err := q.db.Exec(ctx, insertCustomerLoginEvent,
+		arg.TenantID,
+		arg.CustomerID,
+		arg.Identifier,
+		arg.Method,
+		arg.Result,
+		arg.Ip,
+		arg.UserAgent,
+	)
+	return err
+}
+
 const listCustomerOrders = `-- name: ListCustomerOrders :many
-SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id FROM orders
+SELECT id, tenant_id, customer_id, order_number, status, order_type, subtotal, tax, discount, total, customer_name, customer_phone, created_at, updated_at, customer_email, notes, estimated_ready_at, accepted_at, preparing_at, ready_at, completed_at, cancelled_at, cancel_reason, source, client_token, packaging_fee, table_id, marketing_campaign_id, marketing_link_id, promotion_id, coupon_code, loyalty_points_used FROM orders
 WHERE tenant_id = $1 AND customer_id = $2
 ORDER BY created_at DESC
 LIMIT $3
@@ -128,6 +272,11 @@ func (q *Queries) ListCustomerOrders(ctx context.Context, arg ListCustomerOrders
 			&i.ClientToken,
 			&i.PackagingFee,
 			&i.TableID,
+			&i.MarketingCampaignID,
+			&i.MarketingLinkID,
+			&i.PromotionID,
+			&i.CouponCode,
+			&i.LoyaltyPointsUsed,
 		); err != nil {
 			return nil, err
 		}
@@ -139,162 +288,104 @@ func (q *Queries) ListCustomerOrders(ctx context.Context, arg ListCustomerOrders
 	return items, nil
 }
 
-const listCustomersByTenant = `-- name: ListCustomersByTenant :many
-SELECT
-    c.id,
-    c.name,
-    c.phone,
-    c.is_blocked,
-    c.last_login_at,
-    c.created_at,
-    c.updated_at,
-    (
-        SELECT COUNT(*)::bigint
-        FROM orders o
-        WHERE o.tenant_id = c.tenant_id
-          AND (
-              o.customer_id = c.id
-              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
-          )
-    ) AS order_count,
-    (
-        SELECT COALESCE(SUM(o.total), 0)::float8
-        FROM orders o
-        WHERE o.tenant_id = c.tenant_id
-          AND (
-              o.customer_id = c.id
-              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
-          )
-    ) AS total_spend,
-    (
-        SELECT MAX(o.created_at)
-        FROM orders o
-        WHERE o.tenant_id = c.tenant_id
-          AND (
-              o.customer_id = c.id
-              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
-          )
-    ) AS last_order_at
-FROM customers c
-WHERE c.tenant_id = $1
-ORDER BY COALESCE(
-    (
-        SELECT MAX(o.created_at)
-        FROM orders o
-        WHERE o.tenant_id = c.tenant_id
-          AND (
-              o.customer_id = c.id
-              OR (c.phone IS NOT NULL AND o.customer_phone = c.phone)
-          )
-    ),
-    c.created_at
-) DESC
-LIMIT $3
-OFFSET $2
+const listShopCustomers = `-- name: ListShopCustomers :many
+WITH ord AS (
+    SELECT COALESCE(o.customer_id, cp.id) AS cid, o.customer_phone, o.customer_name, o.total, o.created_at
+    FROM orders o
+    LEFT JOIN customers cp
+        ON o.customer_id IS NULL AND cp.tenant_id = o.tenant_id AND cp.phone = o.customer_phone
+    WHERE o.tenant_id = $4
+),
+reg AS (
+    SELECT cid, COUNT(*)::bigint AS n, SUM(total)::float8 AS spend, MAX(created_at)::timestamptz AS last_at
+    FROM ord WHERE cid IS NOT NULL GROUP BY cid
+),
+guest AS (
+    SELECT customer_phone, MAX(customer_name)::text AS name, COUNT(*)::bigint AS n,
+           SUM(total)::float8 AS spend, MAX(created_at)::timestamptz AS last_at, MIN(created_at)::timestamptz AS first_at
+    FROM ord WHERE cid IS NULL AND TRIM(customer_phone) <> '' GROUP BY customer_phone
+),
+all_rows AS (
+    SELECT c.id::uuid AS id, 'registered'::text AS kind, c.name::text AS name,
+           COALESCE(c.phone, '')::text AS phone, COALESCE(c.email, '')::text AS email,
+           c.is_blocked::bool AS is_blocked, c.last_login_at::timestamptz AS last_login_at,
+           c.created_at::timestamptz AS created_at, COALESCE(r.n, 0)::bigint AS order_count,
+           COALESCE(r.spend, 0)::float8 AS total_spend, r.last_at::timestamptz AS last_order_at
+    FROM customers c LEFT JOIN reg r ON r.cid = c.id
+    WHERE c.tenant_id = $4
+    UNION ALL
+    SELECT NULL::uuid, 'guest', g.name, g.customer_phone, '', FALSE, NULL::timestamptz,
+           g.first_at, g.n, g.spend, g.last_at
+    FROM guest g
+)
+SELECT a.id, a.kind, a.name, a.phone, a.email, a.is_blocked, a.last_login_at, a.created_at, a.order_count, a.total_spend, a.last_order_at,
+       COUNT(*) OVER ()::bigint AS total_count,
+       (COUNT(*) FILTER (WHERE a.kind = 'registered') OVER ())::bigint AS registered_count
+FROM all_rows a
+WHERE $1::text = ''
+   OR a.name ILIKE '%' || $1::text || '%'
+   OR a.phone LIKE '%' || $1::text || '%'
+   OR a.email ILIKE '%' || $1::text || '%'
+ORDER BY COALESCE(a.last_order_at, a.created_at) DESC, a.phone
+LIMIT $3 OFFSET $2
 `
 
-type ListCustomersByTenantParams struct {
-	TenantID    pgtype.UUID `json:"tenant_id"`
+type ListShopCustomersParams struct {
+	Q           string      `json:"q"`
 	OffsetCount int32       `json:"offset_count"`
 	LimitCount  int32       `json:"limit_count"`
+	TenantID    pgtype.UUID `json:"tenant_id"`
 }
 
-type ListCustomersByTenantRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	Name        string             `json:"name"`
-	Phone       pgtype.Text        `json:"phone"`
-	IsBlocked   bool               `json:"is_blocked"`
-	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	OrderCount  int64              `json:"order_count"`
-	TotalSpend  float64            `json:"total_spend"`
-	LastOrderAt interface{}        `json:"last_order_at"`
+type ListShopCustomersRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	Kind            string             `json:"kind"`
+	Name            string             `json:"name"`
+	Phone           string             `json:"phone"`
+	Email           string             `json:"email"`
+	IsBlocked       bool               `json:"is_blocked"`
+	LastLoginAt     pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	OrderCount      int64              `json:"order_count"`
+	TotalSpend      float64            `json:"total_spend"`
+	LastOrderAt     pgtype.Timestamptz `json:"last_order_at"`
+	TotalCount      int64              `json:"total_count"`
+	RegisteredCount int64              `json:"registered_count"`
 }
 
-// Shop CRM: signed-in / known customers with order stats (matched by id or phone).
-func (q *Queries) ListCustomersByTenant(ctx context.Context, arg ListCustomersByTenantParams) ([]ListCustomersByTenantRow, error) {
-	rows, err := q.db.Query(ctx, listCustomersByTenant, arg.TenantID, arg.OffsetCount, arg.LimitCount)
+// Shop CRM list: registered customers and phone-only guests in one page.
+// Each order is attributed once: to its customer_id, else to the registered
+// customer with that phone, else to a guest keyed by phone.
+// ponytail: aggregates the tenant's whole order history per call; move to a
+// per-customer stats table if a shop passes ~100k orders.
+func (q *Queries) ListShopCustomers(ctx context.Context, arg ListShopCustomersParams) ([]ListShopCustomersRow, error) {
+	rows, err := q.db.Query(ctx, listShopCustomers,
+		arg.Q,
+		arg.OffsetCount,
+		arg.LimitCount,
+		arg.TenantID,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListCustomersByTenantRow{}
+	items := []ListShopCustomersRow{}
 	for rows.Next() {
-		var i ListCustomersByTenantRow
+		var i ListShopCustomersRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.Kind,
 			&i.Name,
 			&i.Phone,
+			&i.Email,
 			&i.IsBlocked,
 			&i.LastLoginAt,
 			&i.CreatedAt,
-			&i.UpdatedAt,
 			&i.OrderCount,
 			&i.TotalSpend,
 			&i.LastOrderAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listGuestCustomersFromOrders = `-- name: ListGuestCustomersFromOrders :many
-SELECT
-    MAX(o.customer_name) AS name,
-    o.customer_phone AS phone,
-    COUNT(*)::bigint AS order_count,
-    COALESCE(SUM(o.total), 0)::float8 AS total_spend,
-    MAX(o.created_at) AS last_order_at,
-    MIN(o.created_at) AS first_seen_at
-FROM orders o
-WHERE o.tenant_id = $1
-  AND NULLIF(TRIM(o.customer_phone), '') IS NOT NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM customers c
-      WHERE c.tenant_id = o.tenant_id AND c.phone = o.customer_phone
-  )
-GROUP BY o.customer_phone
-ORDER BY MAX(o.created_at) DESC
-LIMIT $2
-`
-
-type ListGuestCustomersFromOrdersParams struct {
-	TenantID   pgtype.UUID `json:"tenant_id"`
-	LimitCount int32       `json:"limit_count"`
-}
-
-type ListGuestCustomersFromOrdersRow struct {
-	Name        interface{} `json:"name"`
-	Phone       string      `json:"phone"`
-	OrderCount  int64       `json:"order_count"`
-	TotalSpend  float64     `json:"total_spend"`
-	LastOrderAt interface{} `json:"last_order_at"`
-	FirstSeenAt interface{} `json:"first_seen_at"`
-}
-
-// Guests who placed orders but never got a customers row (no phone login).
-func (q *Queries) ListGuestCustomersFromOrders(ctx context.Context, arg ListGuestCustomersFromOrdersParams) ([]ListGuestCustomersFromOrdersRow, error) {
-	rows, err := q.db.Query(ctx, listGuestCustomersFromOrders, arg.TenantID, arg.LimitCount)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListGuestCustomersFromOrdersRow{}
-	for rows.Next() {
-		var i ListGuestCustomersFromOrdersRow
-		if err := rows.Scan(
-			&i.Name,
-			&i.Phone,
-			&i.OrderCount,
-			&i.TotalSpend,
-			&i.LastOrderAt,
-			&i.FirstSeenAt,
+			&i.TotalCount,
+			&i.RegisteredCount,
 		); err != nil {
 			return nil, err
 		}
@@ -334,6 +425,24 @@ func (q *Queries) SetCustomerBlocked(ctx context.Context, arg SetCustomerBlocked
 		&i.Email,
 	)
 	return i, err
+}
+
+const setCustomerEmailIfEmpty = `-- name: SetCustomerEmailIfEmpty :exec
+UPDATE customers c SET email = $1, updated_at = now()
+WHERE c.id = $2 AND c.tenant_id = $3 AND c.email IS NULL
+  AND NOT EXISTS (SELECT 1 FROM customers o WHERE o.tenant_id = c.tenant_id AND lower(o.email) = lower($1))
+`
+
+type SetCustomerEmailIfEmptyParams struct {
+	Email    pgtype.Text `json:"email"`
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+// Checkout opt-in may bring an email a phone-only customer never gave us.
+func (q *Queries) SetCustomerEmailIfEmpty(ctx context.Context, arg SetCustomerEmailIfEmptyParams) error {
+	_, err := q.db.Exec(ctx, setCustomerEmailIfEmpty, arg.Email, arg.ID, arg.TenantID)
+	return err
 }
 
 const updateCustomerProfile = `-- name: UpdateCustomerProfile :one

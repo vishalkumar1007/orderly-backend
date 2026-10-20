@@ -11,6 +11,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const tenantCustomerSummary = `-- name: TenantCustomerSummary :one
+WITH active AS (
+    SELECT o.customer_id, COUNT(*)::bigint AS order_count
+    FROM orders o
+    WHERE o.tenant_id = $1
+        AND o.customer_id IS NOT NULL
+        AND o.status <> 'CANCELLED'
+        AND o.created_at >= now() - $2::interval
+    GROUP BY o.customer_id
+)
+SELECT
+    (SELECT COUNT(*)::bigint FROM customers c
+      WHERE c.tenant_id = $1) AS total,
+    -- New and returning split the customers who ordered in the window, so the
+    -- two always add up to ActiveCustomers.
+    (SELECT COUNT(*)::bigint FROM active a
+      JOIN customers c ON c.id = a.customer_id
+      WHERE c.created_at >= now() - $2::interval) AS new_customers,
+    (SELECT COUNT(*)::bigint FROM active a
+      JOIN customers c ON c.id = a.customer_id
+      WHERE c.created_at < now() - $2::interval) AS returning_customers,
+    (SELECT COUNT(*)::bigint FROM active) AS active_customers,
+    (SELECT COUNT(*)::bigint FROM active WHERE order_count > 1) AS repeat_customers
+`
+
+type TenantCustomerSummaryParams struct {
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+}
+
+type TenantCustomerSummaryRow struct {
+	Total              int64 `json:"total"`
+	NewCustomers       int64 `json:"new_customers"`
+	ReturningCustomers int64 `json:"returning_customers"`
+	ActiveCustomers    int64 `json:"active_customers"`
+	RepeatCustomers    int64 `json:"repeat_customers"`
+}
+
+// Who the window's orders belonged to. Only identified customers count: a
+// takeaway order with no customer attached says nothing about loyalty.
+func (q *Queries) TenantCustomerSummary(ctx context.Context, arg TenantCustomerSummaryParams) (TenantCustomerSummaryRow, error) {
+	row := q.db.QueryRow(ctx, tenantCustomerSummary, arg.TenantID, arg.Days)
+	var i TenantCustomerSummaryRow
+	err := row.Scan(
+		&i.Total,
+		&i.NewCustomers,
+		&i.ReturningCustomers,
+		&i.ActiveCustomers,
+		&i.RepeatCustomers,
+	)
+	return i, err
+}
+
 const tenantOperationsSummary = `-- name: TenantOperationsSummary :one
 SELECT
     -- Median rather than mean: one forgotten ticket left open for an hour
@@ -73,6 +126,60 @@ func (q *Queries) TenantOperationsSummary(ctx context.Context, arg TenantOperati
 	return i, err
 }
 
+const tenantOrdersByDayPrevious = `-- name: TenantOrdersByDayPrevious :many
+SELECT
+    (created_at AT TIME ZONE $1::text)::date AS day,
+    COUNT(*)::bigint AS order_count,
+    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
+FROM orders
+WHERE tenant_id = $2
+    AND created_at >= now() - $3::interval - $4::interval
+    AND created_at < now() - $4::interval
+GROUP BY 1
+ORDER BY 1 ASC
+`
+
+type TenantOrdersByDayPreviousParams struct {
+	Tz       string          `json:"tz"`
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+	Back     pgtype.Interval `json:"back"`
+}
+
+type TenantOrdersByDayPreviousRow struct {
+	Day        pgtype.Date `json:"day"`
+	OrderCount int64       `json:"order_count"`
+	Revenue    string      `json:"revenue"`
+}
+
+// The window immediately before the selected one, bucketed by the same shop
+// clock. The dashboard pairs these points with the current window by index so
+// "up on last period" is drawn from real data rather than inferred.
+func (q *Queries) TenantOrdersByDayPrevious(ctx context.Context, arg TenantOrdersByDayPreviousParams) ([]TenantOrdersByDayPreviousRow, error) {
+	rows, err := q.db.Query(ctx, tenantOrdersByDayPrevious,
+		arg.Tz,
+		arg.TenantID,
+		arg.Days,
+		arg.Back,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TenantOrdersByDayPreviousRow{}
+	for rows.Next() {
+		var i TenantOrdersByDayPreviousRow
+		if err := rows.Scan(&i.Day, &i.OrderCount, &i.Revenue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const tenantOrdersByDayRange = `-- name: TenantOrdersByDayRange :many
 
 SELECT
@@ -126,7 +233,8 @@ func (q *Queries) TenantOrdersByDayRange(ctx context.Context, arg TenantOrdersBy
 const tenantOrdersByHour = `-- name: TenantOrdersByHour :many
 SELECT
     EXTRACT(HOUR FROM created_at AT TIME ZONE $1::text)::int AS hour_of_day,
-    COUNT(*)::bigint AS order_count
+    COUNT(*)::bigint AS order_count,
+    COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
 FROM orders
 WHERE tenant_id = $2
     AND created_at >= now() - $3::interval
@@ -141,12 +249,15 @@ type TenantOrdersByHourParams struct {
 }
 
 type TenantOrdersByHourRow struct {
-	HourOfDay  int32 `json:"hour_of_day"`
-	OrderCount int64 `json:"order_count"`
+	HourOfDay  int32  `json:"hour_of_day"`
+	OrderCount int64  `json:"order_count"`
+	Revenue    string `json:"revenue"`
 }
 
 // Orders by hour of day on the shop's own clock, averaged over the window in
 // Go, so a single quiet Tuesday does not read as a permanently quiet hour.
+// Revenue travels with the count so the rhythm chart can show what an hour is
+// worth, not just how busy it was.
 func (q *Queries) TenantOrdersByHour(ctx context.Context, arg TenantOrdersByHourParams) ([]TenantOrdersByHourRow, error) {
 	rows, err := q.db.Query(ctx, tenantOrdersByHour, arg.Tz, arg.TenantID, arg.Days)
 	if err != nil {
@@ -156,7 +267,7 @@ func (q *Queries) TenantOrdersByHour(ctx context.Context, arg TenantOrdersByHour
 	items := []TenantOrdersByHourRow{}
 	for rows.Next() {
 		var i TenantOrdersByHourRow
-		if err := rows.Scan(&i.HourOfDay, &i.OrderCount); err != nil {
+		if err := rows.Scan(&i.HourOfDay, &i.OrderCount, &i.Revenue); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

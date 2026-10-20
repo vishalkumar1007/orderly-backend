@@ -89,9 +89,28 @@ FROM users
 WHERE tenant_id = sqlc.arg(tenant_id);
 
 -- name: InsertRefreshToken :one
-INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-VALUES ($1, $2, $3)
+INSERT INTO refresh_tokens (user_id, token_hash, expires_at, ip, user_agent)
+VALUES ($1, $2, $3, sqlc.arg(ip), sqlc.arg(user_agent))
 RETURNING *;
+
+-- name: SetUserLastLogin :exec
+UPDATE users SET last_login_at = now() WHERE id = $1;
+
+-- Each live refresh token is one signed-in device. Rotation replaces the row,
+-- so created_at is when that device was last active.
+-- name: ListUserSessions :many
+SELECT id, ip, user_agent, created_at, expires_at
+FROM refresh_tokens
+WHERE user_id = $1 AND expires_at > now()
+ORDER BY created_at DESC;
+
+-- name: ListUserLogins :many
+SELECT action, result, metadata, created_at
+FROM audit_logs
+WHERE tenant_id = sqlc.arg(tenant_id) AND user_id = sqlc.arg(user_id)
+  AND action IN ('tenant.login', 'mfa.verify')
+ORDER BY created_at DESC
+LIMIT sqlc.arg(row_limit);
 
 -- name: GetRefreshTokenByHash :one
 SELECT * FROM refresh_tokens

@@ -64,6 +64,7 @@ func main() {
 	}
 
 	go api.StartNotificationWorker(ctx)
+	go api.StartMarketingWorker(ctx)
 	go api.StartPaymentSweeper(ctx)
 
 	go func() {

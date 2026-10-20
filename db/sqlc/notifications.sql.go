@@ -72,7 +72,7 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 }
 
 const listActivePlatformUsers = `-- name: ListActivePlatformUsers :many
-SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled FROM users
+SELECT id, tenant_id, name, email, phone, password_hash, role, status, created_at, updated_at, must_set_password, invite_token_hash, console_theme, mfa_enabled, last_login_at FROM users
 WHERE tenant_id IS NULL AND status = 'ACTIVE'
 `
 
@@ -103,6 +103,7 @@ func (q *Queries) ListActivePlatformUsers(ctx context.Context) ([]User, error) {
 			&i.InviteTokenHash,
 			&i.ConsoleTheme,
 			&i.MfaEnabled,
+			&i.LastLoginAt,
 		); err != nil {
 			return nil, err
 		}

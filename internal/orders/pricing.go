@@ -81,6 +81,23 @@ type Totals struct {
 	Total     float64 `json:"total"`
 }
 
+// WithDiscount applies an offer or points discount to priced totals. Tax and
+// packaging are unchanged: the discount is the shop's money, not the state's.
+func (t Totals) WithDiscount(discount float64) Totals {
+	if discount < 0 {
+		discount = 0
+	}
+	if discount > t.Subtotal {
+		discount = t.Subtotal
+	}
+	t.Discount = money(discount)
+	t.Total = money(t.Subtotal + t.Tax + t.Packaging - t.Discount)
+	if t.Total < 0 {
+		t.Total = 0
+	}
+	return t
+}
+
 // Costing is the tenant's pricing inputs for an order.
 type Costing struct {
 	TaxPercent   float64

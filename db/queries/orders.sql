@@ -109,8 +109,8 @@ WHERE id = $1 AND tenant_id = $2 AND status = sqlc.arg(expected_status)
 RETURNING *;
 
 -- name: AppendOrderStatusHistory :one
-INSERT INTO order_status_history (tenant_id, order_id, from_status, to_status, actor)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO order_status_history (tenant_id, order_id, from_status, to_status, actor, actor_user_id)
+VALUES ($1, $2, $3, $4, $5, sqlc.narg(actor_user_id))
 RETURNING *;
 
 -- name: ListOrderStatusHistory :many
@@ -146,7 +146,25 @@ RETURNING *;
 -- name: GetPaymentByOrderID :one
 SELECT * FROM payments
 WHERE order_id = $1 AND tenant_id = $2
+ORDER BY created_at DESC
 LIMIT 1;
+
+-- Batched lookups for order lists: one query per kind instead of one per order.
+-- name: ListOrderItemsByOrderIDs :many
+SELECT * FROM order_items
+WHERE order_id = ANY(sqlc.arg(order_ids)::uuid[])
+ORDER BY order_id, created_at ASC;
+
+-- name: ListPaymentsByOrderIDs :many
+-- Latest payment per order, same pick as GetPaymentByOrderID.
+SELECT DISTINCT ON (order_id) * FROM payments
+WHERE tenant_id = sqlc.arg(tenant_id) AND order_id = ANY(sqlc.arg(order_ids)::uuid[])
+ORDER BY order_id, created_at DESC;
+
+-- name: ListStatusHistoryByOrderIDs :many
+SELECT * FROM order_status_history
+WHERE tenant_id = sqlc.arg(tenant_id) AND order_id = ANY(sqlc.arg(order_ids)::uuid[])
+ORDER BY order_id, created_at ASC;
 
 -- name: GetPaymentByID :one
 SELECT * FROM payments

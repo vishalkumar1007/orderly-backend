@@ -29,15 +29,12 @@ RETURNING *;
 DELETE FROM categories
 WHERE id = $1 AND tenant_id = $2;
 
--- name: UpdateCategorySortOrder :exec
-UPDATE categories
-SET sort_order = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2;
-
 -- name: CountProductsInCategory :one
+-- Archived products do not count: the owner cannot see them. They still block
+-- the delete (past orders), which DeleteCategory reports.
 SELECT COUNT(*)::bigint AS count
 FROM products
-WHERE tenant_id = $1 AND category_id = $2;
+WHERE tenant_id = $1 AND category_id = $2 AND archived_at IS NULL;
 
 -- name: MoveProductsToCategory :exec
 UPDATE products
@@ -55,7 +52,7 @@ RETURNING *;
 
 -- name: ListProductsByTenant :many
 SELECT * FROM products
-WHERE tenant_id = $1
+WHERE tenant_id = $1 AND archived_at IS NULL
 ORDER BY sort_order ASC, name ASC;
 
 -- name: TenantHasActiveCategory :one
@@ -68,7 +65,7 @@ SELECT EXISTS(
 -- name: TenantHasAvailableProduct :one
 SELECT EXISTS(
     SELECT 1 FROM products
-    WHERE tenant_id = $1 AND is_available = true
+    WHERE tenant_id = $1 AND is_available = true AND archived_at IS NULL
 );
 
 -- name: GetProductByID :one
@@ -95,10 +92,35 @@ SET
 WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id)
 RETURNING *;
 
--- name: UpdateProductSortOrder :exec
+-- name: ReorderProducts :exec
+-- One statement for the whole list: position in the array is the sort order.
+UPDATE products p
+SET sort_order = o.ord - 1, updated_at = now()
+FROM unnest(sqlc.arg(ids)::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE p.id = o.id AND p.tenant_id = sqlc.arg(tenant_id);
+
+-- name: ReorderCategories :exec
+UPDATE categories c
+SET sort_order = o.ord - 1, updated_at = now()
+FROM unnest(sqlc.arg(ids)::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE c.id = o.id AND c.tenant_id = sqlc.arg(tenant_id);
+
+-- name: ArchiveProducts :execrows
+-- Archived products leave the catalogue and the storefront but keep their
+-- order history.
 UPDATE products
-SET sort_order = $3, updated_at = now()
-WHERE id = $1 AND tenant_id = $2;
+SET archived_at = now(), is_available = FALSE, is_featured = FALSE, is_popular = FALSE, updated_at = now()
+WHERE tenant_id = sqlc.arg(tenant_id) AND id = ANY(sqlc.arg(ids)::uuid[]) AND archived_at IS NULL;
+
+-- name: SetProductsAvailable :execrows
+UPDATE products
+SET is_available = sqlc.arg(is_available), updated_at = now()
+WHERE tenant_id = sqlc.arg(tenant_id) AND id = ANY(sqlc.arg(ids)::uuid[]) AND archived_at IS NULL;
+
+-- name: MoveProductsByIDs :execrows
+UPDATE products
+SET category_id = sqlc.arg(category_id), updated_at = now()
+WHERE tenant_id = sqlc.arg(tenant_id) AND id = ANY(sqlc.arg(ids)::uuid[]) AND archived_at IS NULL;
 
 -- name: DeleteProduct :exec
 DELETE FROM products
@@ -111,7 +133,7 @@ ORDER BY sort_order ASC, name ASC;
 
 -- name: ListAvailableProductsByTenant :many
 SELECT * FROM products
-WHERE tenant_id = $1 AND is_available = TRUE
+WHERE tenant_id = $1 AND is_available = TRUE AND archived_at IS NULL
 ORDER BY sort_order ASC, name ASC;
 
 -- Home page merchandising queries. Both are scoped to the tenant, so a
@@ -120,6 +142,7 @@ ORDER BY sort_order ASC, name ASC;
 SELECT * FROM products
 WHERE tenant_id = sqlc.arg(tenant_id)
   AND is_available = TRUE
+  AND archived_at IS NULL
   AND is_featured = TRUE
 ORDER BY sort_order ASC, name ASC
 LIMIT sqlc.arg(limit_count);
@@ -128,6 +151,7 @@ LIMIT sqlc.arg(limit_count);
 SELECT * FROM products
 WHERE tenant_id = sqlc.arg(tenant_id)
   AND is_available = TRUE
+  AND archived_at IS NULL
   AND is_popular = TRUE
 ORDER BY sort_order ASC, name ASC
 LIMIT sqlc.arg(limit_count);
@@ -136,4 +160,4 @@ LIMIT sqlc.arg(limit_count);
 -- Products in use against the plan's max_products.
 SELECT COUNT(*)::bigint
 FROM products
-WHERE tenant_id = sqlc.arg(tenant_id);
+WHERE tenant_id = sqlc.arg(tenant_id) AND archived_at IS NULL;
