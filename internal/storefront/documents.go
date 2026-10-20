@@ -409,8 +409,11 @@ func (h Hours) Status(now time.Time) Status {
 			// the whole day does.
 			st.TodayCloses = clock(r.close)
 			st.Detail = "Open until " + clock(r.close)
-			if len(todayRanges) > 1 {
-				st.Detail += " · closed for a break, back at " + clock(r.close)
+			for _, n := range todayRanges {
+				if n.open > r.close {
+					st.Detail += ", then back at " + clock(n.open)
+					break
+				}
 			}
 			return st
 		}
@@ -420,7 +423,7 @@ func (h Hours) Status(now time.Time) Status {
 	st.Open = false
 	st.Label = "Closed"
 	if next, day, ok := h.nextWindow(today, minute); ok {
-		st.Detail = "Closed · opens " + clock(next.open)
+		st.Detail = "Closed, opens " + clock(next.open)
 		if day != today {
 			st.Detail += " " + dayLabels[day]
 		}
@@ -509,3 +512,6 @@ func pad2(n int) string {
 	}
 	return itoa(n)
 }
+
+// Location is the business's timezone, UTC when none is set.
+func (h Hours) Location() *time.Location { return h.locationOrUTC() }

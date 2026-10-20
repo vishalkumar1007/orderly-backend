@@ -25,7 +25,7 @@ const ensureStorefrontSettings = `-- name: EnsureStorefrontSettings :one
 INSERT INTO tenant_storefront_settings (tenant_id, business_name, phone, address, logo_url, favicon_url, tagline)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (tenant_id) DO UPDATE SET updated_at = tenant_storefront_settings.updated_at
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type EnsureStorefrontSettingsParams struct {
@@ -94,6 +94,8 @@ func (q *Queries) EnsureStorefrontSettings(ctx context.Context, arg EnsureStoref
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -130,11 +132,13 @@ SELECT
     s.hero_image_url,
     s.product_layout,
     s.filter_style,
+    s.surface_style,
     s.customer_theme_switch_enabled,
     s.ordering_enabled,
     s.closed_message,
     s.customer_login_enabled,
     s.customer_login_mode,
+    s.customer_login_methods,
     s.prep_time_minutes,
     s.tax_percent,
     s.packaging_fee,
@@ -180,11 +184,13 @@ type GetStorefrontConfigRow struct {
 	HeroImageUrl               string             `json:"hero_image_url"`
 	ProductLayout              string             `json:"product_layout"`
 	FilterStyle                string             `json:"filter_style"`
+	SurfaceStyle               string             `json:"surface_style"`
 	CustomerThemeSwitchEnabled bool               `json:"customer_theme_switch_enabled"`
 	OrderingEnabled            bool               `json:"ordering_enabled"`
 	ClosedMessage              string             `json:"closed_message"`
 	CustomerLoginEnabled       bool               `json:"customer_login_enabled"`
 	CustomerLoginMode          string             `json:"customer_login_mode"`
+	CustomerLoginMethods       []string           `json:"customer_login_methods"`
 	PrepTimeMinutes            int32              `json:"prep_time_minutes"`
 	TaxPercent                 pgtype.Numeric     `json:"tax_percent"`
 	PackagingFee               pgtype.Numeric     `json:"packaging_fee"`
@@ -231,11 +237,13 @@ func (q *Queries) GetStorefrontConfig(ctx context.Context, tenantID pgtype.UUID)
 		&i.HeroImageUrl,
 		&i.ProductLayout,
 		&i.FilterStyle,
+		&i.SurfaceStyle,
 		&i.CustomerThemeSwitchEnabled,
 		&i.OrderingEnabled,
 		&i.ClosedMessage,
 		&i.CustomerLoginEnabled,
 		&i.CustomerLoginMode,
+		&i.CustomerLoginMethods,
 		&i.PrepTimeMinutes,
 		&i.TaxPercent,
 		&i.PackagingFee,
@@ -267,7 +275,7 @@ func (q *Queries) GetStorefrontDraft(ctx context.Context, tenantID pgtype.UUID) 
 }
 
 const getStorefrontSettings = `-- name: GetStorefrontSettings :one
-SELECT tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled FROM tenant_storefront_settings
+SELECT tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style FROM tenant_storefront_settings
 WHERE tenant_id = $1
 LIMIT 1
 `
@@ -312,6 +320,8 @@ func (q *Queries) GetStorefrontSettings(ctx context.Context, tenantID pgtype.UUI
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -368,18 +378,20 @@ SET
     ordering_enabled       = COALESCE($1, ordering_enabled),
     closed_message         = COALESCE($2, closed_message),
     customer_login_mode    = COALESCE($3, customer_login_mode),
-    prep_time_minutes      = COALESCE($4, prep_time_minutes),
+    customer_login_methods = COALESCE($4::text[], customer_login_methods),
+    prep_time_minutes      = COALESCE($5, prep_time_minutes),
     updated_at             = now()
-WHERE tenant_id = $5
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+WHERE tenant_id = $6
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontBehaviourParams struct {
-	OrderingEnabled   pgtype.Bool `json:"ordering_enabled"`
-	ClosedMessage     pgtype.Text `json:"closed_message"`
-	CustomerLoginMode pgtype.Text `json:"customer_login_mode"`
-	PrepTimeMinutes   pgtype.Int4 `json:"prep_time_minutes"`
-	TenantID          pgtype.UUID `json:"tenant_id"`
+	OrderingEnabled      pgtype.Bool `json:"ordering_enabled"`
+	ClosedMessage        pgtype.Text `json:"closed_message"`
+	CustomerLoginMode    pgtype.Text `json:"customer_login_mode"`
+	CustomerLoginMethods []string    `json:"customer_login_methods"`
+	PrepTimeMinutes      pgtype.Int4 `json:"prep_time_minutes"`
+	TenantID             pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) UpdateStorefrontBehaviour(ctx context.Context, arg UpdateStorefrontBehaviourParams) (TenantStorefrontSetting, error) {
@@ -387,6 +399,7 @@ func (q *Queries) UpdateStorefrontBehaviour(ctx context.Context, arg UpdateStore
 		arg.OrderingEnabled,
 		arg.ClosedMessage,
 		arg.CustomerLoginMode,
+		arg.CustomerLoginMethods,
 		arg.PrepTimeMinutes,
 		arg.TenantID,
 	)
@@ -428,6 +441,8 @@ func (q *Queries) UpdateStorefrontBehaviour(ctx context.Context, arg UpdateStore
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -436,7 +451,7 @@ const updateStorefrontCosting = `-- name: UpdateStorefrontCosting :one
 UPDATE tenant_storefront_settings
 SET tax_percent = COALESCE($1, tax_percent), packaging_fee = COALESCE($2, packaging_fee), updated_at = now()
 WHERE tenant_id = $3
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontCostingParams struct {
@@ -485,6 +500,8 @@ func (q *Queries) UpdateStorefrontCosting(ctx context.Context, arg UpdateStorefr
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -493,7 +510,7 @@ const updateStorefrontHomepage = `-- name: UpdateStorefrontHomepage :one
 UPDATE tenant_storefront_settings
 SET homepage = $1::jsonb, updated_at = now()
 WHERE tenant_id = $2
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontHomepageParams struct {
@@ -541,6 +558,8 @@ func (q *Queries) UpdateStorefrontHomepage(ctx context.Context, arg UpdateStoref
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -557,7 +576,7 @@ SET
     address       = COALESCE($7, address),
     updated_at    = now()
 WHERE tenant_id = $8
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontIdentityParams struct {
@@ -620,6 +639,8 @@ func (q *Queries) UpdateStorefrontIdentity(ctx context.Context, arg UpdateStoref
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -628,7 +649,7 @@ const updateStorefrontOpeningHours = `-- name: UpdateStorefrontOpeningHours :one
 UPDATE tenant_storefront_settings
 SET opening_hours = $1::jsonb, updated_at = now()
 WHERE tenant_id = $2
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontOpeningHoursParams struct {
@@ -676,6 +697,8 @@ func (q *Queries) UpdateStorefrontOpeningHours(ctx context.Context, arg UpdateSt
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -684,7 +707,7 @@ const updateStorefrontPayments = `-- name: UpdateStorefrontPayments :one
 UPDATE tenant_storefront_settings
 SET payments = $1::jsonb, updated_at = now()
 WHERE tenant_id = $2
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontPaymentsParams struct {
@@ -732,6 +755,8 @@ func (q *Queries) UpdateStorefrontPayments(ctx context.Context, arg UpdateStoref
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -753,10 +778,11 @@ SET
     hero_image_url  = COALESCE($12, hero_image_url),
     product_layout  = COALESCE($13, product_layout),
     filter_style    = COALESCE($14, filter_style),
-    customer_theme_switch_enabled = COALESCE($15, customer_theme_switch_enabled),
+    surface_style   = COALESCE($15, surface_style),
+    customer_theme_switch_enabled = COALESCE($16, customer_theme_switch_enabled),
     updated_at      = now()
-WHERE tenant_id = $16
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+WHERE tenant_id = $17
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontThemeParams struct {
@@ -774,6 +800,7 @@ type UpdateStorefrontThemeParams struct {
 	HeroImageUrl               pgtype.Text `json:"hero_image_url"`
 	ProductLayout              pgtype.Text `json:"product_layout"`
 	FilterStyle                pgtype.Text `json:"filter_style"`
+	SurfaceStyle               pgtype.Text `json:"surface_style"`
 	CustomerThemeSwitchEnabled pgtype.Bool `json:"customer_theme_switch_enabled"`
 	TenantID                   pgtype.UUID `json:"tenant_id"`
 }
@@ -794,6 +821,7 @@ func (q *Queries) UpdateStorefrontTheme(ctx context.Context, arg UpdateStorefron
 		arg.HeroImageUrl,
 		arg.ProductLayout,
 		arg.FilterStyle,
+		arg.SurfaceStyle,
 		arg.CustomerThemeSwitchEnabled,
 		arg.TenantID,
 	)
@@ -835,6 +863,8 @@ func (q *Queries) UpdateStorefrontTheme(ctx context.Context, arg UpdateStorefron
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }
@@ -843,7 +873,7 @@ const updateStorefrontWorkflow = `-- name: UpdateStorefrontWorkflow :one
 UPDATE tenant_storefront_settings
 SET workflow = $1::jsonb, updated_at = now()
 WHERE tenant_id = $2
-RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled
+RETURNING tenant_id, logo_url, favicon_url, business_name, tagline, description, phone, address, theme_preset, primary_color, secondary_color, accent_color, theme_mode, font_family, radius, button_style, card_style, header_style, hero_style, hero_image_url, ordering_enabled, closed_message, customer_login_enabled, prep_time_minutes, tax_percent, packaging_fee, opening_hours, homepage, payments, workflow, created_at, updated_at, product_layout, filter_style, customer_login_mode, customer_theme_switch_enabled, customer_login_methods, surface_style
 `
 
 type UpdateStorefrontWorkflowParams struct {
@@ -891,6 +921,8 @@ func (q *Queries) UpdateStorefrontWorkflow(ctx context.Context, arg UpdateStoref
 		&i.FilterStyle,
 		&i.CustomerLoginMode,
 		&i.CustomerThemeSwitchEnabled,
+		&i.CustomerLoginMethods,
+		&i.SurfaceStyle,
 	)
 	return i, err
 }

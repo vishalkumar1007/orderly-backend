@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,6 +78,19 @@ type Info struct {
 // call on a zero-value Info (e.g. a host with no resolved tenant).
 func (i Info) HasCapability(code string) bool {
 	return i.Capabilities[code]
+}
+
+// EnabledCapabilities lists the enabled capability codes, sorted, for
+// clients that shape themselves around them (the storefront).
+func (i Info) EnabledCapabilities() []string {
+	out := make([]string, 0, len(i.Capabilities))
+	for code, on := range i.Capabilities {
+		if on {
+			out = append(out, code)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // HasEntitlement reports whether the tenant's plan carries a feature code.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,10 +28,10 @@ import (
 )
 
 const (
-	mfaPurposeSetup         = "mfa_setup"
-	mfaPurposeChallenge     = "mfa_challenge"
+	mfaPurposeSetup          = "mfa_setup"
+	mfaPurposeChallenge      = "mfa_challenge"
 	mfaPurposeEnrollRequired = "mfa_enroll_required"
-	mfaTokenTTL             = 5 * time.Minute
+	mfaTokenTTL              = 5 * time.Minute
 	// mfaEnrollTokenTTL is longer than mfaTokenTTL: this flow is a QR-scan-
 	// then-confirm (or email-send-then-confirm) done by someone who is not yet
 	// signed in at all.
@@ -41,10 +42,10 @@ const (
 var (
 	// ErrMFANotAvailable is returned when a tenant user tries to enroll before
 	// the platform has turned the feature on for businesses.
-	ErrMFANotAvailable    = errors.New("mfa is not available for this account yet")
-	ErrMFAAlreadyOn       = errors.New("mfa is already enabled")
-	ErrMFANotOn           = errors.New("mfa is not enabled")
-	ErrInvalidMFACode     = errors.New("invalid code")
+	ErrMFANotAvailable     = errors.New("mfa is not available for this account yet")
+	ErrMFAAlreadyOn        = errors.New("mfa is already enabled")
+	ErrMFANotOn            = errors.New("mfa is not enabled")
+	ErrInvalidMFACode      = errors.New("invalid code")
 	ErrMFAMethodNotAllowed = errors.New("that method is not allowed by this business's policy")
 )
 
@@ -458,6 +459,38 @@ func (s *Service) VerifyMFALogin(ctx context.Context, challengeToken, method, co
 	return pair, toUserResponse(user), nil
 }
 
+// loginMethods are the second factors a person may sign in with: what they
+// have set up, narrowed to what their business allows. When the business has
+// since switched off every method they use, their own methods still count,
+// because a policy change must not lock someone out of their account.
+func (s *Service) loginMethods(ctx context.Context, user sqlc.User) ([]string, error) {
+	rows, err := s.enrolledMethods(ctx, uuid.UUID(user.ID.Bytes))
+	if err != nil {
+		return nil, err
+	}
+	enrolled := make([]string, 0, len(rows))
+	for _, m := range rows {
+		enrolled = append(enrolled, m.Method)
+	}
+	if !user.TenantID.Valid {
+		return enrolled, nil
+	}
+	policy, _, err := s.policyForUser(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	allowed := enrolled[:0:0]
+	for _, m := range enrolled {
+		if slices.Contains(policy.AllowedMethods, m) {
+			allowed = append(allowed, m)
+		}
+	}
+	if len(allowed) == 0 {
+		return enrolled, nil
+	}
+	return allowed, nil
+}
+
 // checkMFACode validates one of: a recovery code (works regardless of which
 // primary method it is standing in for), a TOTP code, or an Email OTP code.
 // method defaults to TOTP when empty, for callers that predate multi-method
@@ -468,6 +501,14 @@ func (s *Service) checkMFACode(ctx context.Context, user sqlc.User, method, code
 	}
 	if method == "" {
 		method = MethodTOTP
+	}
+	// Only a method offered at sign-in may be used to finish it.
+	offered, err := s.loginMethods(ctx, user)
+	if err != nil {
+		return false, err
+	}
+	if !slices.Contains(offered, method) {
+		return false, nil
 	}
 	switch method {
 	case MethodTOTP:
@@ -712,7 +753,7 @@ func (s *Service) HandleMFAChallengeEmailSend(w http.ResponseWriter, r *http.Req
 		writeMFAError(w, ErrUnauthorized)
 		return
 	}
-	if _, err := s.q.GetUserMfaMethod(r.Context(), sqlc.GetUserMfaMethodParams{UserID: pgutil.UUID(userID), Method: MethodEmailOTP}); err != nil {
+	if offered, err := s.loginMethods(r.Context(), user); err != nil || !slices.Contains(offered, MethodEmailOTP) {
 		writeMFAError(w, ErrMFANotOn)
 		return
 	}

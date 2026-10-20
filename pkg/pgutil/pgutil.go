@@ -3,6 +3,7 @@ package pgutil
 import (
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -83,4 +84,9 @@ func NumericToFloat(n pgtype.Numeric) float64 {
 
 func NumericString(n pgtype.Numeric) string {
 	return fmt.Sprintf("%.2f", NumericToFloat(n))
+}
+
+// Timestamptz wraps a time as a non-null timestamptz.
+func Timestamptz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: true}
 }

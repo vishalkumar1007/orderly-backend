@@ -32,7 +32,12 @@ type Handler struct {
 	log     *slog.Logger
 	// payments records staff-confirmed payments; set by the server wiring.
 	payments *payments.Service
+	// signin lists the customer sign-in methods a shop really offers.
+	signin storefront.SignInOffer
 }
+
+// AttachSignIn connects the sign-in method list for /public/store.
+func (h *Handler) AttachSignIn(s storefront.SignInOffer) { h.signin = s }
 
 // NewHandler wires the order handler.
 func NewHandler(pool *pgxpool.Pool, log *slog.Logger) *Handler {

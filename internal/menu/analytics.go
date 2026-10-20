@@ -1,6 +1,7 @@
 package menu
 
 import (
+	"github.com/orderly/orderly-backend/internal/storefront"
 	"math"
 	"net/http"
 	"strconv"
@@ -76,10 +77,14 @@ type AnalyticsResponse struct {
 	// OrdersByDay is always one point per day. OrdersByPeriod is the same data
 	// grouped by Granularity; its `day` is the first day of each bucket
 	// (Monday for weeks, the 1st for months).
-	OrdersByDay    []DayPoint     `json:"orders_by_day"`
-	OrdersByPeriod []DayPoint     `json:"orders_by_period"`
-	OrdersByHour   []HourPoint    `json:"orders_by_hour"`
-	TopProducts    []ProductPoint `json:"top_products"`
+	OrdersByDay    []DayPoint  `json:"orders_by_day"`
+	OrdersByPeriod []DayPoint  `json:"orders_by_period"`
+	OrdersByHour   []HourPoint `json:"orders_by_hour"`
+	// Orders per weekday (0 = Monday) and hour, on the shop's clock.
+	OrdersByWeekdayHour []WeekHourPoint `json:"orders_by_weekday_hour"`
+	// The shop's timezone, which every day and hour above is in.
+	Timezone    string         `json:"timezone"`
+	TopProducts []ProductPoint `json:"top_products"`
 	// TopProductsByRevenue ranks the same sales by money instead of volume.
 	TopProductsByRevenue []ProductPoint  `json:"top_products_by_revenue"`
 	TopCategories        []CategoryPoint `json:"top_categories"`
@@ -162,9 +167,18 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Days and hours are the shop's, not the server's: an order at 9 PM in
+	// Kolkata belongs to that evening, not to 3:30 PM UTC.
+	loc := time.UTC
+	if sf, err := storefront.NewLoaderFromQueries(h.q).Load(ctx, tenantID(r)); err == nil && sf != nil {
+		loc = sf.OpeningHours.Location()
+	}
+	tz := loc.String()
+
 	byDay, err := h.q.TenantOrdersByDayRange(ctx, sqlc.TenantOrdersByDayRangeParams{
 		TenantID: tenant,
 		Days:     span,
+		Tz:       tz,
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load daily orders")
@@ -174,9 +188,20 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 	byHour, err := h.q.TenantOrdersByHour(ctx, sqlc.TenantOrdersByHourParams{
 		TenantID: tenant,
 		Days:     span,
+		Tz:       tz,
 	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load hourly orders")
+		return
+	}
+
+	weekHours, err := h.q.TenantOrdersByWeekdayHour(ctx, sqlc.TenantOrdersByWeekdayHourParams{
+		TenantID: tenant,
+		Days:     span,
+		Tz:       tz,
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "failed to load weekly hours")
 		return
 	}
 
@@ -234,7 +259,7 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	daily := fillDayGaps(byDay, days)
+	daily := fillDayGaps(byDay, days, loc)
 	out := AnalyticsResponse{
 		Window:              window,
 		Days:                days,
@@ -268,6 +293,8 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		OrdersByDay:          daily,
 		OrdersByPeriod:       bucketPoints(daily, granularity),
 		OrdersByHour:         averageByHour(byHour, days),
+		OrdersByWeekdayHour:  weekHourPoints(weekHours),
+		Timezone:             tz,
 		TopProducts:          topProducts(top),
 		TopProductsByRevenue: topProductsByRevenue(topByRevenue),
 		TopCategories:        topCategories(categories),
@@ -383,7 +410,7 @@ func round1(v float64) float64 {
 // The SQL only returns days that have orders, which makes a quiet week look
 // like a gap. A chart with a continuous time axis needs every day present so a
 // zero reads as "no orders that day" rather than "no data".
-func fillDayGaps(rows []sqlc.TenantOrdersByDayRangeRow, days int) []DayPoint {
+func fillDayGaps(rows []sqlc.TenantOrdersByDayRangeRow, days int, loc *time.Location) []DayPoint {
 	byDay := make(map[string]DayPoint, len(rows))
 	for _, r := range rows {
 		key := r.Day.Time.Format("2006-01-02")
@@ -395,8 +422,8 @@ func fillDayGaps(rows []sqlc.TenantOrdersByDayRangeRow, days int) []DayPoint {
 	}
 
 	out := make([]DayPoint, 0, days)
-	// Anchor on UTC midnight so the slice is stable regardless of the hour.
-	now := time.Now().UTC()
+	// Today is the shop's today; dates are compared as calendar strings.
+	now := time.Now().In(loc)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	start := today.AddDate(0, 0, -(days - 1))
 
@@ -407,6 +434,21 @@ func fillDayGaps(rows []sqlc.TenantOrdersByDayRangeRow, days int) []DayPoint {
 			continue
 		}
 		out = append(out, DayPoint{Day: key})
+	}
+	return out
+}
+
+// WeekHourPoint is one cell of the weekday by hour grid.
+type WeekHourPoint struct {
+	Weekday    int   `json:"weekday"`
+	Hour       int   `json:"hour"`
+	OrderCount int64 `json:"order_count"`
+}
+
+func weekHourPoints(rows []sqlc.TenantOrdersByWeekdayHourRow) []WeekHourPoint {
+	out := make([]WeekHourPoint, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, WeekHourPoint{Weekday: int(r.Weekday), Hour: int(r.HourOfDay), OrderCount: r.OrderCount})
 	}
 	return out
 }

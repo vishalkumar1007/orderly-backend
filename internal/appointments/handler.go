@@ -478,6 +478,7 @@ func appointmentJSON(a sqlc.Appointment) map[string]any {
 	out := map[string]any{
 		"id": pgutil.UUIDString(a.ID), "service_id": pgutil.UUIDString(a.ServiceID),
 		"scheduled_at": a.ScheduledAt.Time.Format(time.RFC3339), "status": a.Status,
+		"ends_at": a.EndsAt.Time.Format(time.RFC3339), "source": a.Source, "notes": a.Notes,
 	}
 	if id := pgutil.UUIDPtr(a.CustomerID); id != nil {
 		out["customer_id"] = *id

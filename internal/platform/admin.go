@@ -24,6 +24,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/brand"
 	"github.com/orderly/orderly-backend/internal/config"
+	"github.com/orderly/orderly-backend/internal/media"
 	"github.com/orderly/orderly-backend/internal/configsvc"
 	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/publicurl"
@@ -43,6 +44,7 @@ type Handler struct {
 	baseDomain   string
 	appEnv       string
 	frontendPort string
+	httpAddr     string
 
 	// configs is the provider-configuration stack. It is attached during
 	// construction by the HTTP server; a nil value only happens in unit tests
@@ -59,6 +61,7 @@ func NewHandler(pool *pgxpool.Pool, cfg config.Config) *Handler {
 		q:            sqlc.New(pool),
 		baseDomain:   cfg.BaseDomain,
 		appEnv:       cfg.AppEnv,
+		httpAddr:     cfg.HTTPAddr,
 		frontendPort: cfg.FrontendPort,
 	}
 }
@@ -69,6 +72,21 @@ func (h *Handler) tenantFrontendURL(slug string) string {
 
 func (h *Handler) tenantFrontendHost(slug string) string {
 	return publicurl.TenantHost(slug, h.baseDomain, h.appEnv, h.frontendPort)
+}
+
+// apiOrigin is the API's own public address, for media links (see package media).
+func (h *Handler) apiOrigin() string {
+	return publicurl.APIOrigin(h.baseDomain, h.appEnv, h.httpAddr)
+}
+
+// assetURL is the link to hand out for an uploaded object: the storage's own
+// https link when it has one (a CDN), else a media URL on the API, never a
+// plain-http or expiring storage link.
+func (h *Handler) assetURL(obj configsvc.StoredObject, scope, key string) string {
+	if strings.HasPrefix(obj.URL, "https://") {
+		return obj.URL
+	}
+	return media.URL(h.apiOrigin(), scope, key)
 }
 
 func (h *Handler) adminConsoleURL() string {
@@ -1543,17 +1561,8 @@ func (h *Handler) UploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url := obj.URL
-	if url == "" {
-		url, err = storage.PresignGetPlatform(r.Context(), obj.Key, 24*time.Hour)
-		if err != nil {
-			response.Error(w, http.StatusInternalServerError, "internal_error", "Failed to generate asset URL")
-			return
-		}
-	}
-
 	response.JSON(w, http.StatusOK, map[string]string{
-		"url": url,
+		"url": h.assetURL(obj, media.PlatformScope, key),
 		"key": obj.Key,
 	})
 }

@@ -12,26 +12,31 @@ import (
 )
 
 const createAppointment = `-- name: CreateAppointment :one
-INSERT INTO appointments (tenant_id, customer_id, service_id, staff_id, scheduled_at, status)
-VALUES ($1, $2, $3, $4, $5, 'REQUESTED')
-RETURNING id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at
+INSERT INTO appointments (tenant_id, customer_id, service_id, staff_id, scheduled_at, ends_at, status)
+SELECT $1::uuid, $2::uuid, s.id, $3::uuid,
+       $4::timestamptz,
+       $4::timestamptz + make_interval(mins => s.duration_minutes), 'REQUESTED'
+FROM services s
+WHERE s.id = $5::uuid AND s.tenant_id = $1::uuid
+RETURNING id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes
 `
 
 type CreateAppointmentParams struct {
 	TenantID    pgtype.UUID        `json:"tenant_id"`
 	CustomerID  pgtype.UUID        `json:"customer_id"`
-	ServiceID   pgtype.UUID        `json:"service_id"`
 	StaffID     pgtype.UUID        `json:"staff_id"`
 	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
+	ServiceID   pgtype.UUID        `json:"service_id"`
 }
 
+// The end time is fixed from the service's duration at booking time.
 func (q *Queries) CreateAppointment(ctx context.Context, arg CreateAppointmentParams) (Appointment, error) {
 	row := q.db.QueryRow(ctx, createAppointment,
 		arg.TenantID,
 		arg.CustomerID,
-		arg.ServiceID,
 		arg.StaffID,
 		arg.ScheduledAt,
+		arg.ServiceID,
 	)
 	var i Appointment
 	err := row.Scan(
@@ -44,6 +49,61 @@ func (q *Queries) CreateAppointment(ctx context.Context, arg CreateAppointmentPa
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+	)
+	return i, err
+}
+
+const createOnlineAppointment = `-- name: CreateOnlineAppointment :one
+INSERT INTO appointments (tenant_id, customer_id, service_id, staff_id, scheduled_at, ends_at,
+                          status, source, client_token, notes)
+SELECT $1::uuid, $2::uuid, s.id, $3::uuid,
+       $4::timestamptz,
+       $4::timestamptz + make_interval(mins => s.duration_minutes),
+       'REQUESTED', 'ONLINE', $5::text, $6::text
+FROM services s
+WHERE s.id = $7::uuid AND s.tenant_id = $1::uuid AND s.is_active
+RETURNING id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes
+`
+
+type CreateOnlineAppointmentParams struct {
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	CustomerID  pgtype.UUID        `json:"customer_id"`
+	StaffID     pgtype.UUID        `json:"staff_id"`
+	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
+	ClientToken string             `json:"client_token"`
+	Notes       string             `json:"notes"`
+	ServiceID   pgtype.UUID        `json:"service_id"`
+}
+
+func (q *Queries) CreateOnlineAppointment(ctx context.Context, arg CreateOnlineAppointmentParams) (Appointment, error) {
+	row := q.db.QueryRow(ctx, createOnlineAppointment,
+		arg.TenantID,
+		arg.CustomerID,
+		arg.StaffID,
+		arg.ScheduledAt,
+		arg.ClientToken,
+		arg.Notes,
+		arg.ServiceID,
+	)
+	var i Appointment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CustomerID,
+		&i.ServiceID,
+		&i.StaffID,
+		&i.ScheduledAt,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
 	)
 	return i, err
 }
@@ -183,8 +243,38 @@ func (q *Queries) DeleteStaffAvailability(ctx context.Context, arg DeleteStaffAv
 	return err
 }
 
+const getAppointmentByClientToken = `-- name: GetAppointmentByClientToken :one
+SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes FROM appointments WHERE tenant_id = $1 AND client_token = $2 AND client_token <> '' LIMIT 1
+`
+
+type GetAppointmentByClientTokenParams struct {
+	TenantID    pgtype.UUID `json:"tenant_id"`
+	ClientToken string      `json:"client_token"`
+}
+
+func (q *Queries) GetAppointmentByClientToken(ctx context.Context, arg GetAppointmentByClientTokenParams) (Appointment, error) {
+	row := q.db.QueryRow(ctx, getAppointmentByClientToken, arg.TenantID, arg.ClientToken)
+	var i Appointment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CustomerID,
+		&i.ServiceID,
+		&i.StaffID,
+		&i.ScheduledAt,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+	)
+	return i, err
+}
+
 const getAppointmentByID = `-- name: GetAppointmentByID :one
-SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at FROM appointments WHERE id = $1 AND tenant_id = $2 LIMIT 1
+SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes FROM appointments WHERE id = $1 AND tenant_id = $2 LIMIT 1
 `
 
 type GetAppointmentByIDParams struct {
@@ -205,6 +295,69 @@ func (q *Queries) GetAppointmentByID(ctx context.Context, arg GetAppointmentByID
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+	)
+	return i, err
+}
+
+const getCustomerAppointment = `-- name: GetCustomerAppointment :one
+SELECT a.id, a.tenant_id, a.customer_id, a.service_id, a.staff_id, a.scheduled_at, a.status, a.created_at, a.updated_at, a.ends_at, a.source, a.client_token, a.notes, s.name AS service_name, s.price AS service_price, s.duration_minutes,
+       COALESCE(u.name, '') AS staff_name
+FROM appointments a
+JOIN services s ON s.id = a.service_id
+LEFT JOIN users u ON u.id = a.staff_id
+WHERE a.tenant_id = $1 AND a.id = $2
+`
+
+type GetCustomerAppointmentParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	ID       pgtype.UUID `json:"id"`
+}
+
+type GetCustomerAppointmentRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+	CustomerID      pgtype.UUID        `json:"customer_id"`
+	ServiceID       pgtype.UUID        `json:"service_id"`
+	StaffID         pgtype.UUID        `json:"staff_id"`
+	ScheduledAt     pgtype.Timestamptz `json:"scheduled_at"`
+	Status          string             `json:"status"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	EndsAt          pgtype.Timestamptz `json:"ends_at"`
+	Source          string             `json:"source"`
+	ClientToken     string             `json:"client_token"`
+	Notes           string             `json:"notes"`
+	ServiceName     string             `json:"service_name"`
+	ServicePrice    pgtype.Numeric     `json:"service_price"`
+	DurationMinutes int32              `json:"duration_minutes"`
+	StaffName       string             `json:"staff_name"`
+}
+
+func (q *Queries) GetCustomerAppointment(ctx context.Context, arg GetCustomerAppointmentParams) (GetCustomerAppointmentRow, error) {
+	row := q.db.QueryRow(ctx, getCustomerAppointment, arg.TenantID, arg.ID)
+	var i GetCustomerAppointmentRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CustomerID,
+		&i.ServiceID,
+		&i.StaffID,
+		&i.ScheduledAt,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.ServiceName,
+		&i.ServicePrice,
+		&i.DurationMinutes,
+		&i.StaffName,
 	)
 	return i, err
 }
@@ -234,8 +387,45 @@ func (q *Queries) GetServiceByID(ctx context.Context, arg GetServiceByIDParams) 
 	return i, err
 }
 
+const listActiveServices = `-- name: ListActiveServices :many
+
+SELECT id, tenant_id, name, duration_minutes, price, is_active, created_at, updated_at FROM services WHERE tenant_id = $1 AND is_active ORDER BY price ASC, name ASC
+`
+
+// Storefront booking. A customer books a service with a staff member at a
+// start time the slot engine offered; the booking transaction takes a
+// per-staff advisory lock and re-checks the slot before inserting.
+func (q *Queries) ListActiveServices(ctx context.Context, tenantID pgtype.UUID) ([]Service, error) {
+	rows, err := q.db.Query(ctx, listActiveServices, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Service{}
+	for rows.Next() {
+		var i Service
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.DurationMinutes,
+			&i.Price,
+			&i.IsActive,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAppointmentsByTenant = `-- name: ListAppointmentsByTenant :many
-SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at FROM appointments WHERE tenant_id = $1 ORDER BY scheduled_at DESC LIMIT $2
+SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes FROM appointments WHERE tenant_id = $1 ORDER BY scheduled_at DESC LIMIT $2
 `
 
 type ListAppointmentsByTenantParams struct {
@@ -262,6 +452,155 @@ func (q *Queries) ListAppointmentsByTenant(ctx context.Context, arg ListAppointm
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.EndsAt,
+			&i.Source,
+			&i.ClientToken,
+			&i.Notes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAvailabilityForWeekday = `-- name: ListAvailabilityForWeekday :many
+SELECT id, tenant_id, staff_id, weekday, start_time, end_time FROM staff_availability
+WHERE tenant_id = $1 AND weekday = $2
+ORDER BY staff_id, start_time
+`
+
+type ListAvailabilityForWeekdayParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Weekday  int32       `json:"weekday"`
+}
+
+func (q *Queries) ListAvailabilityForWeekday(ctx context.Context, arg ListAvailabilityForWeekdayParams) ([]StaffAvailability, error) {
+	rows, err := q.db.Query(ctx, listAvailabilityForWeekday, arg.TenantID, arg.Weekday)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StaffAvailability{}
+	for rows.Next() {
+		var i StaffAvailability
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.StaffID,
+			&i.Weekday,
+			&i.StartTime,
+			&i.EndTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBookableStaff = `-- name: ListBookableStaff :many
+SELECT DISTINCT u.id, u.name
+FROM staff_availability sa
+JOIN users u ON u.id = sa.staff_id AND u.tenant_id = sa.tenant_id
+WHERE sa.tenant_id = $1 AND u.status = 'ACTIVE'
+ORDER BY u.name ASC
+`
+
+type ListBookableStaffRow struct {
+	ID   pgtype.UUID `json:"id"`
+	Name string      `json:"name"`
+}
+
+func (q *Queries) ListBookableStaff(ctx context.Context, tenantID pgtype.UUID) ([]ListBookableStaffRow, error) {
+	rows, err := q.db.Query(ctx, listBookableStaff, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBookableStaffRow{}
+	for rows.Next() {
+		var i ListBookableStaffRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomerAppointments = `-- name: ListCustomerAppointments :many
+SELECT a.id, a.tenant_id, a.customer_id, a.service_id, a.staff_id, a.scheduled_at, a.status, a.created_at, a.updated_at, a.ends_at, a.source, a.client_token, a.notes, s.name AS service_name, s.price AS service_price, s.duration_minutes,
+       COALESCE(u.name, '') AS staff_name
+FROM appointments a
+JOIN services s ON s.id = a.service_id
+LEFT JOIN users u ON u.id = a.staff_id
+WHERE a.tenant_id = $1 AND a.customer_id = $2
+ORDER BY a.scheduled_at DESC
+LIMIT 50
+`
+
+type ListCustomerAppointmentsParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	CustomerID pgtype.UUID `json:"customer_id"`
+}
+
+type ListCustomerAppointmentsRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+	CustomerID      pgtype.UUID        `json:"customer_id"`
+	ServiceID       pgtype.UUID        `json:"service_id"`
+	StaffID         pgtype.UUID        `json:"staff_id"`
+	ScheduledAt     pgtype.Timestamptz `json:"scheduled_at"`
+	Status          string             `json:"status"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	EndsAt          pgtype.Timestamptz `json:"ends_at"`
+	Source          string             `json:"source"`
+	ClientToken     string             `json:"client_token"`
+	Notes           string             `json:"notes"`
+	ServiceName     string             `json:"service_name"`
+	ServicePrice    pgtype.Numeric     `json:"service_price"`
+	DurationMinutes int32              `json:"duration_minutes"`
+	StaffName       string             `json:"staff_name"`
+}
+
+func (q *Queries) ListCustomerAppointments(ctx context.Context, arg ListCustomerAppointmentsParams) ([]ListCustomerAppointmentsRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerAppointments, arg.TenantID, arg.CustomerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCustomerAppointmentsRow{}
+	for rows.Next() {
+		var i ListCustomerAppointmentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.CustomerID,
+			&i.ServiceID,
+			&i.StaffID,
+			&i.ScheduledAt,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.EndsAt,
+			&i.Source,
+			&i.ClientToken,
+			&i.Notes,
+			&i.ServiceName,
+			&i.ServicePrice,
+			&i.DurationMinutes,
+			&i.StaffName,
 		); err != nil {
 			return nil, err
 		}
@@ -337,6 +676,53 @@ func (q *Queries) ListStaffAvailabilityByTenant(ctx context.Context, tenantID pg
 	return items, nil
 }
 
+const listStaffBusy = `-- name: ListStaffBusy :many
+SELECT id, staff_id, scheduled_at, ends_at FROM appointments
+WHERE tenant_id = $1
+  AND staff_id IS NOT NULL
+  AND status NOT IN ('CANCELLED', 'NO_SHOW')
+  AND scheduled_at < $2
+  AND ends_at > $3
+`
+
+type ListStaffBusyParams struct {
+	TenantID pgtype.UUID        `json:"tenant_id"`
+	Until    pgtype.Timestamptz `json:"until"`
+	Since    pgtype.Timestamptz `json:"since"`
+}
+
+type ListStaffBusyRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	StaffID     pgtype.UUID        `json:"staff_id"`
+	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
+	EndsAt      pgtype.Timestamptz `json:"ends_at"`
+}
+
+func (q *Queries) ListStaffBusy(ctx context.Context, arg ListStaffBusyParams) ([]ListStaffBusyRow, error) {
+	rows, err := q.db.Query(ctx, listStaffBusy, arg.TenantID, arg.Until, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaffBusyRow{}
+	for rows.Next() {
+		var i ListStaffBusyRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.StaffID,
+			&i.ScheduledAt,
+			&i.EndsAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTodayQueue = `-- name: ListTodayQueue :many
 SELECT id, tenant_id, appointment_id, customer_id, queue_date, queue_number, status, created_at FROM queue_entries
 WHERE tenant_id = $1 AND queue_date = CURRENT_DATE
@@ -373,7 +759,7 @@ func (q *Queries) ListTodayQueue(ctx context.Context, tenantID pgtype.UUID) ([]Q
 }
 
 const listUpcomingAppointments = `-- name: ListUpcomingAppointments :many
-SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at FROM appointments
+SELECT id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes FROM appointments
 WHERE tenant_id = $1 AND status NOT IN ('COMPLETED', 'CANCELLED', 'NO_SHOW')
 ORDER BY scheduled_at ASC
 `
@@ -397,6 +783,10 @@ func (q *Queries) ListUpcomingAppointments(ctx context.Context, tenantID pgtype.
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.EndsAt,
+			&i.Source,
+			&i.ClientToken,
+			&i.Notes,
 		); err != nil {
 			return nil, err
 		}
@@ -406,6 +796,15 @@ func (q *Queries) ListUpcomingAppointments(ctx context.Context, tenantID pgtype.
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockStaffSchedule = `-- name: LockStaffSchedule :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+func (q *Queries) LockStaffSchedule(ctx context.Context, lockKey string) error {
+	_, err := q.db.Exec(ctx, lockStaffSchedule, lockKey)
+	return err
 }
 
 const nextQueueNumberToday = `-- name: NextQueueNumberToday :one
@@ -421,10 +820,56 @@ func (q *Queries) NextQueueNumberToday(ctx context.Context, tenantID pgtype.UUID
 	return next_number, err
 }
 
+const rescheduleAppointment = `-- name: RescheduleAppointment :one
+UPDATE appointments a SET
+    scheduled_at = $1::timestamptz,
+    ends_at = $1::timestamptz + make_interval(mins => s.duration_minutes),
+    staff_id = $2::uuid,
+    updated_at = now()
+FROM services s
+WHERE a.id = $3 AND a.tenant_id = $4
+  AND s.id = a.service_id
+  AND a.status IN ('REQUESTED', 'CONFIRMED')
+RETURNING a.id, a.tenant_id, a.customer_id, a.service_id, a.staff_id, a.scheduled_at, a.status, a.created_at, a.updated_at, a.ends_at, a.source, a.client_token, a.notes
+`
+
+type RescheduleAppointmentParams struct {
+	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
+	StaffID     pgtype.UUID        `json:"staff_id"`
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+}
+
+func (q *Queries) RescheduleAppointment(ctx context.Context, arg RescheduleAppointmentParams) (Appointment, error) {
+	row := q.db.QueryRow(ctx, rescheduleAppointment,
+		arg.ScheduledAt,
+		arg.StaffID,
+		arg.ID,
+		arg.TenantID,
+	)
+	var i Appointment
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CustomerID,
+		&i.ServiceID,
+		&i.StaffID,
+		&i.ScheduledAt,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+	)
+	return i, err
+}
+
 const updateAppointmentStatus = `-- name: UpdateAppointmentStatus :one
 UPDATE appointments SET status = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $4
-RETURNING id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at
+RETURNING id, tenant_id, customer_id, service_id, staff_id, scheduled_at, status, created_at, updated_at, ends_at, source, client_token, notes
 `
 
 type UpdateAppointmentStatusParams struct {
@@ -452,6 +897,10 @@ func (q *Queries) UpdateAppointmentStatus(ctx context.Context, arg UpdateAppoint
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EndsAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
 	)
 	return i, err
 }

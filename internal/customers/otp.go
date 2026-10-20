@@ -7,6 +7,8 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,6 +54,26 @@ func NormalizePhone(raw string) (string, error) {
 // MaskPhone renders a phone number for display: +91 98••••3210.
 func MaskPhone(number string) string {
 	return phone.Mask(number)
+}
+
+// NormalizeEmail lower-cases and checks an email address. Display names and
+// anything else net/mail would accept around the address are refused.
+func NormalizeEmail(raw string) (string, error) {
+	e := strings.ToLower(strings.TrimSpace(raw))
+	addr, err := mail.ParseAddress(e)
+	if err != nil || addr.Address != e || len(e) > 254 || !strings.Contains(e[strings.LastIndex(e, "@")+1:], ".") {
+		return "", errors.New("invalid email")
+	}
+	return e, nil
+}
+
+// MaskEmail keeps the first letter and the domain: r***@example.com.
+func MaskEmail(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at < 1 {
+		return email
+	}
+	return email[:1] + "***" + email[at:]
 }
 
 var codeAlphabet = []byte("0123456789")

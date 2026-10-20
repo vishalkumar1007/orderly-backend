@@ -273,6 +273,16 @@ func (st *Storage) PresignGetPlatform(ctx context.Context, key string, ttl time.
 	return provider.PresignGet(ctx, key, ttl)
 }
 
+// Get streams an object from the platform's storage (tenantID nil) or the
+// storage a tenant resolves to.
+func (st *Storage) Get(ctx context.Context, tenantID *uuid.UUID, key string) (StoredBody, error) {
+	provider, err := st.svc.storageProvider(ctx, tenantID)
+	if err != nil {
+		return StoredBody{}, err
+	}
+	return provider.Get(ctx, key)
+}
+
 // Delete removes an object.
 func (st *Storage) Delete(ctx context.Context, tenantID uuid.UUID, key string) error {
 	provider, err := st.svc.storageProvider(ctx, &tenantID)

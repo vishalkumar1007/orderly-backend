@@ -34,6 +34,19 @@ type AdminHandler struct {
 	loader *Loader
 	reader *Catalog
 	base   BaseURLResolver
+	signin SignInChecker
+}
+
+// AttachSignIn lets the admin screen show which sign-in channels are set up.
+func (a *AdminHandler) AttachSignIn(c SignInChecker) { a.signin = c }
+
+// withSignIn adds channel readiness, so the Customers screen can only offer
+// methods whose SMS or email account is set up in Configuration.
+func (a *AdminHandler) withSignIn(r *http.Request, tenantID uuid.UUID, out map[string]any) map[string]any {
+	if a.signin != nil {
+		out["sign_in_channels"] = a.signin.Channels(r.Context(), tenantID)
+	}
+	return out
 }
 
 // NewAdminHandler wires the tenant admin storefront handler.
@@ -86,7 +99,7 @@ func (a *AdminHandler) GetStorefront(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not load your storefront")
 		return
 	}
-	response.JSON(w, http.StatusOK, a.payload(sf))
+	response.JSON(w, http.StatusOK, a.withSignIn(r, tenantID, a.payload(sf)))
 }
 
 // payload is the tenant-private configuration document. It includes the theme
@@ -108,28 +121,30 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 			"timezone":      sf.Timezone,
 		},
 		"theme": map[string]any{
-			"preset":         sf.Theme.Preset,
-			"mode":           sf.Theme.Mode,
-			"font":           sf.Theme.Font,
-			"radius":         sf.Theme.Radius,
-			"button":         sf.Theme.Button,
-			"card":           sf.Theme.Card,
-			"header":         sf.Theme.Header,
-			"hero":           sf.Theme.Hero,
-			"product_layout": sf.Theme.Layout,
-			"filter_style":   sf.Theme.Filter,
-			"primary":        sf.Theme.Primary,
-			"secondary":      sf.Theme.Secondary,
-			"accent":         sf.Theme.Accent,
-			"hero_image_url": sf.HeroImageURL,
+			"preset":                       sf.Theme.Preset,
+			"mode":                         sf.Theme.Mode,
+			"font":                         sf.Theme.Font,
+			"radius":                       sf.Theme.Radius,
+			"button":                       sf.Theme.Button,
+			"card":                         sf.Theme.Card,
+			"header":                       sf.Theme.Header,
+			"hero":                         sf.Theme.Hero,
+			"product_layout":               sf.Theme.Layout,
+			"filter_style":                 sf.Theme.Filter,
+			"surface":                      sf.Theme.Surface,
+			"primary":                      sf.Theme.Primary,
+			"secondary":                    sf.Theme.Secondary,
+			"accent":                       sf.Theme.Accent,
+			"hero_image_url":               sf.HeroImageURL,
 			"customer_mode_switch_enabled": sf.Theme.CustomerModeSwitch,
-			"vars":           sf.Theme.CSSVars(),
+			"vars":                         sf.Theme.CSSVars(),
 		},
 		"behaviour": map[string]any{
 			"ordering_enabled":       sf.OrderingEnabled,
 			"closed_message":         sf.ClosedMessage,
 			"customer_login_enabled": sf.CustomerLogin,
 			"customer_login_mode":    sf.CustomerLoginMode,
+			"customer_login_methods": sf.CustomerLoginMethods,
 			"prep_time_minutes":      sf.PrepTimeMinutes,
 			"tax_percent":            sf.TaxPercent,
 			"packaging_fee":          sf.PackagingFee,
@@ -205,16 +220,17 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		Phone      *string `json:"phone"`
 		Address    *string `json:"address"`
 
-		OrderingEnabled  *bool   `json:"ordering_enabled"`
-		ClosedMessage    *string `json:"closed_message"`
-		CustomerLogin    *bool   `json:"customer_login_enabled"`
-		CustomerLoginMode *string `json:"customer_login_mode"`
-		PrepTimeMinutes  *int    `json:"prep_time_minutes"`
-		TaxPercent       any     `json:"tax_percent"`
-		PackagingFee     any     `json:"packaging_fee"`
-		Published        *bool   `json:"published"`
-		StoreStatus      *string `json:"store_status"`
-		StatusMessage    *string `json:"status_message"`
+		OrderingEnabled      *bool    `json:"ordering_enabled"`
+		ClosedMessage        *string  `json:"closed_message"`
+		CustomerLogin        *bool    `json:"customer_login_enabled"`
+		CustomerLoginMode    *string  `json:"customer_login_mode"`
+		CustomerLoginMethods []string `json:"customer_login_methods"`
+		PrepTimeMinutes      *int     `json:"prep_time_minutes"`
+		TaxPercent           any      `json:"tax_percent"`
+		PackagingFee         any      `json:"packaging_fee"`
+		Published            *bool    `json:"published"`
+		StoreStatus          *string  `json:"store_status"`
+		StatusMessage        *string  `json:"status_message"`
 	}
 	if err := decodeAdmin(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "Could not read those settings")
@@ -263,7 +279,7 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if req.OrderingEnabled != nil || req.ClosedMessage != nil || req.CustomerLogin != nil || req.CustomerLoginMode != nil || req.PrepTimeMinutes != nil {
+	if req.OrderingEnabled != nil || req.ClosedMessage != nil || req.CustomerLogin != nil || req.CustomerLoginMode != nil || req.CustomerLoginMethods != nil || req.PrepTimeMinutes != nil {
 		minutes := sf.PrepTimeMinutes
 		if req.PrepTimeMinutes != nil {
 			if *req.PrepTimeMinutes < 0 || *req.PrepTimeMinutes > 240 {
@@ -296,6 +312,9 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		}
 		if loginMode != "" {
 			params.CustomerLoginMode = pgutil.NullText(&loginMode)
+		}
+		if req.CustomerLoginMethods != nil {
+			params.CustomerLoginMethods = LoginMethods(req.CustomerLoginMethods)
 		}
 		if _, err := a.q.UpdateStorefrontBehaviour(r.Context(), params); err != nil {
 			response.Error(w, http.StatusInternalServerError, "internal_error", "could not save your settings")
@@ -385,21 +404,22 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 // direct endpoint and by publishing a draft, so a value that is refused on one
 // path cannot slip through the other.
 type themeRequest struct {
-	Preset       *string `json:"preset"`
-	Mode         *string `json:"mode"`
-	Font         *string `json:"font"`
-	Radius       *string `json:"radius"`
-	Button       *string `json:"button"`
-	Card         *string `json:"card"`
-	Header       *string `json:"header"`
-	Hero         *string `json:"hero"`
-	Layout       *string `json:"product_layout"`
-	Filter       *string `json:"filter_style"`
-	Primary      *string `json:"primary"`
-	Secondary    *string `json:"secondary"`
-	Accent       *string `json:"accent"`
-	HeroImageURL *string `json:"hero_image_url"`
-	CustomerModeSwitch *bool `json:"customer_mode_switch_enabled"`
+	Preset             *string `json:"preset"`
+	Mode               *string `json:"mode"`
+	Font               *string `json:"font"`
+	Radius             *string `json:"radius"`
+	Button             *string `json:"button"`
+	Card               *string `json:"card"`
+	Header             *string `json:"header"`
+	Hero               *string `json:"hero"`
+	Layout             *string `json:"product_layout"`
+	Filter             *string `json:"filter_style"`
+	Surface            *string `json:"surface"`
+	Primary            *string `json:"primary"`
+	Secondary          *string `json:"secondary"`
+	Accent             *string `json:"accent"`
+	HeroImageURL       *string `json:"hero_image_url"`
+	CustomerModeSwitch *bool   `json:"customer_mode_switch_enabled"`
 }
 
 // themeParams validates a theme request and turns it into update parameters.
@@ -437,6 +457,8 @@ func themeParams(req themeRequest, tenantID uuid.UUID) (sqlc.UpdateStorefrontThe
 			func(v string) { params.ProductLayout = pgutil.NullText(&v) }},
 		{req.Filter, validFilters, "invalid_filter_style", "Pick chips, pills or rail for filters",
 			func(v string) { params.FilterStyle = pgutil.NullText(&v) }},
+		{req.Surface, validSurfaces, "invalid_surface", "Pick one of the available background styles",
+			func(v string) { params.SurfaceStyle = pgutil.NullText(&v) }},
 	}
 	for _, e := range enums {
 		if e.value == nil {
@@ -742,7 +764,7 @@ func (a *AdminHandler) respond(w http.ResponseWriter, r *http.Request, tenantID 
 		response.Error(w, http.StatusInternalServerError, "internal_error", "could not reload your storefront")
 		return
 	}
-	response.JSON(w, http.StatusOK, a.payload(sf))
+	response.JSON(w, http.StatusOK, a.withSignIn(r, tenantID, a.payload(sf)))
 }
 
 // PreviewMenu returns the menu as the storefront will render it, so the admin

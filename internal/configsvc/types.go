@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -218,7 +219,20 @@ type StorageProvider interface {
 	// PublicURL is the CDN/public URL for a key, or "" when the bucket is
 	// private and only presigned links are available.
 	PublicURL(key string) string
+	// Get streams an object back. The caller closes the body. A missing key
+	// returns ErrObjectNotFound.
+	Get(ctx context.Context, key string) (StoredBody, error)
 }
+
+// StoredBody is an object being read back from storage.
+type StoredBody struct {
+	Body        io.ReadCloser
+	ContentType string
+	Size        int64
+}
+
+// ErrObjectNotFound is returned by Get for a key that does not exist.
+var ErrObjectNotFound = errors.New("object not found")
 
 // CompletionRequest is a chat/completion call.
 type CompletionRequest struct {

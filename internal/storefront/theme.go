@@ -26,6 +26,8 @@ type Theme struct {
 	Hero      string
 	Layout    string
 	Filter    string
+	// Surface is the background template: the neutral palette under the brand.
+	Surface string
 	Primary   string
 	Secondary string
 	Accent    string
@@ -141,6 +143,7 @@ func resolveTheme(row sqlc.GetStorefrontConfigRow) Theme {
 		Hero:      oneOf(row.HeroStyle, base.HeroStyle, validHeros),
 		Layout:    oneOf(row.ProductLayout, LayoutList, validLayouts),
 		Filter:    oneOf(row.FilterStyle, FilterChips, validFilters),
+		Surface:   oneOf(row.SurfaceStyle, SurfaceClean, validSurfaces),
 		Primary:   hexOr(row.PrimaryColor, base.Primary),
 		Secondary: hexOr(row.SecondaryColor, base.Secondary),
 		Accent:    hexOr(row.AccentColor, base.Accent),

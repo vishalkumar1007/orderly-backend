@@ -121,3 +121,21 @@ func HostOf(absolute string) string {
 	}
 	return u.Host
 }
+
+// APIOrigin is the browser-facing origin of the API itself, for links the API
+// hands out that must outlive a request (uploaded images). Production serves
+// it at https://api.{base}, so links match the https pages that show them;
+// development talks to the API directly on its own port.
+func APIOrigin(baseDomain, appEnv, httpAddr string) string {
+	if !IsDev(appEnv) {
+		return "https://api." + strings.ToLower(strings.TrimSpace(baseDomain))
+	}
+	port := strings.TrimPrefix(strings.TrimSpace(httpAddr), ":")
+	if i := strings.LastIndex(port, ":"); i >= 0 {
+		port = port[i+1:]
+	}
+	if port == "" {
+		port = "8080"
+	}
+	return "http://localhost:" + port
+}

@@ -23,7 +23,7 @@ func (q *Queries) CountCustomersByTenant(ctx context.Context, tenantID pgtype.UU
 }
 
 const getCustomerByID = `-- name: GetCustomerByID :one
-SELECT id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked FROM customers
+SELECT id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email FROM customers
 WHERE id = $1 AND tenant_id = $2
 LIMIT 1
 `
@@ -45,12 +45,13 @@ func (q *Queries) GetCustomerByID(ctx context.Context, arg GetCustomerByIDParams
 		&i.UpdatedAt,
 		&i.LastLoginAt,
 		&i.IsBlocked,
+		&i.Email,
 	)
 	return i, err
 }
 
 const getCustomerByPhone = `-- name: GetCustomerByPhone :one
-SELECT id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked FROM customers
+SELECT id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email FROM customers
 WHERE tenant_id = $1 AND phone = $2
 LIMIT 1
 `
@@ -72,6 +73,7 @@ func (q *Queries) GetCustomerByPhone(ctx context.Context, arg GetCustomerByPhone
 		&i.UpdatedAt,
 		&i.LastLoginAt,
 		&i.IsBlocked,
+		&i.Email,
 	)
 	return i, err
 }
@@ -308,7 +310,7 @@ const setCustomerBlocked = `-- name: SetCustomerBlocked :one
 UPDATE customers
 SET is_blocked = $1, updated_at = now()
 WHERE id = $2 AND tenant_id = $3
-RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked
+RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email
 `
 
 type SetCustomerBlockedParams struct {
@@ -329,6 +331,7 @@ func (q *Queries) SetCustomerBlocked(ctx context.Context, arg SetCustomerBlocked
 		&i.UpdatedAt,
 		&i.LastLoginAt,
 		&i.IsBlocked,
+		&i.Email,
 	)
 	return i, err
 }
@@ -339,7 +342,7 @@ SET
     name = COALESCE($1, name),
     updated_at = now()
 WHERE id = $2 AND tenant_id = $3
-RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked
+RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email
 `
 
 type UpdateCustomerProfileParams struct {
@@ -360,6 +363,42 @@ func (q *Queries) UpdateCustomerProfile(ctx context.Context, arg UpdateCustomerP
 		&i.UpdatedAt,
 		&i.LastLoginAt,
 		&i.IsBlocked,
+		&i.Email,
+	)
+	return i, err
+}
+
+const upsertCustomerByEmail = `-- name: UpsertCustomerByEmail :one
+INSERT INTO customers (tenant_id, name, email, last_login_at)
+VALUES ($1, $2, lower($3::text), now())
+ON CONFLICT (tenant_id, lower(email)) WHERE email IS NOT NULL
+DO UPDATE SET
+    name = CASE WHEN customers.name = '' THEN EXCLUDED.name ELSE customers.name END,
+    last_login_at = now()
+RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email
+`
+
+type UpsertCustomerByEmailParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Name     string      `json:"name"`
+	Email    string      `json:"email"`
+}
+
+// Email sign-in. The unique index is on lower(email), so the conflict target
+// names the same expression.
+func (q *Queries) UpsertCustomerByEmail(ctx context.Context, arg UpsertCustomerByEmailParams) (Customer, error) {
+	row := q.db.QueryRow(ctx, upsertCustomerByEmail, arg.TenantID, arg.Name, arg.Email)
+	var i Customer
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Phone,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastLoginAt,
+		&i.IsBlocked,
+		&i.Email,
 	)
 	return i, err
 }
@@ -371,7 +410,7 @@ ON CONFLICT (tenant_id, phone) WHERE phone IS NOT NULL
 DO UPDATE SET
     name = CASE WHEN customers.name = '' THEN EXCLUDED.name ELSE customers.name END,
     last_login_at = now()
-RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked
+RETURNING id, tenant_id, name, phone, created_at, updated_at, last_login_at, is_blocked, email
 `
 
 type UpsertCustomerByPhoneParams struct {
@@ -394,6 +433,7 @@ func (q *Queries) UpsertCustomerByPhone(ctx context.Context, arg UpsertCustomerB
 		&i.UpdatedAt,
 		&i.LastLoginAt,
 		&i.IsBlocked,
+		&i.Email,
 	)
 	return i, err
 }

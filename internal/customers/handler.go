@@ -17,6 +17,7 @@ import (
 	"github.com/orderly/orderly-backend/internal/auth"
 	"github.com/orderly/orderly-backend/internal/config"
 	"github.com/orderly/orderly-backend/internal/orders"
+	"github.com/orderly/orderly-backend/internal/signin"
 	"github.com/orderly/orderly-backend/internal/storefront"
 	"github.com/orderly/orderly-backend/internal/tenantctx"
 	"github.com/orderly/orderly-backend/pkg/pgutil"
@@ -39,6 +40,7 @@ type Handler struct {
 	// outside production, so a misconfigured deployment cannot leak live
 	// sign-in codes.
 	devMode bool
+	signin  *signin.Service
 }
 
 // NewHandler wires the customer handler.
@@ -65,34 +67,74 @@ func hostTenant(r *http.Request) (uuid.UUID, string, bool) {
 	return info.ID, info.Slug, true
 }
 
-// loginEnabled consults the storefront configuration so a tenant can switch
-// customer phone login off. Falling back to enabled keeps the endpoint working
-// before the tenant has any storefront row.
-func (h *Handler) loginEnabled(r *http.Request, tenantID uuid.UUID) bool {
+// loginEnabled says whether this business offers customer sign-in at all:
+// the owner has not switched it off (a booking business always signs people
+// in) and at least one method has a working channel.
+func (h *Handler) loginEnabled(r *http.Request, tenantID uuid.UUID) (*storefront.Storefront, bool) {
 	sf, err := h.store.Load(r.Context(), tenantID)
-	if err != nil {
-		return true
+	if err != nil || sf == nil {
+		return nil, false
 	}
-	return sf.LoginAllowed()
+	booking := false
+	if t, ok := tenantctx.FromContext(r.Context()); ok {
+		booking = t.HasCapability(tenantctx.CapAppointments) || t.HasCapability(tenantctx.CapRooms)
+	}
+	if !booking && !sf.LoginAllowed() {
+		return sf, false
+	}
+	return sf, h.signin == nil || len(h.signin.Offered(r.Context(), tenantID, sf)) > 0
 }
+
+// AttachSignIn connects the sign-in channel checks and code delivery.
+func (h *Handler) AttachSignIn(s *signin.Service) { h.signin = s }
 
 type sendOtpRequest struct {
 	Phone string `json:"phone"`
+	Email string `json:"email"`
 }
 
-// SendOtp issues a login code for a phone number.
-//
-// The response never contains the code outside development. In every
-// environment the code is written to the service log, which is where a real SMS
-// provider plug-in would hand off.
+// signInID is who a code is for: a normalised phone number or email, and the
+// method that reaches it.
+type signInID struct {
+	method string
+	value  string
+}
+
+// parseIdentity reads whichever of phone or email the customer gave.
+func parseIdentity(phone, email string) (signInID, string) {
+	if strings.TrimSpace(email) != "" {
+		e, err := NormalizeEmail(email)
+		if err != nil {
+			return signInID{}, "Enter a valid email address"
+		}
+		return signInID{method: storefront.LoginMethodEmail, value: e}, ""
+	}
+	p, err := NormalizePhone(phone)
+	if err != nil {
+		return signInID{}, "Enter a valid phone number"
+	}
+	return signInID{method: storefront.LoginMethodPhone, value: p}, ""
+}
+
+func (id signInID) masked() map[string]any {
+	if id.method == storefront.LoginMethodEmail {
+		return map[string]any{"method": id.method, "email": MaskEmail(id.value)}
+	}
+	return map[string]any{"method": id.method, "phone": MaskPhone(id.value)}
+}
+
+// SendOtp issues a sign-in code and delivers it by SMS or email, through the
+// business's own account or the platform's. The code is only ever echoed back
+// in development, where no message may be delivered.
 func (h *Handler) SendOtp(w http.ResponseWriter, r *http.Request) {
 	tenantID, slug, ok := hostTenant(r)
 	if !ok {
 		response.Error(w, http.StatusBadRequest, "invalid_host", "tenant subdomain required")
 		return
 	}
-	if !h.loginEnabled(r, tenantID) {
-		response.Error(w, http.StatusForbidden, "login_disabled", "Phone login is not available at this store")
+	sf, enabled := h.loginEnabled(r, tenantID)
+	if !enabled {
+		response.Error(w, http.StatusForbidden, "login_disabled", "Sign-in is not available at this store")
 		return
 	}
 	var req sendOtpRequest
@@ -100,13 +142,21 @@ func (h *Handler) SendOtp(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json body")
 		return
 	}
-	phone, err := NormalizePhone(req.Phone)
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid_phone", "Enter a valid phone number")
+	id, msg := parseIdentity(req.Phone, req.Email)
+	if msg != "" {
+		code := "invalid_phone"
+		if id.method == storefront.LoginMethodEmail || strings.TrimSpace(req.Email) != "" {
+			code = "invalid_email"
+		}
+		response.Error(w, http.StatusBadRequest, code, msg)
+		return
+	}
+	if h.signin != nil && !h.signin.Allows(r.Context(), tenantID, sf, id.method) {
+		response.Error(w, http.StatusForbidden, "method_unavailable", "This store does not offer that sign-in method")
 		return
 	}
 
-	code, state, err := IssueCode(r.Context(), h.q, tenantID, phone, time.Now())
+	code, state, err := IssueCode(r.Context(), h.q, tenantID, id.value, time.Now())
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrResendTooSoon):
@@ -120,15 +170,23 @@ func (h *Handler) SendOtp(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "internal_error", "We could not send the code. Try again shortly.")
 		return
 	}
-	state.DevCode = code
-	h.log.Info("customer otp issued", "tenant", slug, "phone", MaskPhone(phone), "code", code)
+	if h.signin != nil {
+		if err := h.signin.SendCode(r.Context(), tenantID, sf.Name, id.method, id.value, code, int(CodeTTL.Minutes())); err != nil {
+			h.log.Error("deliver otp failed", "error", err, "tenant", slug, "method", id.method)
+			response.Error(w, http.StatusBadGateway, "delivery_failed", "We could not send the code just now. Try again in a moment.")
+			return
+		}
+	}
+	if h.devMode {
+		state.DevCode = code
+		h.log.Info("customer otp issued", "tenant", slug, "method", id.method, "code", code)
+	}
 
-	response.JSON(w, http.StatusOK, map[string]any{
-		"phone":      MaskPhone(phone),
-		"otp":        state,
-		"next_step":  "verify",
-		"expires_in": state.ExpiresIn,
-	})
+	out := id.masked()
+	out["otp"] = state
+	out["next_step"] = "verify"
+	out["expires_in"] = state.ExpiresIn
+	response.JSON(w, http.StatusOK, out)
 }
 
 // resendState is the countdown payload returned alongside a too-soon error, so
@@ -139,18 +197,20 @@ func resendState() OTPState {
 
 type verifyOtpRequest struct {
 	Phone string `json:"phone"`
+	Email string `json:"email"`
 	Code  string `json:"code"`
 }
 
-// VerifyOtp exchanges a phone number and code for a customer session.
+// VerifyOtp exchanges a phone number or email and its code for a session.
 func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 	tenantID, slug, ok := hostTenant(r)
 	if !ok {
 		response.Error(w, http.StatusBadRequest, "invalid_host", "tenant subdomain required")
 		return
 	}
-	if !h.loginEnabled(r, tenantID) {
-		response.Error(w, http.StatusForbidden, "login_disabled", "Phone login is not available at this store")
+	sf, enabled := h.loginEnabled(r, tenantID)
+	if !enabled {
+		response.Error(w, http.StatusForbidden, "login_disabled", "Sign-in is not available at this store")
 		return
 	}
 	var req verifyOtpRequest
@@ -158,9 +218,13 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json body")
 		return
 	}
-	phone, err := NormalizePhone(req.Phone)
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid_phone", "Enter a valid phone number")
+	id, msg := parseIdentity(req.Phone, req.Email)
+	if msg != "" {
+		response.Error(w, http.StatusBadRequest, "invalid_identity", msg)
+		return
+	}
+	if h.signin != nil && !h.signin.Allows(r.Context(), tenantID, sf, id.method) {
+		response.Error(w, http.StatusForbidden, "method_unavailable", "This store does not offer that sign-in method")
 		return
 	}
 	if len(strings.TrimSpace(req.Code)) != CodeLength {
@@ -168,7 +232,7 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := Verify(r.Context(), h.q, tenantID, phone, strings.TrimSpace(req.Code), time.Now()); err != nil {
+	if err := Verify(r.Context(), h.q, tenantID, id.value, strings.TrimSpace(req.Code), time.Now()); err != nil {
 		status, code := http.StatusBadRequest, "invalid_code"
 		switch {
 		case errors.Is(err, ErrNoCode):
@@ -182,7 +246,15 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	customer, err := Upsert(r.Context(), h.q, tenantID, phone, "")
+	var customer sqlc.Customer
+	var err error
+	if id.method == storefront.LoginMethodEmail {
+		customer, err = h.q.UpsertCustomerByEmail(r.Context(), sqlc.UpsertCustomerByEmailParams{
+			TenantID: pgutil.UUID(tenantID), Name: "", Email: id.value,
+		})
+	} else {
+		customer, err = Upsert(r.Context(), h.q, tenantID, id.value, "")
+	}
 	if err != nil {
 		h.log.Error("customer upsert failed", "error", err, "tenant", slug)
 		response.Error(w, http.StatusInternalServerError, "internal_error", "We could not sign you in")
@@ -193,6 +265,7 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	phone := customer.Phone.String
 	pair, err := h.auth.IssueCustomerTokens(uuid.UUID(customer.ID.Bytes), tenantID, customer.Name, phone)
 	if err != nil {
 		h.log.Error("customer token issue failed", "error", err)
@@ -209,6 +282,7 @@ func (h *Handler) VerifyOtp(w http.ResponseWriter, r *http.Request) {
 			"name":       customer.Name,
 			"phone":      MaskPhone(phone),
 			"phone_full": phone,
+			"email":      customer.Email.String,
 			"is_new":     isNew,
 		},
 		"store_name": storeName,
@@ -275,7 +349,6 @@ func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
 		"benefits": []string{
 			"Faster checkout with your details already filled in",
 			"Order history and live tracking from your profile",
-			"Offers and coupons as soon as they launch",
 		},
 	})
 }

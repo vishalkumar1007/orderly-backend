@@ -297,3 +297,66 @@ func TestEmailOTPAttemptLimitAndExpiry(t *testing.T) {
 		t.Fatalf("the correct code must be rejected once the attempt limit is exhausted, got 200: %v", body)
 	}
 }
+
+// TestLoginOffersOnlyMethodsTheBusinessAllows: the sign-in screen offers the
+// second factors the person has set up AND their business allows, so a method
+// the business switched off can no longer be used. If that leaves nothing,
+// their own methods still count: a policy change must never lock anyone out.
+func TestLoginOffersOnlyMethodsTheBusinessAllows(t *testing.T) {
+	env := newTestEnv(t)
+	tenantID := allowAndPolicyTenant(t, env, "Two Methods Shop", "two-methods-"+randSuffix(),
+		"OPTIONAL", []string{"TOTP", "EMAIL_OTP"}, 0)
+	const password = "correct horse battery staple"
+	email := createRealTenantAdmin(t, env, tenantID, password)
+	host := env.hostFor(tenantID)
+
+	enroll := func(method string) {
+		t.Helper()
+		if _, err := env.server.pool.Exec(context.Background(),
+			`INSERT INTO user_mfa_methods (user_id, method, secret_enc) SELECT id, $2, 'x' FROM users WHERE email = $1`,
+			email, method); err != nil {
+			t.Fatalf("enroll %s: %v", method, err)
+		}
+	}
+	offered := func() (methods []string, token string) {
+		t.Helper()
+		status, body := env.doOn(http.MethodPost, "/api/v1/auth/tenant/login", "", map[string]any{
+			"email": email, "password": password,
+		}, host)
+		env.mustStatus(http.StatusOK, status, "login", body)
+		for _, m := range body["methods"].([]any) {
+			methods = append(methods, m.(string))
+		}
+		token, _ = body["challenge_token"].(string)
+		return methods, token
+	}
+
+	enroll("TOTP")
+	enroll("EMAIL_OTP")
+	if got, _ := offered(); len(got) != 2 {
+		t.Fatalf("both methods allowed and set up: offered %v, want both", got)
+	}
+
+	setTenantMfaPolicy(t, env, tenantID, "OPTIONAL", []string{"TOTP"}, 0)
+	got, token := offered()
+	if len(got) != 1 || got[0] != "TOTP" {
+		t.Fatalf("email switched off by the business: offered %v, want [TOTP]", got)
+	}
+	status, body := env.doOn(http.MethodPost, "/api/v1/auth/mfa/challenge/email/send", "", map[string]any{
+		"challenge_token": token,
+	}, host)
+	if status == http.StatusOK {
+		t.Fatalf("an email code must not be sent for a method the business switched off: %v", body)
+	}
+
+	// The business now allows only email, and this person has removed it:
+	// their authenticator app still works rather than locking them out.
+	if _, err := env.server.pool.Exec(context.Background(),
+		`DELETE FROM user_mfa_methods WHERE method = 'EMAIL_OTP' AND user_id = (SELECT id FROM users WHERE email = $1)`, email); err != nil {
+		t.Fatal(err)
+	}
+	setTenantMfaPolicy(t, env, tenantID, "OPTIONAL", []string{"EMAIL_OTP"}, 0)
+	if got, _ := offered(); len(got) != 1 || got[0] != "TOTP" {
+		t.Fatalf("nothing allowed is set up: offered %v, want their own [TOTP]", got)
+	}
+}

@@ -9,6 +9,17 @@ DO UPDATE SET
     last_login_at = now()
 RETURNING *;
 
+-- name: UpsertCustomerByEmail :one
+-- Email sign-in. The unique index is on lower(email), so the conflict target
+-- names the same expression.
+INSERT INTO customers (tenant_id, name, email, last_login_at)
+VALUES (sqlc.arg(tenant_id), sqlc.arg(name), lower(sqlc.arg(email)::text), now())
+ON CONFLICT (tenant_id, lower(email)) WHERE email IS NOT NULL
+DO UPDATE SET
+    name = CASE WHEN customers.name = '' THEN EXCLUDED.name ELSE customers.name END,
+    last_login_at = now()
+RETURNING *;
+
 -- name: GetCustomerByPhone :one
 SELECT * FROM customers
 WHERE tenant_id = $1 AND phone = $2

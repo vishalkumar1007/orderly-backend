@@ -15,7 +15,7 @@ const checkInReservation = `-- name: CheckInReservation :one
 UPDATE reservations
 SET status = 'CHECKED_IN', room_id = $3, checked_in_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $4
-RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
+RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount
 `
 
 type CheckInReservationParams struct {
@@ -47,6 +47,10 @@ func (q *Queries) CheckInReservation(ctx context.Context, arg CheckInReservation
 		&i.CheckedOutAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
 	)
 	return i, err
 }
@@ -55,7 +59,7 @@ const checkOutReservation = `-- name: CheckOutReservation :one
 UPDATE reservations
 SET status = 'CHECKED_OUT', checked_out_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $3
-RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
+RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount
 `
 
 type CheckOutReservationParams struct {
@@ -81,6 +85,10 @@ func (q *Queries) CheckOutReservation(ctx context.Context, arg CheckOutReservati
 		&i.CheckedOutAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
 	)
 	return i, err
 }
@@ -175,10 +183,64 @@ func (q *Queries) CreateHousekeepingTask(ctx context.Context, arg CreateHousekee
 	return i, err
 }
 
+const createOnlineReservation = `-- name: CreateOnlineReservation :one
+INSERT INTO reservations (tenant_id, customer_id, room_type_id, check_in_date, check_out_date, guests,
+                          status, source, client_token, notes, total_amount)
+VALUES ($1, $2, $3, $4, $5, $6, 'REQUESTED', 'ONLINE', $7, $8, $9)
+RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount
+`
+
+type CreateOnlineReservationParams struct {
+	TenantID     pgtype.UUID    `json:"tenant_id"`
+	CustomerID   pgtype.UUID    `json:"customer_id"`
+	RoomTypeID   pgtype.UUID    `json:"room_type_id"`
+	CheckInDate  pgtype.Date    `json:"check_in_date"`
+	CheckOutDate pgtype.Date    `json:"check_out_date"`
+	Guests       int32          `json:"guests"`
+	ClientToken  string         `json:"client_token"`
+	Notes        string         `json:"notes"`
+	TotalAmount  pgtype.Numeric `json:"total_amount"`
+}
+
+func (q *Queries) CreateOnlineReservation(ctx context.Context, arg CreateOnlineReservationParams) (Reservation, error) {
+	row := q.db.QueryRow(ctx, createOnlineReservation,
+		arg.TenantID,
+		arg.CustomerID,
+		arg.RoomTypeID,
+		arg.CheckInDate,
+		arg.CheckOutDate,
+		arg.Guests,
+		arg.ClientToken,
+		arg.Notes,
+		arg.TotalAmount,
+	)
+	var i Reservation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CustomerID,
+		&i.RoomTypeID,
+		&i.RoomID,
+		&i.CheckInDate,
+		&i.CheckOutDate,
+		&i.Guests,
+		&i.Status,
+		&i.CheckedInAt,
+		&i.CheckedOutAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
+	)
+	return i, err
+}
+
 const createReservation = `-- name: CreateReservation :one
 INSERT INTO reservations (tenant_id, customer_id, room_type_id, check_in_date, check_out_date, guests, status)
 VALUES ($1, $2, $3, $4, $5, $6, 'REQUESTED')
-RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
+RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount
 `
 
 type CreateReservationParams struct {
@@ -214,6 +276,10 @@ func (q *Queries) CreateReservation(ctx context.Context, arg CreateReservationPa
 		&i.CheckedOutAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
 	)
 	return i, err
 }
@@ -248,7 +314,7 @@ const createRoomType = `-- name: CreateRoomType :one
 
 INSERT INTO room_types (tenant_id, name, base_price, max_guests)
 VALUES ($1, $2, $3, $4)
-RETURNING id, tenant_id, name, base_price, max_guests, created_at
+RETURNING id, tenant_id, name, base_price, max_guests, created_at, description, image_url
 `
 
 type CreateRoomTypeParams struct {
@@ -276,6 +342,8 @@ func (q *Queries) CreateRoomType(ctx context.Context, arg CreateRoomTypeParams) 
 		&i.BasePrice,
 		&i.MaxGuests,
 		&i.CreatedAt,
+		&i.Description,
+		&i.ImageUrl,
 	)
 	return i, err
 }
@@ -332,8 +400,42 @@ func (q *Queries) GetFolioByReservation(ctx context.Context, arg GetFolioByReser
 	return i, err
 }
 
+const getReservationByClientToken = `-- name: GetReservationByClientToken :one
+SELECT id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount FROM reservations WHERE tenant_id = $1 AND client_token = $2 AND client_token <> '' LIMIT 1
+`
+
+type GetReservationByClientTokenParams struct {
+	TenantID    pgtype.UUID `json:"tenant_id"`
+	ClientToken string      `json:"client_token"`
+}
+
+func (q *Queries) GetReservationByClientToken(ctx context.Context, arg GetReservationByClientTokenParams) (Reservation, error) {
+	row := q.db.QueryRow(ctx, getReservationByClientToken, arg.TenantID, arg.ClientToken)
+	var i Reservation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CustomerID,
+		&i.RoomTypeID,
+		&i.RoomID,
+		&i.CheckInDate,
+		&i.CheckOutDate,
+		&i.Guests,
+		&i.Status,
+		&i.CheckedInAt,
+		&i.CheckedOutAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
+	)
+	return i, err
+}
+
 const getReservationByID = `-- name: GetReservationByID :one
-SELECT id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at FROM reservations WHERE id = $1 AND tenant_id = $2 LIMIT 1
+SELECT id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount FROM reservations WHERE id = $1 AND tenant_id = $2 LIMIT 1
 `
 
 type GetReservationByIDParams struct {
@@ -358,6 +460,10 @@ func (q *Queries) GetReservationByID(ctx context.Context, arg GetReservationByID
 		&i.CheckedOutAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
 	)
 	return i, err
 }
@@ -386,7 +492,7 @@ func (q *Queries) GetRoomByID(ctx context.Context, arg GetRoomByIDParams) (Room,
 }
 
 const getRoomTypeByID = `-- name: GetRoomTypeByID :one
-SELECT id, tenant_id, name, base_price, max_guests, created_at FROM room_types WHERE id = $1 AND tenant_id = $2 LIMIT 1
+SELECT id, tenant_id, name, base_price, max_guests, created_at, description, image_url FROM room_types WHERE id = $1 AND tenant_id = $2 LIMIT 1
 `
 
 type GetRoomTypeByIDParams struct {
@@ -404,6 +510,8 @@ func (q *Queries) GetRoomTypeByID(ctx context.Context, arg GetRoomTypeByIDParams
 		&i.BasePrice,
 		&i.MaxGuests,
 		&i.CreatedAt,
+		&i.Description,
+		&i.ImageUrl,
 	)
 	return i, err
 }
@@ -433,6 +541,82 @@ func (q *Queries) ListChargesByFolio(ctx context.Context, arg ListChargesByFolio
 			&i.Description,
 			&i.Amount,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomerReservations = `-- name: ListCustomerReservations :many
+SELECT r.id, r.tenant_id, r.customer_id, r.room_type_id, r.room_id, r.check_in_date, r.check_out_date, r.guests, r.status, r.checked_in_at, r.checked_out_at, r.created_at, r.updated_at, r.source, r.client_token, r.notes, r.total_amount, rt.name AS room_type_name, rt.image_url AS room_type_image
+FROM reservations r
+JOIN room_types rt ON rt.id = r.room_type_id
+WHERE r.tenant_id = $1 AND r.customer_id = $2
+ORDER BY r.check_in_date DESC
+LIMIT 50
+`
+
+type ListCustomerReservationsParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	CustomerID pgtype.UUID `json:"customer_id"`
+}
+
+type ListCustomerReservationsRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	CustomerID    pgtype.UUID        `json:"customer_id"`
+	RoomTypeID    pgtype.UUID        `json:"room_type_id"`
+	RoomID        pgtype.UUID        `json:"room_id"`
+	CheckInDate   pgtype.Date        `json:"check_in_date"`
+	CheckOutDate  pgtype.Date        `json:"check_out_date"`
+	Guests        int32              `json:"guests"`
+	Status        string             `json:"status"`
+	CheckedInAt   pgtype.Timestamptz `json:"checked_in_at"`
+	CheckedOutAt  pgtype.Timestamptz `json:"checked_out_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Source        string             `json:"source"`
+	ClientToken   string             `json:"client_token"`
+	Notes         string             `json:"notes"`
+	TotalAmount   pgtype.Numeric     `json:"total_amount"`
+	RoomTypeName  string             `json:"room_type_name"`
+	RoomTypeImage string             `json:"room_type_image"`
+}
+
+func (q *Queries) ListCustomerReservations(ctx context.Context, arg ListCustomerReservationsParams) ([]ListCustomerReservationsRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerReservations, arg.TenantID, arg.CustomerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCustomerReservationsRow{}
+	for rows.Next() {
+		var i ListCustomerReservationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.CustomerID,
+			&i.RoomTypeID,
+			&i.RoomID,
+			&i.CheckInDate,
+			&i.CheckOutDate,
+			&i.Guests,
+			&i.Status,
+			&i.CheckedInAt,
+			&i.CheckedOutAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Source,
+			&i.ClientToken,
+			&i.Notes,
+			&i.TotalAmount,
+			&i.RoomTypeName,
+			&i.RoomTypeImage,
 		); err != nil {
 			return nil, err
 		}
@@ -518,7 +702,7 @@ func (q *Queries) ListOpenHousekeepingTasks(ctx context.Context, tenantID pgtype
 }
 
 const listReservationsByTenant = `-- name: ListReservationsByTenant :many
-SELECT id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at FROM reservations WHERE tenant_id = $1 ORDER BY check_in_date DESC LIMIT $2
+SELECT id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount FROM reservations WHERE tenant_id = $1 ORDER BY check_in_date DESC LIMIT $2
 `
 
 type ListReservationsByTenantParams struct {
@@ -549,6 +733,10 @@ func (q *Queries) ListReservationsByTenant(ctx context.Context, arg ListReservat
 			&i.CheckedOutAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Source,
+			&i.ClientToken,
+			&i.Notes,
+			&i.TotalAmount,
 		); err != nil {
 			return nil, err
 		}
@@ -561,7 +749,7 @@ func (q *Queries) ListReservationsByTenant(ctx context.Context, arg ListReservat
 }
 
 const listRoomTypesByTenant = `-- name: ListRoomTypesByTenant :many
-SELECT id, tenant_id, name, base_price, max_guests, created_at FROM room_types WHERE tenant_id = $1 ORDER BY name ASC
+SELECT id, tenant_id, name, base_price, max_guests, created_at, description, image_url FROM room_types WHERE tenant_id = $1 ORDER BY name ASC
 `
 
 func (q *Queries) ListRoomTypesByTenant(ctx context.Context, tenantID pgtype.UUID) ([]RoomType, error) {
@@ -580,6 +768,8 @@ func (q *Queries) ListRoomTypesByTenant(ctx context.Context, tenantID pgtype.UUI
 			&i.BasePrice,
 			&i.MaxGuests,
 			&i.CreatedAt,
+			&i.Description,
+			&i.ImageUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -611,6 +801,94 @@ func (q *Queries) ListRoomsByTenant(ctx context.Context, tenantID pgtype.UUID) (
 			&i.Number,
 			&i.Status,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockRoomType = `-- name: LockRoomType :one
+SELECT id FROM room_types WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+`
+
+type LockRoomTypeParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) LockRoomType(ctx context.Context, arg LockRoomTypeParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRoomType, arg.ID, arg.TenantID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const roomTypeAvailability = `-- name: RoomTypeAvailability :many
+
+SELECT rt.id, rt.tenant_id, rt.name, rt.base_price, rt.max_guests, rt.created_at, rt.description, rt.image_url,
+       (SELECT count(*) FROM rooms r WHERE r.tenant_id = rt.tenant_id AND r.room_type_id = rt.id)::int AS total_rooms,
+       COALESCE((
+           SELECT max(c) FROM (
+               SELECT count(*) AS c
+               FROM generate_series($1::date, $2::date - 1, interval '1 day') AS n
+               JOIN reservations res ON res.tenant_id = rt.tenant_id AND res.room_type_id = rt.id
+                   AND res.status IN ('REQUESTED', 'CONFIRMED', 'CHECKED_IN')
+                   AND res.check_in_date <= n::date AND res.check_out_date > n::date
+               GROUP BY n
+           ) nights
+       ), 0)::int AS booked
+FROM room_types rt
+WHERE rt.tenant_id = $3
+ORDER BY rt.base_price ASC, rt.name ASC
+`
+
+type RoomTypeAvailabilityParams struct {
+	CheckIn  pgtype.Date `json:"check_in"`
+	CheckOut pgtype.Date `json:"check_out"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+type RoomTypeAvailabilityRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	Name        string             `json:"name"`
+	BasePrice   pgtype.Numeric     `json:"base_price"`
+	MaxGuests   int32              `json:"max_guests"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Description string             `json:"description"`
+	ImageUrl    string             `json:"image_url"`
+	TotalRooms  int32              `json:"total_rooms"`
+	Booked      int32              `json:"booked"`
+}
+
+// Storefront stays. Availability for a date range is the room type's room
+// count minus its busiest night in that range, so two short stays that do
+// not overlap each other can share one room.
+func (q *Queries) RoomTypeAvailability(ctx context.Context, arg RoomTypeAvailabilityParams) ([]RoomTypeAvailabilityRow, error) {
+	rows, err := q.db.Query(ctx, roomTypeAvailability, arg.CheckIn, arg.CheckOut, arg.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoomTypeAvailabilityRow{}
+	for rows.Next() {
+		var i RoomTypeAvailabilityRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.BasePrice,
+			&i.MaxGuests,
+			&i.CreatedAt,
+			&i.Description,
+			&i.ImageUrl,
+			&i.TotalRooms,
+			&i.Booked,
 		); err != nil {
 			return nil, err
 		}
@@ -679,7 +957,7 @@ func (q *Queries) UpdateHousekeepingTaskStatus(ctx context.Context, arg UpdateHo
 const updateReservationStatus = `-- name: UpdateReservationStatus :one
 UPDATE reservations SET status = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status = $4
-RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at
+RETURNING id, tenant_id, customer_id, room_type_id, room_id, check_in_date, check_out_date, guests, status, checked_in_at, checked_out_at, created_at, updated_at, source, client_token, notes, total_amount
 `
 
 type UpdateReservationStatusParams struct {
@@ -711,6 +989,10 @@ func (q *Queries) UpdateReservationStatus(ctx context.Context, arg UpdateReserva
 		&i.CheckedOutAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+		&i.ClientToken,
+		&i.Notes,
+		&i.TotalAmount,
 	)
 	return i, err
 }
@@ -751,17 +1033,21 @@ const updateRoomType = `-- name: UpdateRoomType :one
 UPDATE room_types SET
     name = COALESCE($1, name),
     base_price = COALESCE($2, base_price),
-    max_guests = COALESCE($3, max_guests)
-WHERE id = $4 AND tenant_id = $5
-RETURNING id, tenant_id, name, base_price, max_guests, created_at
+    max_guests = COALESCE($3, max_guests),
+    description = COALESCE($4, description),
+    image_url = COALESCE($5, image_url)
+WHERE id = $6 AND tenant_id = $7
+RETURNING id, tenant_id, name, base_price, max_guests, created_at, description, image_url
 `
 
 type UpdateRoomTypeParams struct {
-	Name      pgtype.Text    `json:"name"`
-	BasePrice pgtype.Numeric `json:"base_price"`
-	MaxGuests pgtype.Int4    `json:"max_guests"`
-	ID        pgtype.UUID    `json:"id"`
-	TenantID  pgtype.UUID    `json:"tenant_id"`
+	Name        pgtype.Text    `json:"name"`
+	BasePrice   pgtype.Numeric `json:"base_price"`
+	MaxGuests   pgtype.Int4    `json:"max_guests"`
+	Description pgtype.Text    `json:"description"`
+	ImageUrl    pgtype.Text    `json:"image_url"`
+	ID          pgtype.UUID    `json:"id"`
+	TenantID    pgtype.UUID    `json:"tenant_id"`
 }
 
 func (q *Queries) UpdateRoomType(ctx context.Context, arg UpdateRoomTypeParams) (RoomType, error) {
@@ -769,6 +1055,8 @@ func (q *Queries) UpdateRoomType(ctx context.Context, arg UpdateRoomTypeParams) 
 		arg.Name,
 		arg.BasePrice,
 		arg.MaxGuests,
+		arg.Description,
+		arg.ImageUrl,
 		arg.ID,
 		arg.TenantID,
 	)
@@ -780,6 +1068,8 @@ func (q *Queries) UpdateRoomType(ctx context.Context, arg UpdateRoomTypeParams) 
 		&i.BasePrice,
 		&i.MaxGuests,
 		&i.CreatedAt,
+		&i.Description,
+		&i.ImageUrl,
 	)
 	return i, err
 }

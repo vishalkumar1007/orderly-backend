@@ -6,7 +6,7 @@
 -- excluded from revenue but still counted as orders, which is what an operator
 -- wants to see when judging how busy they were.
 SELECT
-    date_trunc('day', created_at)::date AS day,
+    (created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day,
     COUNT(*)::bigint AS order_count,
     COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
 FROM orders
@@ -49,10 +49,10 @@ ORDER BY SUM(oi.quantity * oi.unit_price) DESC, SUM(oi.quantity) DESC, p.name AS
 LIMIT sqlc.arg(row_limit);
 
 -- name: TenantOrdersByHour :many
--- Orders by hour of day, averaged over the window, so a single quiet Tuesday
--- does not read as a permanently quiet hour.
+-- Orders by hour of day on the shop's own clock, averaged over the window in
+-- Go, so a single quiet Tuesday does not read as a permanently quiet hour.
 SELECT
-    EXTRACT(HOUR FROM created_at)::int AS hour_of_day,
+    EXTRACT(HOUR FROM created_at AT TIME ZONE sqlc.arg(tz)::text)::int AS hour_of_day,
     COUNT(*)::bigint AS order_count
 FROM orders
 WHERE tenant_id = sqlc.arg(tenant_id)
@@ -196,3 +196,17 @@ WHERE o.tenant_id = sqlc.arg(tenant_id)
 GROUP BY c.id, c.name
 ORDER BY units DESC, revenue DESC
 LIMIT sqlc.arg(row_limit);
+
+-- name: TenantOrdersByWeekdayHour :many
+-- Orders by weekday (0 = Monday) and hour on the shop's own clock: the grid
+-- behind "when is the rush". Totals, not averages, so one order reads as one.
+SELECT
+    (EXTRACT(ISODOW FROM created_at AT TIME ZONE sqlc.arg(tz)::text)::int - 1) AS weekday,
+    EXTRACT(HOUR FROM created_at AT TIME ZONE sqlc.arg(tz)::text)::int AS hour_of_day,
+    COUNT(*)::bigint AS order_count
+FROM orders
+WHERE tenant_id = sqlc.arg(tenant_id)
+    AND status <> 'CANCELLED'
+    AND created_at >= now() - sqlc.arg(days)::interval
+GROUP BY 1, 2
+ORDER BY 1, 2;

@@ -21,10 +21,12 @@ import (
 	"github.com/orderly/orderly-backend/internal/config"
 	"github.com/orderly/orderly-backend/internal/confighttp"
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/signin"
 	"github.com/orderly/orderly-backend/internal/customers"
 	"github.com/orderly/orderly-backend/internal/entitlement"
 	"github.com/orderly/orderly-backend/internal/hotel"
 	"github.com/orderly/orderly-backend/internal/inventory"
+	"github.com/orderly/orderly-backend/internal/media"
 	"github.com/orderly/orderly-backend/internal/menu"
 	"github.com/orderly/orderly-backend/internal/notify"
 	"github.com/orderly/orderly-backend/internal/orders"
@@ -47,6 +49,7 @@ type Server struct {
 	admin         *platform.Handler
 	menu          *menu.Handler
 	upload        *menu.UploadHandler
+	media         *media.Handler
 	orders        *orders.Handler
 	shop          *storefront.AdminHandler
 	loader        *storefront.Loader
@@ -74,7 +77,9 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 	configService := configsvc.NewService(store, resolver, slogAdapter{log})
 	admin.AttachConfigService(configService, box)
 	admin.AttachLogger(log)
-	uploadHandler := menu.NewUploadHandler(configService.StorageService())
+	apiOrigin := publicurl.APIOrigin(cfg.BaseDomain, cfg.AppEnv, cfg.HTTPAddr)
+	uploadHandler := menu.NewUploadHandler(configService.StorageService(), apiOrigin)
+	mediaHandler := media.NewHandler(configService.StorageService())
 
 	if box.Disabled() {
 		log.Warn("CONFIG_ENCRYPTION_KEY is not set: provider secrets cannot be stored. " +
@@ -83,6 +88,7 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 
 	authSvc := auth.NewService(pool, cfg, log)
 	authSvc.AttachNotifications(configService.Notifications())
+	signIn := signin.NewService(pool, configService, cfg.AppEnv == "production" || cfg.AppEnv == "prod", cfg.SignInTestFallback)
 	orderHandler := orders.NewHandler(pool, log)
 	paymentService := payments.NewService(pool, orderHandler.PayableSource(), configService, cfg.PaymentsV2, sandboxSecret(cfg), log)
 	orderHandler.SetPayments(paymentService)
@@ -92,6 +98,7 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 		auth:          authSvc,
 		admin:         admin,
 		upload:        uploadHandler,
+		media:         mediaHandler,
 		orders:        orderHandler,
 		customers:     customers.NewHandler(pool, orderHandler.Viewer(), loader, cfg, log),
 		payments:      payments.NewHandler(pool, orderHandler.PayableSource(), paymentService, log),
@@ -108,6 +115,22 @@ func New(log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) *Server {
 	// attached after the server value exists.
 	s.menu = menu.NewHandler(pool, s.publicStoreURL)
 	s.shop = storefront.NewAdminHandler(pool, s.publicStoreURL)
+	s.shop.AttachSignIn(signIn)
+	s.customers.AttachSignIn(signIn)
+	s.orders.AttachSignIn(signIn)
+
+	// Image links saved before media URLs existed (expiring or plain-http
+	// storage links) are rewritten once, in the background, so they show
+	// again without anyone re-uploading.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if n, err := media.Repair(ctx, pool, apiOrigin); err != nil {
+			log.Warn("media: could not repair image links", "error", err)
+		} else if n > 0 {
+			log.Info("media: rewrote image links to media URLs", "count", n)
+		}
+	}()
 	return s
 }
 
@@ -178,6 +201,8 @@ func (s *Server) Router() http.Handler {
 	r.Get("/health/ready", s.handleReady)
 
 	r.Route("/api/v1", func(api chi.Router) {
+		// Uploaded images, fetched anonymously by pages and mail clients.
+		api.Get("/media/{scope}/*", s.media.Serve)
 		// Email logos, fetched anonymously by mail clients (see EmailAsset).
 		api.Get("/email-assets/{scope}/{name}", s.admin.EmailAsset)
 
@@ -689,6 +714,19 @@ func (s *Server) Router() http.Handler {
 			pr.With(reqOrders, wrap(s.payLimits.start)).Post("/orders/{orderNumber}/pay", s.payments.Start)
 			pr.With(reqOrders, wrap(s.payLimits.confirm)).Post("/orders/{orderNumber}/pay/confirm", s.payments.Confirm)
 			pr.With(reqOrders, wrap(s.payLimits.status)).Get("/orders/{orderNumber}/pay", s.payments.Status)
+
+			// Storefront booking: barbers, salons and garages book time;
+			// hotels reserve rooms. Each needs the capability that runs it,
+			// and a stay needs ROOMS as well as RESERVATIONS because a
+			// restaurant has RESERVATIONS (tables) without rooms.
+			reqAppointments := tenantctx.RequireCapability(tenantctx.CapAppointments)
+			reqRooms := tenantctx.RequireCapability(tenantctx.CapRooms)
+			reqReservations := tenantctx.RequireCapability(tenantctx.CapReservations)
+			pr.With(reqAppointments).Get("/services", s.appointments.PublicServices)
+			pr.With(reqAppointments).Get("/slots", s.appointments.PublicSlots)
+			pr.With(reqAppointments, wrap(s.payLimits.book)).Post("/appointments", s.appointments.PublicBook)
+			pr.With(reqRooms).Get("/room-types", s.hotel.PublicRoomTypes)
+			pr.With(reqRooms, reqReservations, wrap(s.payLimits.book)).Post("/reservations", s.hotel.PublicReserve)
 		})
 
 		// Storefront customer identity. Reachable before an order exists, so
@@ -705,6 +743,14 @@ func (s *Server) Router() http.Handler {
 			cr.Get("/orders", s.customers.Orders)
 			cr.Get("/orders/{orderNumber}", s.customers.SingleOrder)
 			cr.Post("/logout", s.customers.Logout)
+
+			reqAppointments := tenantctx.RequireCapability(tenantctx.CapAppointments)
+			reqRooms := tenantctx.RequireCapability(tenantctx.CapRooms)
+			cr.With(reqAppointments).Get("/appointments", s.appointments.CustomerAppointments)
+			cr.With(reqAppointments).Post("/appointments/{id}/cancel", s.appointments.CancelAppointment)
+			cr.With(reqAppointments, wrap(s.payLimits.book)).Post("/appointments/{id}/reschedule", s.appointments.RescheduleAppointment)
+			cr.With(reqRooms).Get("/reservations", s.hotel.CustomerReservations)
+			cr.With(reqRooms).Post("/reservations/{id}/cancel", s.hotel.CancelReservation)
 		})
 	})
 

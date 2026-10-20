@@ -68,6 +68,13 @@ const (
 	FilterPills = "pills"
 	FilterRail  = "rail"
 
+	SurfaceClean    = "clean"
+	SurfacePaper    = "paper"
+	SurfaceMist     = "mist"
+	SurfaceStone    = "stone"
+	SurfaceTinted   = "tinted"
+	SurfaceContrast = "contrast"
+
 	LoginOff      = "off"
 	LoginOptional = "optional"
 	LoginRequired = "required"
@@ -89,10 +96,15 @@ const (
 
 	// Notification sound choices. Played client-side (Web Audio tones, no
 	// audio files): this only picks which one, never a file to host.
-	SoundNone  = "NONE"
-	SoundChime = "CHIME"
-	SoundBell  = "BELL"
-	SoundPing  = "PING"
+	SoundNone     = "NONE"
+	SoundChime    = "CHIME"
+	SoundBell     = "BELL"
+	SoundPing     = "PING"
+	SoundDingDong = "DINGDONG"
+	SoundMarimba  = "MARIMBA"
+	SoundRise     = "RISE"
+	SoundRegister = "REGISTER"
+	SoundUrgent   = "URGENT"
 )
 
 // validStoreStatuses lists every accepted store_status value.
@@ -146,20 +158,21 @@ func StoreStatusAllowsOrder(status string) bool {
 }
 
 var (
-	validPresets   = []string{PresetClassic, PresetModern, PresetStreet, PresetMinimal, PresetFresh, PresetDark}
-	validModes     = []string{ModeLight, ModeDark, ModeSystem}
-	validFonts     = []string{FontInter, FontSora, FontPoppins, FontSystem}
-	validRadii     = []string{RadiusNone, RadiusSm, RadiusMd, RadiusLg, RadiusPill}
-	validButtons   = []string{ButtonRounded, ButtonPill, ButtonSquare, ButtonSoft}
-	validCards     = []string{CardElevated, CardOutlined, CardFilled, CardMinimal}
-	validHeaders   = []string{HeaderSticky, HeaderSolid, HeaderTransp}
-	validHeros     = []string{HeroImage, HeroGradient, HeroCompact, HeroNone}
-	validLayouts   = []string{LayoutList, LayoutGrid, LayoutCompact}
-	validFilters   = []string{FilterChips, FilterPills, FilterRail}
+	validPresets    = []string{PresetClassic, PresetModern, PresetStreet, PresetMinimal, PresetFresh, PresetDark}
+	validModes      = []string{ModeLight, ModeDark, ModeSystem}
+	validFonts      = []string{FontInter, FontSora, FontPoppins, FontSystem}
+	validRadii      = []string{RadiusNone, RadiusSm, RadiusMd, RadiusLg, RadiusPill}
+	validButtons    = []string{ButtonRounded, ButtonPill, ButtonSquare, ButtonSoft}
+	validCards      = []string{CardElevated, CardOutlined, CardFilled, CardMinimal}
+	validHeaders    = []string{HeaderSticky, HeaderSolid, HeaderTransp}
+	validHeros      = []string{HeroImage, HeroGradient, HeroCompact, HeroNone}
+	validLayouts    = []string{LayoutList, LayoutGrid, LayoutCompact}
+	validFilters    = []string{FilterChips, FilterPills, FilterRail}
+	validSurfaces   = []string{SurfaceClean, SurfacePaper, SurfaceMist, SurfaceStone, SurfaceTinted, SurfaceContrast}
 	validLoginModes = []string{LoginOff, LoginOptional, LoginRequired}
-	validAccept    = []string{AcceptManual, AcceptAuto}
-	validPayTiming = []string{PayBeforePrep, PayAtPickup}
-	validSounds    = []string{SoundNone, SoundChime, SoundBell, SoundPing}
+	validAccept     = []string{AcceptManual, AcceptAuto}
+	validPayTiming  = []string{PayBeforePrep, PayAtPickup}
+	validSounds     = []string{SoundNone, SoundChime, SoundBell, SoundPing, SoundDingDong, SoundMarimba, SoundRise, SoundRegister, SoundUrgent}
 )
 
 // ErrNotFound is returned when a tenant has no storefront configuration yet.
@@ -169,12 +182,12 @@ var ErrNotFound = errors.New("storefront settings not found")
 // consumer works from this struct rather than raw JSON, so a malformed
 // document can never reach a customer.
 type Storefront struct {
-	TenantID    uuid.UUID
-	TenantName  string
-	Slug        string
-	BusinessTy  string
-	Currency    string
-	Timezone    string
+	TenantID      uuid.UUID
+	TenantName    string
+	Slug          string
+	BusinessTy    string
+	Currency      string
+	Timezone      string
 	IsPublished   bool
 	StoreStatus   string
 	StatusMessage string
@@ -199,14 +212,17 @@ type Storefront struct {
 	// legacy boolean (mode != off) kept for older clients.
 	CustomerLoginMode string
 	CustomerLogin     bool
-	PrepTimeMinutes int
-	TaxPercent      float64
-	PackagingFee    float64
-	OpeningHours    Hours
-	Homepage        Homepage
-	Payments        PaymentSettings
-	Workflow        Workflow
-	UpdatedAt       time.Time
+	// CustomerLoginMethods is what the owner offers (PHONE, EMAIL). A method
+	// reaches customers only when its channel is set up too (see signin).
+	CustomerLoginMethods []string
+	PrepTimeMinutes      int
+	TaxPercent           float64
+	PackagingFee         float64
+	OpeningHours         Hours
+	Homepage             Homepage
+	Payments             PaymentSettings
+	Workflow             Workflow
+	UpdatedAt            time.Time
 
 	rawHomepage     []byte
 	rawPayments     []byte
@@ -321,22 +337,22 @@ type Seed struct {
 
 func fromRow(row sqlc.GetStorefrontConfigRow) (*Storefront, error) {
 	sf := &Storefront{
-		TenantID:        uuid.UUID(row.TenantID.Bytes),
-		TenantName:      row.TenantName,
-		Slug:            row.Slug,
-		BusinessTy:      row.BusinessType,
-		Currency:        row.Currency,
-		Timezone:        row.Timezone,
-		IsPublished:     row.IsPublished,
-		StoreStatus:     row.StoreStatus,
-		StatusMessage:   row.StatusMessage,
-		LogoURL:         row.LogoUrl,
-		FaviconURL:      row.FaviconUrl,
-		Name:            strings.TrimSpace(row.BusinessName),
-		Tagline:         row.Tagline,
-		About:           row.Description,
-		Phone:           row.Phone,
-		Address:         row.Address,
+		TenantID:          uuid.UUID(row.TenantID.Bytes),
+		TenantName:        row.TenantName,
+		Slug:              row.Slug,
+		BusinessTy:        row.BusinessType,
+		Currency:          row.Currency,
+		Timezone:          row.Timezone,
+		IsPublished:       row.IsPublished,
+		StoreStatus:       row.StoreStatus,
+		StatusMessage:     row.StatusMessage,
+		LogoURL:           row.LogoUrl,
+		FaviconURL:        row.FaviconUrl,
+		Name:              strings.TrimSpace(row.BusinessName),
+		Tagline:           row.Tagline,
+		About:             row.Description,
+		Phone:             row.Phone,
+		Address:           row.Address,
 		OrderingEnabled:   row.OrderingEnabled,
 		ClosedMessage:     row.ClosedMessage,
 		CustomerLoginMode: oneOf(row.CustomerLoginMode, LoginOptional, validLoginModes),
@@ -350,6 +366,7 @@ func fromRow(row sqlc.GetStorefrontConfigRow) (*Storefront, error) {
 		UpdatedAt:         row.UpdatedAt.Time,
 	}
 	sf.CustomerLogin = sf.CustomerLoginMode != LoginOff
+	sf.CustomerLoginMethods = LoginMethods(row.CustomerLoginMethods)
 	if sf.Name == "" {
 		sf.Name = row.TenantName
 	}
@@ -537,4 +554,45 @@ func upperOneOf(value, fallback string, allowed []string) string {
 		}
 	}
 	return fallback
+}
+
+// Customer sign-in methods.
+const (
+	LoginMethodPhone = "PHONE"
+	LoginMethodEmail = "EMAIL"
+)
+
+// LoginMethods keeps the known methods, once each, in a stable order.
+func LoginMethods(raw []string) []string {
+	out := make([]string, 0, 2)
+	for _, m := range []string{LoginMethodPhone, LoginMethodEmail} {
+		for _, r := range raw {
+			if strings.EqualFold(strings.TrimSpace(r), m) {
+				out = append(out, m)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// SignInChannel is whether one sign-in method's delivery channel works.
+type SignInChannel struct {
+	Ready bool `json:"ready"`
+	// Source is TENANT (the business's own account) or PLATFORM.
+	Source string `json:"source,omitempty"`
+	// Reason says why it is not ready, in words an owner can act on.
+	Reason string `json:"reason,omitempty"`
+}
+
+// SignInChecker reports channel readiness per method. internal/signin
+// implements it; the admin screen only needs to read it.
+type SignInChecker interface {
+	Channels(ctx context.Context, tenantID uuid.UUID) map[string]SignInChannel
+}
+
+// SignInOffer lists the methods customers actually see: chosen by the owner
+// and with a working channel. internal/signin implements it.
+type SignInOffer interface {
+	Offered(ctx context.Context, tenantID uuid.UUID, sf *Storefront) []string
 }

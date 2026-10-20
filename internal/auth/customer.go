@@ -187,3 +187,11 @@ func BearerToken(r *http.Request) string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// CustomerForTenant returns the signed-in customer only when their token was
+// issued by this business. A token from another shop on this host is treated
+// as no sign-in at all.
+func CustomerForTenant(ctx context.Context, tenantID uuid.UUID) (CustomerPrincipal, bool) {
+	c, ok := CustomerFromContext(ctx)
+	return c, ok && c.TenantID == tenantID
+}

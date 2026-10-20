@@ -311,13 +311,9 @@ func (s *Service) completeLoginMFA(ctx context.Context, user sqlc.User) (TokenPa
 		// The login is not "successful" until the second factor clears too:
 		// that audit entry is written in VerifyMFALogin instead, on whichever
 		// outcome actually happens.
-		methods, merr := s.enrolledMethods(ctx, userID)
+		names, merr := s.loginMethods(ctx, user)
 		if merr != nil {
 			return TokenPair{}, merr
-		}
-		names := make([]string, 0, len(methods))
-		for _, m := range methods {
-			names = append(names, m.Method)
 		}
 		token, terr := s.signMFAToken(mfaPurposeChallenge, userID.String(), "", mfaTokenTTL)
 		if terr != nil {

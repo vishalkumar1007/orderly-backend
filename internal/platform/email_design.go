@@ -272,11 +272,7 @@ func (h *Handler) uploadEmailLogo(w http.ResponseWriter, r *http.Request, tenant
 		response.Error(w, http.StatusBadGateway, "upload_failed", configsvc.SafeErrorMessage(err))
 		return
 	}
-	url := obj.URL
-	if url == "" {
-		url = requestOrigin(r) + "/api/v1/email-assets/" + scope + "/" + name
-	}
-	response.JSON(w, http.StatusOK, map[string]string{"url": url})
+	response.JSON(w, http.StatusOK, map[string]string{"url": h.assetURL(obj, scope, key)})
 }
 
 // EmailAsset serves an email logo by redirecting to a freshly signed storage
@@ -307,21 +303,4 @@ func (h *Handler) EmailAsset(w http.ResponseWriter, r *http.Request) {
 	// Shorter than the signature, so a cached redirect never points at a dead link.
 	w.Header().Set("Cache-Control", "public, max-age=1800")
 	http.Redirect(w, r, url, http.StatusFound)
-}
-
-// requestOrigin is the scheme and host this request reached us on, honouring
-// a proxy's forwarded headers: the address a mail client can fetch from.
-func requestOrigin(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
-		scheme = p
-	}
-	host := r.Host
-	if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
-		host = strings.TrimSpace(strings.Split(fh, ",")[0])
-	}
-	return scheme + "://" + host
 }

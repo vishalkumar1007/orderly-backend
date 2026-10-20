@@ -75,9 +75,25 @@ func tenantID(r *http.Request) uuid.UUID {
  * ------------------------------------------------------------------ */
 
 type roomTypeReq struct {
-	Name      string   `json:"name"`
-	BasePrice *float64 `json:"base_price"`
-	MaxGuests *int32   `json:"max_guests"`
+	Name        string   `json:"name"`
+	BasePrice   *float64 `json:"base_price"`
+	MaxGuests   *int32   `json:"max_guests"`
+	Description *string  `json:"description"`
+	ImageURL    *string  `json:"image_url"`
+}
+
+// presentation copies the guest-facing text fields onto an update.
+func (req roomTypeReq) presentation(params *sqlc.UpdateRoomTypeParams) bool {
+	set := false
+	if req.Description != nil {
+		params.Description = pgtype.Text{String: strings.TrimSpace(*req.Description), Valid: true}
+		set = true
+	}
+	if req.ImageURL != nil {
+		params.ImageUrl = pgtype.Text{String: strings.TrimSpace(*req.ImageURL), Valid: true}
+		set = true
+	}
+	return set
 }
 
 func (h *Handler) ListRoomTypes(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +132,12 @@ func (h *Handler) CreateRoomType(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusConflict, "conflict", "could not create room type")
 		return
 	}
+	extra := sqlc.UpdateRoomTypeParams{ID: rt.ID, TenantID: rt.TenantID}
+	if req.presentation(&extra) {
+		if updated, err := h.q.UpdateRoomType(r.Context(), extra); err == nil {
+			rt = updated
+		}
+	}
 	response.JSON(w, http.StatusCreated, roomTypeJSON(rt))
 }
 
@@ -145,6 +167,7 @@ func (h *Handler) UpdateRoomType(w http.ResponseWriter, r *http.Request) {
 	if req.MaxGuests != nil {
 		params.MaxGuests = pgtype.Int4{Int32: *req.MaxGuests, Valid: true}
 	}
+	req.presentation(&params)
 	rt, err := h.q.UpdateRoomType(r.Context(), params)
 	if err != nil {
 		response.Error(w, http.StatusNotFound, "not_found", "room type not found")
@@ -176,6 +199,7 @@ func roomTypeJSON(rt sqlc.RoomType) map[string]any {
 	return map[string]any{
 		"id": pgutil.UUIDString(rt.ID), "name": rt.Name,
 		"base_price": pgutil.NumericToFloat(rt.BasePrice), "max_guests": rt.MaxGuests,
+		"description": rt.Description, "image_url": rt.ImageUrl,
 	}
 }
 

@@ -18,6 +18,10 @@ type Appointment struct {
 	Status      string             `json:"status"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	EndsAt      pgtype.Timestamptz `json:"ends_at"`
+	Source      string             `json:"source"`
+	ClientToken string             `json:"client_token"`
+	Notes       string             `json:"notes"`
 }
 
 type AuditLog struct {
@@ -81,6 +85,7 @@ type Customer struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 	IsBlocked   bool               `json:"is_blocked"`
+	Email       pgtype.Text        `json:"email"`
 }
 
 type CustomerOtpCode struct {
@@ -509,6 +514,10 @@ type Reservation struct {
 	CheckedOutAt pgtype.Timestamptz `json:"checked_out_at"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	Source       string             `json:"source"`
+	ClientToken  string             `json:"client_token"`
+	Notes        string             `json:"notes"`
+	TotalAmount  pgtype.Numeric     `json:"total_amount"`
 }
 
 type Room struct {
@@ -521,12 +530,14 @@ type Room struct {
 }
 
 type RoomType struct {
-	ID        pgtype.UUID        `json:"id"`
-	TenantID  pgtype.UUID        `json:"tenant_id"`
-	Name      string             `json:"name"`
-	BasePrice pgtype.Numeric     `json:"base_price"`
-	MaxGuests int32              `json:"max_guests"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	Name        string             `json:"name"`
+	BasePrice   pgtype.Numeric     `json:"base_price"`
+	MaxGuests   int32              `json:"max_guests"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Description string             `json:"description"`
+	ImageUrl    string             `json:"image_url"`
 }
 
 type Service struct {
@@ -701,6 +712,8 @@ type TenantStorefrontSetting struct {
 	FilterStyle                string             `json:"filter_style"`
 	CustomerLoginMode          string             `json:"customer_login_mode"`
 	CustomerThemeSwitchEnabled bool               `json:"customer_theme_switch_enabled"`
+	CustomerLoginMethods       []string           `json:"customer_login_methods"`
+	SurfaceStyle               string             `json:"surface_style"`
 }
 
 type TenantType struct {

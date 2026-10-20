@@ -51,11 +51,13 @@ SELECT
     s.hero_image_url,
     s.product_layout,
     s.filter_style,
+    s.surface_style,
     s.customer_theme_switch_enabled,
     s.ordering_enabled,
     s.closed_message,
     s.customer_login_enabled,
     s.customer_login_mode,
+    s.customer_login_methods,
     s.prep_time_minutes,
     s.tax_percent,
     s.packaging_fee,
@@ -89,6 +91,7 @@ SET
     ordering_enabled       = COALESCE(sqlc.narg(ordering_enabled), ordering_enabled),
     closed_message         = COALESCE(sqlc.narg(closed_message), closed_message),
     customer_login_mode    = COALESCE(sqlc.narg(customer_login_mode), customer_login_mode),
+    customer_login_methods = COALESCE(sqlc.narg(customer_login_methods)::text[], customer_login_methods),
     prep_time_minutes      = COALESCE(sqlc.narg(prep_time_minutes), prep_time_minutes),
     updated_at             = now()
 WHERE tenant_id = sqlc.arg(tenant_id)
@@ -111,6 +114,7 @@ SET
     hero_image_url  = COALESCE(sqlc.narg(hero_image_url), hero_image_url),
     product_layout  = COALESCE(sqlc.narg(product_layout), product_layout),
     filter_style    = COALESCE(sqlc.narg(filter_style), filter_style),
+    surface_style   = COALESCE(sqlc.narg(surface_style), surface_style),
     customer_theme_switch_enabled = COALESCE(sqlc.narg(customer_theme_switch_enabled), customer_theme_switch_enabled),
     updated_at      = now()
 WHERE tenant_id = sqlc.arg(tenant_id)

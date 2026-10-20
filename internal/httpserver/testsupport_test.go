@@ -57,6 +57,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Skip("CONFIG_ENCRYPTION_KEY is not set; skipping integration test")
 	}
 
+	// No SMS or mail account here: customer sign-in codes are not delivered.
+	t.Setenv("CUSTOMER_SIGNIN_TEST_FALLBACK", "true")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -513,6 +515,12 @@ func (e *testEnv) removeTestTenants() {
 			`DELETE FROM subscriptions WHERE tenant_id = $1`,
 			`DELETE FROM products WHERE tenant_id = $1`,
 			`DELETE FROM categories WHERE tenant_id = $1`,
+			// Bookings hold customers (ON DELETE RESTRICT), so they go first.
+			`DELETE FROM queue_entries WHERE tenant_id = $1`,
+			`DELETE FROM appointments WHERE tenant_id = $1`,
+			`DELETE FROM charges WHERE tenant_id = $1`,
+			`DELETE FROM folios WHERE tenant_id = $1`,
+			`DELETE FROM reservations WHERE tenant_id = $1`,
 			`DELETE FROM customers WHERE tenant_id = $1`,
 			`DELETE FROM order_counters WHERE tenant_id = $1`,
 			`DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM users WHERE tenant_id = $1)`,

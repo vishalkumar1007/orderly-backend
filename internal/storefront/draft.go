@@ -65,6 +65,7 @@ type draftDocument struct {
 		Hero               *string `json:"hero"`
 		ProductLayout      *string `json:"product_layout"`
 		FilterStyle        *string `json:"filter_style"`
+		Surface            *string `json:"surface"`
 		Primary            *string `json:"primary"`
 		Secondary          *string `json:"secondary"`
 		Accent             *string `json:"accent"`
@@ -79,15 +80,16 @@ type draftDocument struct {
 	} `json:"hours"`
 
 	Behaviour *struct {
-		OrderingEnabled   *bool   `json:"ordering_enabled"`
-		ClosedMessage     *string `json:"closed_message"`
-		CustomerLoginMode *string `json:"customer_login_mode"`
-		PrepTimeMinutes   *int    `json:"prep_time_minutes"`
-		TaxPercent        any     `json:"tax_percent"`
-		PackagingFee      any     `json:"packaging_fee"`
-		Published         *bool   `json:"published"`
-		StoreStatus       *string `json:"store_status"`
-		StatusMessage     *string `json:"status_message"`
+		OrderingEnabled      *bool    `json:"ordering_enabled"`
+		ClosedMessage        *string  `json:"closed_message"`
+		CustomerLoginMode    *string  `json:"customer_login_mode"`
+		CustomerLoginMethods []string `json:"customer_login_methods"`
+		PrepTimeMinutes      *int     `json:"prep_time_minutes"`
+		TaxPercent           any      `json:"tax_percent"`
+		PackagingFee         any      `json:"packaging_fee"`
+		Published            *bool    `json:"published"`
+		StoreStatus          *string  `json:"store_status"`
+		StatusMessage        *string  `json:"status_message"`
 	} `json:"behaviour"`
 
 	Homepage *struct {
@@ -348,7 +350,7 @@ func (a *AdminHandler) applyDraft(
 		params, err := themeParams(themeRequest{
 			Preset: t.Preset, Mode: t.Mode, Font: t.Font, Radius: t.Radius,
 			Button: t.Button, Card: t.Card, Header: t.Header, Hero: t.Hero,
-			Layout: t.ProductLayout, Filter: t.FilterStyle,
+			Layout: t.ProductLayout, Filter: t.FilterStyle, Surface: t.Surface,
 			Primary: t.Primary, Secondary: t.Secondary, Accent: t.Accent,
 			HeroImageURL: t.HeroImageURL, CustomerModeSwitch: t.CustomerModeSwitch,
 		}, tenantID)
@@ -361,7 +363,7 @@ func (a *AdminHandler) applyDraft(
 	}
 
 	if b := doc.Behaviour; b != nil {
-		if b.OrderingEnabled != nil || b.ClosedMessage != nil || b.CustomerLoginMode != nil || b.PrepTimeMinutes != nil {
+		if b.OrderingEnabled != nil || b.ClosedMessage != nil || b.CustomerLoginMode != nil || b.CustomerLoginMethods != nil || b.PrepTimeMinutes != nil {
 			minutes := sf.PrepTimeMinutes
 			if b.PrepTimeMinutes != nil {
 				if *b.PrepTimeMinutes < 0 || *b.PrepTimeMinutes > 240 {
@@ -381,6 +383,9 @@ func (a *AdminHandler) applyDraft(
 					return badDraft("invalid_login_mode", "Login must be off, optional or required")
 				}
 				params.CustomerLoginMode = pgutil.NullText(&mode)
+			}
+			if b.CustomerLoginMethods != nil {
+				params.CustomerLoginMethods = LoginMethods(b.CustomerLoginMethods)
 			}
 			if _, err := q.UpdateStorefrontBehaviour(ctx, params); err != nil {
 				return err

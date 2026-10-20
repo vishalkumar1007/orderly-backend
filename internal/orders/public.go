@@ -67,6 +67,7 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"hero":                         sf.Theme.Hero,
 			"product_layout":               sf.Theme.Layout,
 			"filter_style":                 sf.Theme.Filter,
+			"surface":                      sf.Theme.Surface,
 			"primary":                      sf.Theme.Primary,
 			"secondary":                    sf.Theme.Secondary,
 			"accent":                       sf.Theme.Accent,
@@ -92,6 +93,7 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"prep_time_minutes":      sf.PrepTimeMinutes,
 			"customer_login":         sf.CustomerLogin,
 			"customer_login_mode":    sf.CustomerLoginMode,
+			"customer_login_methods": h.loginMethods(r, tenant.ID, sf),
 			"payment_requirement":    sf.Workflow.PaymentRequirement,
 			"auto_accept":            sf.Workflow.AutoAccept(),
 			"ready_notification":     sf.Workflow.ReadyNotification,
@@ -110,7 +112,9 @@ func (h *Handler) PublicStore(w http.ResponseWriter, r *http.Request) {
 			"schedule":     sf.OpeningHours.Schedule,
 			"today_closes": status.TodayCloses,
 		},
-		"preview": preview,
+		"preview":      preview,
+		"capabilities": tenant.EnabledCapabilities(),
+		"booking":      storefront.BookingSettings(),
 	}
 	setStoreCacheHeaders(w, sf.UpdatedAt)
 	response.JSON(w, http.StatusOK, payload)
@@ -233,7 +237,7 @@ func (h *Handler) PublicCreateOrder(w http.ResponseWriter, r *http.Request) {
 	if p, ok := auth.CustomerFromContext(r.Context()); ok && p.TenantID == tenant.ID {
 		principal = &p
 	}
-	if err := h.enforceLoginPolicy(sf, principal); err != nil {
+	if err := h.enforceLoginPolicy(r, tenant.ID, sf, principal); err != nil {
 		writeValidationError(w, err)
 		return
 	}
@@ -356,12 +360,14 @@ func (h *Handler) previewAllowed(r *http.Request, tenantID uuid.UUID) bool {
 	return ok && user.TenantID != nil && *user.TenantID == tenantID
 }
 
-func (h *Handler) enforceLoginPolicy(sf *storefront.Storefront, principal *auth.CustomerPrincipal) *validationError {
-	mode := sf.CustomerLoginMode
-	if mode == storefront.LoginRequired && principal == nil {
+// enforceLoginPolicy turns guests away when the shop requires sign-in. A shop
+// with no working sign-in method cannot require it: that would stop every
+// order, so guests are let through and the Studio warns the owner.
+func (h *Handler) enforceLoginPolicy(r *http.Request, tenantID uuid.UUID, sf *storefront.Storefront, principal *auth.CustomerPrincipal) *validationError {
+	if sf.CustomerLoginMode == storefront.LoginRequired && principal == nil && len(h.loginMethods(r, tenantID, sf)) > 0 {
 		return &validationError{
 			Code:    "login_required",
-			Message: "Sign in with your phone to place this order",
+			Message: "Sign in to place this order",
 			Status:  http.StatusUnauthorized,
 		}
 	}
@@ -453,4 +459,13 @@ func currencyOr(v string) string {
 		return "INR"
 	}
 	return strings.ToUpper(v)
+}
+
+// loginMethods is what a customer can sign in with here: the owner's choice,
+// limited to methods whose SMS or email channel is set up.
+func (h *Handler) loginMethods(r *http.Request, tenantID uuid.UUID, sf *storefront.Storefront) []string {
+	if h.signin == nil {
+		return sf.CustomerLoginMethods
+	}
+	return h.signin.Offered(r.Context(), tenantID, sf)
 }

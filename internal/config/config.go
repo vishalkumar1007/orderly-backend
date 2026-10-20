@@ -9,14 +9,17 @@ import (
 
 // Config holds process configuration loaded from the environment.
 type Config struct {
-	HTTPAddr         string
-	AppEnv           string
-	LogLevel         string
-	DatabaseURL      string
-	BaseDomain       string
-	FrontendPort     string
-	JWTAccessSecret  string
-	JWTRefreshSecret string
+	// SignInTestFallback lets automated tests sign customers in without an
+	// SMS or mail account. Ignored when APP_ENV is production.
+	SignInTestFallback bool
+	HTTPAddr           string
+	AppEnv             string
+	LogLevel           string
+	DatabaseURL        string
+	BaseDomain         string
+	FrontendPort       string
+	JWTAccessSecret    string
+	JWTRefreshSecret   string
 	// ConfigEncryptionKey seals provider credentials (SMTP password, storage
 	// secret key, AI API key) at rest. When empty, secrets cannot be stored
 	// safely and the configuration endpoints refuse to accept them.
@@ -56,6 +59,7 @@ func Load() (Config, error) {
 		ConfigEncryptionKey:   strings.TrimSpace(os.Getenv("CONFIG_ENCRYPTION_KEY")),
 		HealthDetailToken:     strings.TrimSpace(os.Getenv("HEALTH_DETAIL_TOKEN")),
 		PaymentsV2:            os.Getenv("PAYMENTS_V2") == "true",
+		SignInTestFallback:    os.Getenv("CUSTOMER_SIGNIN_TEST_FALLBACK") == "true",
 		PaymentsSandboxSecret: strings.TrimSpace(os.Getenv("PAYMENTS_SANDBOX_SECRET")),
 		AccessTokenTTL:        15 * time.Minute,
 		RefreshTokenTTL:       7 * 24 * time.Hour,

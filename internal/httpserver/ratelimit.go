@@ -88,6 +88,8 @@ func (l *limiter) middleware(next http.Handler) http.Handler {
 // calls, polling is one per few seconds) and tight against scripts.
 type payLimits struct {
 	start, confirm, status, webhook *limiter
+	// book guards storefront appointment and stay bookings.
+	book *limiter
 }
 
 func newPayLimits(enabled bool) payLimits {
@@ -100,6 +102,7 @@ func newPayLimits(enabled bool) payLimits {
 		status:  newLimiter(120, time.Minute),
 		// Gateways deliver from a few addresses and retry in bursts.
 		webhook: newLimiter(600, time.Minute),
+		book:    newLimiter(20, time.Minute),
 	}
 }
 

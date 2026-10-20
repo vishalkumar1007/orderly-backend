@@ -264,8 +264,8 @@ func TestAppointmentAndQueueMovesAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := env.server.pool.QueryRow(tctx(),
-		`INSERT INTO appointments (tenant_id, service_id, scheduled_at, status)
-		 VALUES ($1,$2, now() + interval '1 hour', 'CONFIRMED') RETURNING id`,
+		`INSERT INTO appointments (tenant_id, service_id, scheduled_at, ends_at, status)
+		 VALUES ($1,$2, now() + interval '1 hour', now() + interval '90 minutes', 'CONFIRMED') RETURNING id`,
 		tenantID, serviceID).Scan(&apptID); err != nil {
 		t.Fatal(err)
 	}

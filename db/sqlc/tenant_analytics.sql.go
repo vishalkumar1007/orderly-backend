@@ -76,17 +76,18 @@ func (q *Queries) TenantOperationsSummary(ctx context.Context, arg TenantOperati
 const tenantOrdersByDayRange = `-- name: TenantOrdersByDayRange :many
 
 SELECT
-    date_trunc('day', created_at)::date AS day,
+    (created_at AT TIME ZONE $1::text)::date AS day,
     COUNT(*)::bigint AS order_count,
     COALESCE(SUM(CASE WHEN status <> 'CANCELLED' AND NOT order_excluded_from_revenue(id) THEN total ELSE 0 END), 0)::text AS revenue
 FROM orders
-WHERE tenant_id = $1
-    AND created_at >= now() - $2::interval
+WHERE tenant_id = $2
+    AND created_at >= now() - $3::interval
 GROUP BY 1
 ORDER BY 1 ASC
 `
 
 type TenantOrdersByDayRangeParams struct {
+	Tz       string          `json:"tz"`
 	TenantID pgtype.UUID     `json:"tenant_id"`
 	Days     pgtype.Interval `json:"days"`
 }
@@ -103,7 +104,7 @@ type TenantOrdersByDayRangeRow struct {
 // excluded from revenue but still counted as orders, which is what an operator
 // wants to see when judging how busy they were.
 func (q *Queries) TenantOrdersByDayRange(ctx context.Context, arg TenantOrdersByDayRangeParams) ([]TenantOrdersByDayRangeRow, error) {
-	rows, err := q.db.Query(ctx, tenantOrdersByDayRange, arg.TenantID, arg.Days)
+	rows, err := q.db.Query(ctx, tenantOrdersByDayRange, arg.Tz, arg.TenantID, arg.Days)
 	if err != nil {
 		return nil, err
 	}
@@ -124,16 +125,17 @@ func (q *Queries) TenantOrdersByDayRange(ctx context.Context, arg TenantOrdersBy
 
 const tenantOrdersByHour = `-- name: TenantOrdersByHour :many
 SELECT
-    EXTRACT(HOUR FROM created_at)::int AS hour_of_day,
+    EXTRACT(HOUR FROM created_at AT TIME ZONE $1::text)::int AS hour_of_day,
     COUNT(*)::bigint AS order_count
 FROM orders
-WHERE tenant_id = $1
-    AND created_at >= now() - $2::interval
+WHERE tenant_id = $2
+    AND created_at >= now() - $3::interval
 GROUP BY 1
 ORDER BY 1 ASC
 `
 
 type TenantOrdersByHourParams struct {
+	Tz       string          `json:"tz"`
 	TenantID pgtype.UUID     `json:"tenant_id"`
 	Days     pgtype.Interval `json:"days"`
 }
@@ -143,10 +145,10 @@ type TenantOrdersByHourRow struct {
 	OrderCount int64 `json:"order_count"`
 }
 
-// Orders by hour of day, averaged over the window, so a single quiet Tuesday
-// does not read as a permanently quiet hour.
+// Orders by hour of day on the shop's own clock, averaged over the window in
+// Go, so a single quiet Tuesday does not read as a permanently quiet hour.
 func (q *Queries) TenantOrdersByHour(ctx context.Context, arg TenantOrdersByHourParams) ([]TenantOrdersByHourRow, error) {
-	rows, err := q.db.Query(ctx, tenantOrdersByHour, arg.TenantID, arg.Days)
+	rows, err := q.db.Query(ctx, tenantOrdersByHour, arg.Tz, arg.TenantID, arg.Days)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +157,53 @@ func (q *Queries) TenantOrdersByHour(ctx context.Context, arg TenantOrdersByHour
 	for rows.Next() {
 		var i TenantOrdersByHourRow
 		if err := rows.Scan(&i.HourOfDay, &i.OrderCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const tenantOrdersByWeekdayHour = `-- name: TenantOrdersByWeekdayHour :many
+SELECT
+    (EXTRACT(ISODOW FROM created_at AT TIME ZONE $1::text)::int - 1) AS weekday,
+    EXTRACT(HOUR FROM created_at AT TIME ZONE $1::text)::int AS hour_of_day,
+    COUNT(*)::bigint AS order_count
+FROM orders
+WHERE tenant_id = $2
+    AND status <> 'CANCELLED'
+    AND created_at >= now() - $3::interval
+GROUP BY 1, 2
+ORDER BY 1, 2
+`
+
+type TenantOrdersByWeekdayHourParams struct {
+	Tz       string          `json:"tz"`
+	TenantID pgtype.UUID     `json:"tenant_id"`
+	Days     pgtype.Interval `json:"days"`
+}
+
+type TenantOrdersByWeekdayHourRow struct {
+	Weekday    int32 `json:"weekday"`
+	HourOfDay  int32 `json:"hour_of_day"`
+	OrderCount int64 `json:"order_count"`
+}
+
+// Orders by weekday (0 = Monday) and hour on the shop's own clock: the grid
+// behind "when is the rush". Totals, not averages, so one order reads as one.
+func (q *Queries) TenantOrdersByWeekdayHour(ctx context.Context, arg TenantOrdersByWeekdayHourParams) ([]TenantOrdersByWeekdayHourRow, error) {
+	rows, err := q.db.Query(ctx, tenantOrdersByWeekdayHour, arg.Tz, arg.TenantID, arg.Days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TenantOrdersByWeekdayHourRow{}
+	for rows.Next() {
+		var i TenantOrdersByWeekdayHourRow
+		if err := rows.Scan(&i.Weekday, &i.HourOfDay, &i.OrderCount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

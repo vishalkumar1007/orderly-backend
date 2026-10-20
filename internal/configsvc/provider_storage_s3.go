@@ -120,6 +120,28 @@ func (p *s3Provider) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Get streams an object back with a signed request, so a private bucket can be
+// served through Orderly's own address instead of a link that expires.
+func (p *s3Provider) Get(ctx context.Context, key string) (StoredBody, error) {
+	req, err := p.newRequest(ctx, http.MethodGet, p.objectKey(key), nil, nil)
+	if err != nil {
+		return StoredBody{}, err
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return StoredBody{}, fmt.Errorf("could not reach %s: %w", p.endpoint, err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		drain(resp)
+		return StoredBody{}, ErrObjectNotFound
+	case resp.StatusCode >= 300:
+		drain(resp)
+		return StoredBody{}, fmt.Errorf("read rejected with %s", resp.Status)
+	}
+	return StoredBody{Body: resp.Body, ContentType: resp.Header.Get("Content-Type"), Size: resp.ContentLength}, nil
+}
+
 // PresignGet returns a SigV4 query-signed URL, so a private bucket still serves
 // downloads without the object being publicly readable.
 func (p *s3Provider) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {

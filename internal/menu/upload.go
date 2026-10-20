@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/orderly/orderly-backend/internal/configsvc"
+	"github.com/orderly/orderly-backend/internal/media"
 	"github.com/orderly/orderly-backend/pkg/response"
 )
 
@@ -24,11 +25,13 @@ var allowedImageTypes = map[string]string{
 // UploadHandler handles image uploads for menu items.
 type UploadHandler struct {
 	storage *configsvc.Storage
+	// apiOrigin is the API's public address, for the media links handed out.
+	apiOrigin string
 }
 
 // NewUploadHandler creates a new upload handler with the given storage facade.
-func NewUploadHandler(storage *configsvc.Storage) *UploadHandler {
-	return &UploadHandler{storage: storage}
+func NewUploadHandler(storage *configsvc.Storage, apiOrigin string) *UploadHandler {
+	return &UploadHandler{storage: storage, apiOrigin: apiOrigin}
 }
 
 // UploadRoutes registers the upload endpoint on the given router.
@@ -81,13 +84,12 @@ func (h *UploadHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A storage link is either plain http (blocked on an https page) or
+	// presigned (dead in minutes); a media URL is neither. A storage that
+	// already serves https (a CDN) is used as is.
 	url := obj.URL
-	if url == "" {
-		url, err = h.storage.PresignGet(r.Context(), tid, obj.Key, 15*time.Minute)
-		if err != nil {
-			response.Error(w, http.StatusInternalServerError, "internal_error", "Failed to generate URL")
-			return
-		}
+	if !strings.HasPrefix(url, "https://") {
+		url = media.URL(h.apiOrigin, tid.String(), key)
 	}
 
 	response.JSON(w, http.StatusOK, map[string]string{"url": url})
