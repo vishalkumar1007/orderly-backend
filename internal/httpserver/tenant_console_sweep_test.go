@@ -92,4 +92,21 @@ func TestTenantIdentityCarriesTheBusinessType(t *testing.T) {
 	if _, ok := host["business_type"]; !ok {
 		t.Errorf("host_tenant has no business_type; the console shell cannot label itself: %v", host)
 	}
+	// The console shapes its rail from the enabled set, not from the type
+	// alone: a RESTAURANT has TABLES on and ROOMS absent, and the shell must
+	// be able to tell.
+	caps, ok := host["capabilities"].([]any)
+	if !ok {
+		t.Fatalf("host_tenant has no capabilities list: %v", host)
+	}
+	have := map[string]bool{}
+	for _, c := range caps {
+		have[c.(string)] = true
+	}
+	if !have["TABLES"] || !have["ORDERS"] {
+		t.Errorf("RESTAURANT capabilities missing TABLES/ORDERS: %v", caps)
+	}
+	if have["ROOMS"] {
+		t.Errorf("RESTAURANT must not report ROOMS: %v", caps)
+	}
 }

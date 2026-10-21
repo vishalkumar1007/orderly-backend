@@ -89,14 +89,14 @@ type TokenPair struct {
 }
 
 type Claims struct {
-	Role     string  `json:"role"`
-	TenantID *string `json:"tenant_id,omitempty"`
-	Email    string  `json:"email"`
-	Name     string  `json:"name"`
-	CustomerID *string `json:"customer_id,omitempty"`
-	Purpose string `json:"purpose,omitempty"`
-	MFASecret string `json:"mfa_secret,omitempty"`
-	MFAVerified bool `json:"mfa_verified,omitempty"`
+	Role        string  `json:"role"`
+	TenantID    *string `json:"tenant_id,omitempty"`
+	Email       string  `json:"email"`
+	Name        string  `json:"name"`
+	CustomerID  *string `json:"customer_id,omitempty"`
+	Purpose     string  `json:"purpose,omitempty"`
+	MFASecret   string  `json:"mfa_secret,omitempty"`
+	MFAVerified bool    `json:"mfa_verified,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -1012,6 +1012,12 @@ func (s *Service) HandleMe(w http.ResponseWriter, r *http.Request) {
 				// renders once with the wrong words and again with the right
 				// ones.
 				"business_type": t.BusinessType,
+				// The enabled capability set travels with it for the same
+				// reason: the type is the template, tenant_capabilities is
+				// the truth. A GENERAL business that switched on
+				// appointments, or a barber that switched on a catalogue,
+				// is only visible to the console through this list.
+				"capabilities": t.EnabledCapabilities(),
 			},
 		})
 		return
