@@ -111,6 +111,12 @@ SELECT
     t.is_published,
     t.store_status,
     t.status_message,
+    t.email              AS tenant_email,
+    t.legal_name,
+    t.website,
+    t.tax_id,
+    t.social_links,
+    t.show_logo_in_console,
     s.logo_url,
     s.favicon_url,
     s.business_name,
@@ -163,6 +169,12 @@ type GetStorefrontConfigRow struct {
 	IsPublished                bool               `json:"is_published"`
 	StoreStatus                string             `json:"store_status"`
 	StatusMessage              string             `json:"status_message"`
+	TenantEmail                string             `json:"tenant_email"`
+	LegalName                  string             `json:"legal_name"`
+	Website                    string             `json:"website"`
+	TaxID                      string             `json:"tax_id"`
+	SocialLinks                []byte             `json:"social_links"`
+	ShowLogoInConsole          bool               `json:"show_logo_in_console"`
 	LogoUrl                    string             `json:"logo_url"`
 	FaviconUrl                 string             `json:"favicon_url"`
 	BusinessName               string             `json:"business_name"`
@@ -216,6 +228,12 @@ func (q *Queries) GetStorefrontConfig(ctx context.Context, tenantID pgtype.UUID)
 		&i.IsPublished,
 		&i.StoreStatus,
 		&i.StatusMessage,
+		&i.TenantEmail,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 		&i.LogoUrl,
 		&i.FaviconUrl,
 		&i.BusinessName,
@@ -330,7 +348,7 @@ const setStorefrontPublished = `-- name: SetStorefrontPublished :one
 UPDATE tenants
 SET is_published = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type SetStorefrontPublishedParams struct {
@@ -368,6 +386,11 @@ func (q *Queries) SetStorefrontPublished(ctx context.Context, arg SetStorefrontP
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }

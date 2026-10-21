@@ -40,6 +40,10 @@ type Config struct {
 	PaymentsRateLimit bool
 	AccessTokenTTL    time.Duration
 	RefreshTokenTTL   time.Duration
+	// NATSURL is the JetStream broker the outbox relay publishes to. Empty
+	// means events stay in the outbox table (dev without a broker); nothing
+	// in the request path depends on it.
+	NATSURL string
 }
 
 // Load reads configuration from environment variables.
@@ -63,6 +67,7 @@ func Load() (Config, error) {
 		PaymentsSandboxSecret: strings.TrimSpace(os.Getenv("PAYMENTS_SANDBOX_SECRET")),
 		AccessTokenTTL:        15 * time.Minute,
 		RefreshTokenTTL:       7 * 24 * time.Hour,
+		NATSURL:               strings.TrimSpace(os.Getenv("NATS_URL")),
 	}
 
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("PAYMENTS_RATE_LIMIT"))) {

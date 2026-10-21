@@ -66,7 +66,7 @@ INSERT INTO tenants (
     $1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $10, $11, $12, $13,
     $14, $15, $16, $17, $18, $19, $20, $21, $22
 )
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type CreateTenantParams struct {
@@ -147,12 +147,17 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
 
 const getTenantByID = `-- name: GetTenantByID :one
-SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed FROM tenants
+SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console FROM tenants
 WHERE id = $1
 LIMIT 1
 `
@@ -187,12 +192,17 @@ func (q *Queries) GetTenantByID(ctx context.Context, id pgtype.UUID) (Tenant, er
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
 
 const getTenantBySlug = `-- name: GetTenantBySlug :one
-SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed FROM tenants
+SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console FROM tenants
 WHERE slug = $1
 LIMIT 1
 `
@@ -227,13 +237,18 @@ func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, err
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
 
 const getTenantWithPlanByID = `-- name: GetTenantWithPlanByID :one
 SELECT
-    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status, t.status_message, t.mfa_allowed,
+    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status, t.status_message, t.mfa_allowed, t.legal_name, t.website, t.tax_id, t.social_links, t.show_logo_in_console,
     p.name AS plan_name,
     p.price AS plan_price,
     tp.name AS theme_name,
@@ -283,6 +298,11 @@ func (q *Queries) GetTenantWithPlanByID(ctx context.Context, id pgtype.UUID) (Ge
 		&i.Tenant.StoreStatus,
 		&i.Tenant.StatusMessage,
 		&i.Tenant.MfaAllowed,
+		&i.Tenant.LegalName,
+		&i.Tenant.Website,
+		&i.Tenant.TaxID,
+		&i.Tenant.SocialLinks,
+		&i.Tenant.ShowLogoInConsole,
 		&i.PlanName,
 		&i.PlanPrice,
 		&i.ThemeName,
@@ -292,7 +312,7 @@ func (q *Queries) GetTenantWithPlanByID(ctx context.Context, id pgtype.UUID) (Ge
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed FROM tenants
+SELECT id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console FROM tenants
 ORDER BY created_at DESC
 `
 
@@ -332,6 +352,11 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 			&i.StoreStatus,
 			&i.StatusMessage,
 			&i.MfaAllowed,
+			&i.LegalName,
+			&i.Website,
+			&i.TaxID,
+			&i.SocialLinks,
+			&i.ShowLogoInConsole,
 		); err != nil {
 			return nil, err
 		}
@@ -345,7 +370,7 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 
 const listTenantsWithPlans = `-- name: ListTenantsWithPlans :many
 SELECT
-    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status, t.status_message, t.mfa_allowed,
+    t.id, t.name, t.slug, t.business_type, t.owner_name, t.phone, t.email, t.address, t.status, t.created_at, t.updated_at, t.is_published, t.plan_id, t.setup_status, t.theme_preset_id, t.theme_color_mode, t.theme_overrides, t.logo_url, t.favicon_url, t.short_description, t.currency, t.timezone, t.language, t.store_status, t.status_message, t.mfa_allowed, t.legal_name, t.website, t.tax_id, t.social_links, t.show_logo_in_console,
     p.name AS plan_name,
     p.price AS plan_price,
     tp.name AS theme_name,
@@ -400,6 +425,11 @@ func (q *Queries) ListTenantsWithPlans(ctx context.Context) ([]ListTenantsWithPl
 			&i.Tenant.StoreStatus,
 			&i.Tenant.StatusMessage,
 			&i.Tenant.MfaAllowed,
+			&i.Tenant.LegalName,
+			&i.Tenant.Website,
+			&i.Tenant.TaxID,
+			&i.Tenant.SocialLinks,
+			&i.Tenant.ShowLogoInConsole,
 			&i.PlanName,
 			&i.PlanPrice,
 			&i.ThemeName,
@@ -419,7 +449,7 @@ const setTenantPublished = `-- name: SetTenantPublished :one
 UPDATE tenants
 SET is_published = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type SetTenantPublishedParams struct {
@@ -457,6 +487,11 @@ func (q *Queries) SetTenantPublished(ctx context.Context, arg SetTenantPublished
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
@@ -465,7 +500,7 @@ const setTenantSetupStatus = `-- name: SetTenantSetupStatus :one
 UPDATE tenants
 SET setup_status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type SetTenantSetupStatusParams struct {
@@ -503,6 +538,11 @@ func (q *Queries) SetTenantSetupStatus(ctx context.Context, arg SetTenantSetupSt
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
@@ -511,7 +551,7 @@ const setTenantStatus = `-- name: SetTenantStatus :one
 UPDATE tenants
 SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type SetTenantStatusParams struct {
@@ -549,6 +589,11 @@ func (q *Queries) SetTenantStatus(ctx context.Context, arg SetTenantStatusParams
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
@@ -561,7 +606,7 @@ SET
     theme_overrides = $4,
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type SetTenantThemeParams struct {
@@ -606,6 +651,11 @@ func (q *Queries) SetTenantTheme(ctx context.Context, arg SetTenantThemeParams) 
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
@@ -628,28 +678,38 @@ SET
     store_status = COALESCE($13, store_status),
     status_message = COALESCE($14, status_message),
     mfa_allowed = COALESCE($15, mfa_allowed),
+    legal_name = COALESCE($16, legal_name),
+    website = COALESCE($17, website),
+    tax_id = COALESCE($18, tax_id),
+    social_links = COALESCE($19, social_links),
+    show_logo_in_console = COALESCE($20, show_logo_in_console),
     updated_at = now()
-WHERE id = $16
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+WHERE id = $21
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type UpdateTenantParams struct {
-	Name             pgtype.Text `json:"name"`
-	BusinessType     pgtype.Text `json:"business_type"`
-	OwnerName        pgtype.Text `json:"owner_name"`
-	Phone            pgtype.Text `json:"phone"`
-	Email            pgtype.Text `json:"email"`
-	Address          pgtype.Text `json:"address"`
-	LogoUrl          pgtype.Text `json:"logo_url"`
-	FaviconUrl       pgtype.Text `json:"favicon_url"`
-	ShortDescription pgtype.Text `json:"short_description"`
-	Currency         pgtype.Text `json:"currency"`
-	Timezone         pgtype.Text `json:"timezone"`
-	Language         pgtype.Text `json:"language"`
-	StoreStatus      pgtype.Text `json:"store_status"`
-	StatusMessage    pgtype.Text `json:"status_message"`
-	MfaAllowed       pgtype.Bool `json:"mfa_allowed"`
-	ID               pgtype.UUID `json:"id"`
+	Name              pgtype.Text `json:"name"`
+	BusinessType      pgtype.Text `json:"business_type"`
+	OwnerName         pgtype.Text `json:"owner_name"`
+	Phone             pgtype.Text `json:"phone"`
+	Email             pgtype.Text `json:"email"`
+	Address           pgtype.Text `json:"address"`
+	LogoUrl           pgtype.Text `json:"logo_url"`
+	FaviconUrl        pgtype.Text `json:"favicon_url"`
+	ShortDescription  pgtype.Text `json:"short_description"`
+	Currency          pgtype.Text `json:"currency"`
+	Timezone          pgtype.Text `json:"timezone"`
+	Language          pgtype.Text `json:"language"`
+	StoreStatus       pgtype.Text `json:"store_status"`
+	StatusMessage     pgtype.Text `json:"status_message"`
+	MfaAllowed        pgtype.Bool `json:"mfa_allowed"`
+	LegalName         pgtype.Text `json:"legal_name"`
+	Website           pgtype.Text `json:"website"`
+	TaxID             pgtype.Text `json:"tax_id"`
+	SocialLinks       []byte      `json:"social_links"`
+	ShowLogoInConsole pgtype.Bool `json:"show_logo_in_console"`
+	ID                pgtype.UUID `json:"id"`
 }
 
 func (q *Queries) UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Tenant, error) {
@@ -669,6 +729,11 @@ func (q *Queries) UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Ten
 		arg.StoreStatus,
 		arg.StatusMessage,
 		arg.MfaAllowed,
+		arg.LegalName,
+		arg.Website,
+		arg.TaxID,
+		arg.SocialLinks,
+		arg.ShowLogoInConsole,
 		arg.ID,
 	)
 	var i Tenant
@@ -699,6 +764,11 @@ func (q *Queries) UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Ten
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }
@@ -707,7 +777,7 @@ const updateTenantPlanID = `-- name: UpdateTenantPlanID :one
 UPDATE tenants
 SET plan_id = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed
+RETURNING id, name, slug, business_type, owner_name, phone, email, address, status, created_at, updated_at, is_published, plan_id, setup_status, theme_preset_id, theme_color_mode, theme_overrides, logo_url, favicon_url, short_description, currency, timezone, language, store_status, status_message, mfa_allowed, legal_name, website, tax_id, social_links, show_logo_in_console
 `
 
 type UpdateTenantPlanIDParams struct {
@@ -745,6 +815,11 @@ func (q *Queries) UpdateTenantPlanID(ctx context.Context, arg UpdateTenantPlanID
 		&i.StoreStatus,
 		&i.StatusMessage,
 		&i.MfaAllowed,
+		&i.LegalName,
+		&i.Website,
+		&i.TaxID,
+		&i.SocialLinks,
+		&i.ShowLogoInConsole,
 	)
 	return i, err
 }

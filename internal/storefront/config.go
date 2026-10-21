@@ -192,6 +192,15 @@ type Storefront struct {
 	StoreStatus   string
 	StatusMessage string
 
+	// The business profile: platform facts about the business, kept on
+	// tenants and edited under Settings rather than in Studio.
+	Email             string
+	LegalName         string
+	Website           string
+	TaxID             string
+	SocialLinks       map[string]string
+	ShowLogoInConsole bool
+
 	LogoURL    string
 	FaviconURL string
 	Name       string
@@ -326,6 +335,16 @@ func (l *Loader) Ensure(ctx context.Context, tenantID uuid.UUID, seed Seed) (*St
 	return l.Load(ctx, tenantID)
 }
 
+// socialLinksFromJSON reads the tenants.social_links document. Anything
+// unreadable is treated as empty: a profile never fails to load over it.
+func socialLinksFromJSON(raw []byte) map[string]string {
+	out := map[string]string{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &out)
+	}
+	return out
+}
+
 // Seed carries the tenant fields used to bootstrap a storefront row.
 type Seed struct {
 	Name       string
@@ -346,6 +365,12 @@ func fromRow(row sqlc.GetStorefrontConfigRow) (*Storefront, error) {
 		IsPublished:       row.IsPublished,
 		StoreStatus:       row.StoreStatus,
 		StatusMessage:     row.StatusMessage,
+		Email:             row.TenantEmail,
+		LegalName:         row.LegalName,
+		Website:           row.Website,
+		TaxID:             row.TaxID,
+		SocialLinks:       socialLinksFromJSON(row.SocialLinks),
+		ShowLogoInConsole: row.ShowLogoInConsole,
 		LogoURL:           row.LogoUrl,
 		FaviconURL:        row.FaviconUrl,
 		Name:              strings.TrimSpace(row.BusinessName),

@@ -3,6 +3,7 @@ package storefront
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -108,17 +109,23 @@ func (a *AdminHandler) payload(sf *Storefront) map[string]any {
 	status := sf.OpeningHours.Status(nowFunc())
 	return map[string]any{
 		"store": map[string]any{
-			"name":          sf.Name,
-			"slug":          sf.Slug,
-			"logo_url":      sf.LogoURL,
-			"favicon_url":   sf.FaviconURL,
-			"tagline":       sf.Tagline,
-			"description":   sf.About,
-			"phone":         sf.Phone,
-			"address":       sf.Address,
-			"business_type": sf.BusinessTy,
-			"currency":      sf.Currency,
-			"timezone":      sf.Timezone,
+			"name":                 sf.Name,
+			"slug":                 sf.Slug,
+			"logo_url":             sf.LogoURL,
+			"favicon_url":          sf.FaviconURL,
+			"tagline":              sf.Tagline,
+			"description":          sf.About,
+			"phone":                sf.Phone,
+			"address":              sf.Address,
+			"business_type":        sf.BusinessTy,
+			"currency":             sf.Currency,
+			"timezone":             sf.Timezone,
+			"email":                sf.Email,
+			"legal_name":           sf.LegalName,
+			"website":              sf.Website,
+			"tax_id":               sf.TaxID,
+			"social_links":         sf.SocialLinks,
+			"show_logo_in_console": sf.ShowLogoInConsole,
 		},
 		"theme": map[string]any{
 			"preset":                       sf.Theme.Preset,
@@ -220,6 +227,16 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		Phone      *string `json:"phone"`
 		Address    *string `json:"address"`
 
+		// Business profile (Settings): platform facts kept on tenants.
+		Email             *string           `json:"email"`
+		LegalName         *string           `json:"legal_name"`
+		Website           *string           `json:"website"`
+		TaxID             *string           `json:"tax_id"`
+		Currency          *string           `json:"currency"`
+		Timezone          *string           `json:"timezone"`
+		SocialLinks       map[string]string `json:"social_links"`
+		ShowLogoInConsole *bool             `json:"show_logo_in_console"`
+
 		OrderingEnabled      *bool    `json:"ordering_enabled"`
 		ClosedMessage        *string  `json:"closed_message"`
 		CustomerLogin        *bool    `json:"customer_login_enabled"`
@@ -272,11 +289,82 @@ func (a *AdminHandler) PutStorefront(w http.ResponseWriter, r *http.Request) {
 		if req.Address != nil {
 			tenantPatch.Address = trimmedText(req.Address, 300)
 		}
-		if req.Name != nil || req.Phone != nil || req.Address != nil {
+		// The logo has a platform copy too (tenants.logo_url, shown in the
+		// console rail and the platform views); keep it in step.
+		if req.LogoURL != nil {
+			tenantPatch.LogoUrl = trimmedText(req.LogoURL, 500)
+		}
+		if req.Name != nil || req.Phone != nil || req.Address != nil || req.LogoURL != nil {
 			if _, err := a.q.UpdateTenant(r.Context(), tenantPatch); err != nil {
 				response.Error(w, http.StatusInternalServerError, "internal_error", "could not sync business contact")
 				return
 			}
+		}
+	}
+
+	if req.Email != nil || req.LegalName != nil || req.Website != nil || req.TaxID != nil ||
+		req.Currency != nil || req.Timezone != nil || req.SocialLinks != nil || req.ShowLogoInConsole != nil {
+		patch := sqlc.UpdateTenantParams{ID: pgutil.UUID(tenantID)}
+		if req.Email != nil {
+			email := trimText(*req.Email, 254)
+			if email != "" && !strings.Contains(email, "@") {
+				writeAdminError(w, "invalid_email", "Enter a valid email address")
+				return
+			}
+			patch.Email = pgutil.Text(email)
+		}
+		if req.LegalName != nil {
+			patch.LegalName = trimmedText(req.LegalName, 160)
+		}
+		if req.Website != nil {
+			site := trimText(*req.Website, 300)
+			if site != "" && !isHTTPURL(site) {
+				writeAdminError(w, "invalid_website", "The website must start with http:// or https://")
+				return
+			}
+			patch.Website = pgutil.Text(site)
+		}
+		if req.TaxID != nil {
+			patch.TaxID = trimmedText(req.TaxID, 40)
+		}
+		if req.Currency != nil {
+			code := strings.ToUpper(strings.TrimSpace(*req.Currency))
+			if len(code) != 3 || strings.Trim(code, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+				writeAdminError(w, "invalid_currency", "Use a three-letter currency code, like INR")
+				return
+			}
+			patch.Currency = pgutil.Text(code)
+		}
+		if req.Timezone != nil {
+			tz := trimText(*req.Timezone, 64)
+			if _, err := time.LoadLocation(tz); tz == "" || err != nil {
+				writeAdminError(w, "invalid_timezone", "Use a timezone name like Asia/Kolkata")
+				return
+			}
+			patch.Timezone = pgutil.Text(tz)
+		}
+		if req.SocialLinks != nil {
+			links := make(map[string]string, len(req.SocialLinks))
+			for network, link := range req.SocialLinks {
+				link = trimText(link, 300)
+				if link == "" {
+					continue
+				}
+				if !isHTTPURL(link) {
+					writeAdminError(w, "invalid_social_link", "Each social link must start with http:// or https://")
+					return
+				}
+				links[strings.ToLower(trimText(network, 32))] = link
+			}
+			raw, _ := json.Marshal(links)
+			patch.SocialLinks = raw
+		}
+		if req.ShowLogoInConsole != nil {
+			patch.ShowLogoInConsole = pgtype.Bool{Bool: *req.ShowLogoInConsole, Valid: true}
+		}
+		if _, err := a.q.UpdateTenant(r.Context(), patch); err != nil {
+			response.Error(w, http.StatusInternalServerError, "internal_error", "could not save your business profile")
+			return
 		}
 	}
 	if req.OrderingEnabled != nil || req.ClosedMessage != nil || req.CustomerLogin != nil || req.CustomerLoginMode != nil || req.CustomerLoginMethods != nil || req.PrepTimeMinutes != nil {
@@ -809,6 +897,14 @@ func trimText(s string, max int) string {
 }
 
 func utf8Count(s string) int { return len([]rune(s)) }
+
+// isHTTPURL accepts an absolute http(s) address and nothing else: a profile
+// link is rendered as a plain anchor, so a javascript: or relative value
+// must never reach it.
+func isHTTPURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
 
 // trimmedText returns a nullable column value, or nil to leave the column
 // unchanged. This is what makes every PUT a partial update.

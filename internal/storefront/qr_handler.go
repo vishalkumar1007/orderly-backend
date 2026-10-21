@@ -76,15 +76,17 @@ func (a *AdminHandler) StoreLink(w http.ResponseWriter, r *http.Request) {
 	url := a.base(sf.Slug)
 	host, path := storeLinkHostAndPath(url)
 	response.JSON(w, http.StatusOK, map[string]any{
-		"name":               sf.Name,
-		"slug":               sf.Slug,
-		"public_url":         url,
-		"public_host":        host,
-		"public_path":        path,
-		"is_published":       sf.IsPublished,
-		"ordering_open":      sf.OrderingAllowed(),
-		"store_status":       sf.StoreStatus,
-		"status_message":     sf.StatusMessage,
-		"store_status_label": sf.StoreStatusLabel(),
+		"name":                 sf.Name,
+		"slug":                 sf.Slug,
+		"logo_url":             sf.LogoURL,
+		"show_logo_in_console": sf.ShowLogoInConsole,
+		"public_url":           url,
+		"public_host":          host,
+		"public_path":          path,
+		"is_published":         sf.IsPublished,
+		"ordering_open":        sf.OrderingAllowed(),
+		"store_status":         sf.StoreStatus,
+		"status_message":       sf.StatusMessage,
+		"store_status_label":   sf.StoreStatusLabel(),
 	})
 }

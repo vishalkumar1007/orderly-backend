@@ -962,6 +962,37 @@ func (s *Service) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// HandleUpdateMe lets the signed-in person correct their own display name.
+// Email and role are not theirs to change: an owner or the platform does that.
+func (s *Service) HandleUpdateMe(w http.ResponseWriter, r *http.Request) {
+	user, ok := identity.UserFromContext(r.Context())
+	if !ok {
+		response.Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid_request", "invalid json")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if n := len([]rune(name)); n < 2 || n > 80 {
+		response.Error(w, http.StatusBadRequest, "invalid_name", "Your name needs 2 to 80 characters")
+		return
+	}
+	updated, err := s.q.UpdateUserProfile(r.Context(), sqlc.UpdateUserProfileParams{
+		ID:   pgutil.UUID(user.ID),
+		Name: pgtype.Text{String: name, Valid: true},
+	})
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "internal_error", "could not save your name")
+		return
+	}
+	response.JSON(w, http.StatusOK, toUserResponse(updated))
+}
+
 func (s *Service) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 	user, ok := identity.UserFromContext(r.Context())
 	if !ok {

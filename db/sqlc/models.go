@@ -178,6 +178,12 @@ type HousekeepingTask struct {
 	CompletedAt pgtype.Timestamptz `json:"completed_at"`
 }
 
+type Inbox struct {
+	Consumer    string             `json:"consumer"`
+	EventID     pgtype.UUID        `json:"event_id"`
+	ProcessedAt pgtype.Timestamptz `json:"processed_at"`
+}
+
 type InventoryItem struct {
 	ID               pgtype.UUID        `json:"id"`
 	TenantID         pgtype.UUID        `json:"tenant_id"`
@@ -517,6 +523,19 @@ type OrderStatusHistory struct {
 	ActorUserID pgtype.UUID        `json:"actor_user_id"`
 }
 
+type Outbox struct {
+	ID            pgtype.UUID        `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	Subject       string             `json:"subject"`
+	EventType     string             `json:"event_type"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   string             `json:"aggregate_id"`
+	Payload       []byte             `json:"payload"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	Attempts      int32              `json:"attempts"`
+}
+
 type Payment struct {
 	ID                pgtype.UUID        `json:"id"`
 	TenantID          pgtype.UUID        `json:"tenant_id"`
@@ -818,32 +837,37 @@ type Table struct {
 }
 
 type Tenant struct {
-	ID               pgtype.UUID        `json:"id"`
-	Name             string             `json:"name"`
-	Slug             string             `json:"slug"`
-	BusinessType     string             `json:"business_type"`
-	OwnerName        string             `json:"owner_name"`
-	Phone            string             `json:"phone"`
-	Email            string             `json:"email"`
-	Address          string             `json:"address"`
-	Status           string             `json:"status"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	IsPublished      bool               `json:"is_published"`
-	PlanID           pgtype.UUID        `json:"plan_id"`
-	SetupStatus      string             `json:"setup_status"`
-	ThemePresetID    string             `json:"theme_preset_id"`
-	ThemeColorMode   string             `json:"theme_color_mode"`
-	ThemeOverrides   []byte             `json:"theme_overrides"`
-	LogoUrl          string             `json:"logo_url"`
-	FaviconUrl       string             `json:"favicon_url"`
-	ShortDescription string             `json:"short_description"`
-	Currency         string             `json:"currency"`
-	Timezone         string             `json:"timezone"`
-	Language         string             `json:"language"`
-	StoreStatus      string             `json:"store_status"`
-	StatusMessage    string             `json:"status_message"`
-	MfaAllowed       bool               `json:"mfa_allowed"`
+	ID                pgtype.UUID        `json:"id"`
+	Name              string             `json:"name"`
+	Slug              string             `json:"slug"`
+	BusinessType      string             `json:"business_type"`
+	OwnerName         string             `json:"owner_name"`
+	Phone             string             `json:"phone"`
+	Email             string             `json:"email"`
+	Address           string             `json:"address"`
+	Status            string             `json:"status"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	IsPublished       bool               `json:"is_published"`
+	PlanID            pgtype.UUID        `json:"plan_id"`
+	SetupStatus       string             `json:"setup_status"`
+	ThemePresetID     string             `json:"theme_preset_id"`
+	ThemeColorMode    string             `json:"theme_color_mode"`
+	ThemeOverrides    []byte             `json:"theme_overrides"`
+	LogoUrl           string             `json:"logo_url"`
+	FaviconUrl        string             `json:"favicon_url"`
+	ShortDescription  string             `json:"short_description"`
+	Currency          string             `json:"currency"`
+	Timezone          string             `json:"timezone"`
+	Language          string             `json:"language"`
+	StoreStatus       string             `json:"store_status"`
+	StatusMessage     string             `json:"status_message"`
+	MfaAllowed        bool               `json:"mfa_allowed"`
+	LegalName         string             `json:"legal_name"`
+	Website           string             `json:"website"`
+	TaxID             string             `json:"tax_id"`
+	SocialLinks       []byte             `json:"social_links"`
+	ShowLogoInConsole bool               `json:"show_logo_in_console"`
 }
 
 type TenantAttendanceSetting struct {

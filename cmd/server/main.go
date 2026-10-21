@@ -17,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/orderly/orderly-backend/internal/config"
+	"github.com/orderly/orderly-backend/internal/events"
 	"github.com/orderly/orderly-backend/internal/httpserver"
 	"github.com/orderly/orderly-backend/pkg/database"
 	"github.com/orderly/orderly-backend/pkg/logger"
@@ -48,6 +49,15 @@ func main() {
 	}
 	defer pool.Close()
 
+	// The event broker: outbox rows are relayed to NATS JetStream; without
+	// NATS_URL they wait in the table and the API still runs.
+	broker, err := events.Connect(ctx, cfg.NATSURL, log)
+	if err != nil {
+		log.Error("failed to connect to nats", "error", err)
+		os.Exit(1)
+	}
+	defer broker.Close()
+
 	api := httpserver.New(log, pool, cfg)
 
 	// Move any pre-existing plaintext SMTP password into the encrypted store
@@ -66,6 +76,9 @@ func main() {
 	go api.StartNotificationWorker(ctx)
 	go api.StartMarketingWorker(ctx)
 	go api.StartPaymentSweeper(ctx)
+	if broker.Enabled() {
+		go events.NewRelay(pool, broker, log).Start(ctx, time.Second)
+	}
 
 	go func() {
 		log.Info("server listening", "addr", cfg.HTTPAddr, "env", cfg.AppEnv)

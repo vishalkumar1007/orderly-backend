@@ -51,7 +51,7 @@ migrate-status:
 	$(GOOSE) -dir $(MIGRATIONS_DIR) postgres "$(DATABASE_URL)" status
 
 sqlc-generate:
-	cd db && $(SQLC) generate
+	cd db && "$(SQLC)" generate
 
 tidy:
 	go mod tidy

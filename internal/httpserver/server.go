@@ -258,6 +258,7 @@ func (s *Server) Router() http.Handler {
 			ar.Group(func(pr chi.Router) {
 				pr.Use(auth.Middleware(s.auth))
 				pr.Get("/me", s.auth.HandleMe)
+				pr.Patch("/me", s.auth.HandleUpdateMe)
 				pr.Put("/me/password", s.auth.HandleChangePassword)
 				pr.Get("/me/mfa/status", s.auth.HandleMFAStatus)
 				pr.Post("/me/mfa/setup", s.auth.HandleMFASetup)
@@ -700,6 +701,10 @@ func (s *Server) Router() http.Handler {
 			tr.With(canStorefront).Put("/storefront/theme", s.shop.PutTheme)
 			tr.With(canStorefront).Put("/storefront/homepage", s.shop.PutHomepage)
 			tr.With(canStorefront).Put("/storefront/hours", s.shop.PutOpeningHours)
+			// The business logo, from Settings. Same handler as menu images,
+			// gated on the storefront permission instead of the catalogue
+			// capability so a barber or hotel can upload one too.
+			tr.With(canStorefront).Post("/branding/upload", s.upload.HandleUpload)
 			tr.With(canStorefront).Get("/storefront/preview", s.shop.PreviewMenu)
 			tr.With(canStorefront).Get("/storefront/qr", s.shop.QRCode)
 

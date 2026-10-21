@@ -36,10 +36,13 @@ func NewUploadHandler(storage *configsvc.Storage, apiOrigin string) *UploadHandl
 
 // UploadRoutes registers the upload endpoint on the given router.
 func (h *UploadHandler) UploadRoutes(r chi.Router) {
-	r.Post("/upload", h.handleUpload)
+	r.Post("/upload", h.HandleUpload)
 }
 
-func (h *UploadHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
+// HandleUpload stores one image and returns its URL. Exported so a second
+// route can mount it behind a different gate: the business logo is uploaded
+// from Settings by an owner, who may run a business with no catalogue.
+func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		response.Error(w, http.StatusBadRequest, "invalid_request", "File too large (max 5MB)")

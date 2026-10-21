@@ -42,6 +42,11 @@ SET
     store_status = COALESCE(sqlc.narg(store_status), store_status),
     status_message = COALESCE(sqlc.narg(status_message), status_message),
     mfa_allowed = COALESCE(sqlc.narg(mfa_allowed), mfa_allowed),
+    legal_name = COALESCE(sqlc.narg(legal_name), legal_name),
+    website = COALESCE(sqlc.narg(website), website),
+    tax_id = COALESCE(sqlc.narg(tax_id), tax_id),
+    social_links = COALESCE(sqlc.narg(social_links), social_links),
+    show_logo_in_console = COALESCE(sqlc.narg(show_logo_in_console), show_logo_in_console),
     updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
